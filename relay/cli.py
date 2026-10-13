@@ -141,6 +141,13 @@ def parse_args(argv=None):
                     help='research (read-only): like --probe-entry but an ABSOLUTE hex address (for unpacked '
                          'client code in anonymous memory, not gepard-relative). With --scramble-range it only '
                          'fires on a call whose args reference a 0437/0438 in that range.')
+    ap.add_argument('--probe-ids', default='0437,0438',
+                    help='comma-separated hex packet ids the probes gate on (default 0437,0438). e.g. 035f to '
+                         'map the walk send path, together with --scramble-range set to the stack region.')
+    ap.add_argument('--probe-anyid', action='store_true',
+                    help='--send-probe: capture the first hit whose pointer is inside --scramble-range, '
+                         'regardless of packet id (use when the id offset is unknown, e.g. mapping 035f on the '
+                         'stack; the range must be exclusive to the target, like the thread stack).')
     ap.add_argument('--scramble-bp', default='',
                     help='scramble-intercept (injects a valid encrypted client->server packet): hex OFFSET '
                          'from gepard.dll base of the scrambler store. A hardware exec breakpoint there '

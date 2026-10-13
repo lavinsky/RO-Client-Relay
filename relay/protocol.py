@@ -53,7 +53,7 @@ def sendwatch_msg(lo=None, hi=None, ports=(MAP_PORT,)):
 
 
 def scramble_msg(off=None, reg='edi', pid=None, body=None, dry=True, idoff=0, lo=None, hi=None,
-                 persist=False, probe=False, entry=False, pc=None):
+                 persist=False, probe=False, entry=False, pc=None, ids=None, anyid=False):
     """Arm (or clear, with off=None and body=None) a scramble-intercept breakpoint at gepard+off.
     body (hex) in LIVE mode is written over the slot body; dry logs only. idoff: id position relative
     to the pointer. lo/hi: only act when the pointer is in [lo, hi). persist (--inject merge): keep
@@ -71,6 +71,10 @@ def scramble_msg(off=None, reg='edi', pid=None, body=None, dry=True, idoff=0, lo
         m['probe'] = True
     if entry:
         m['entry'] = True          # probe a function ENTRY: capture on first hit, dump stack + arg derefs
+    if ids:
+        m['ids'] = list(ids)       # packet ids the probe gates on (default 0437/0438)
+    if anyid:
+        m['anyid'] = True          # probe: capture the first in-range hit regardless of id (exclusive range)
     if pid is not None:
         m['id'] = pid
     if body is not None:

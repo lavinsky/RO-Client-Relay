@@ -294,7 +294,7 @@ function scrProbeEntry(ctx) {
         var inRange = args.some(function (a) { return a && a.compare(scr.lo) >= 0 && a.compare(scr.hi) < 0; });
         var hasId = args.some(function (a) {
             if (!a) return false;
-            try { var v = a.readU16(); return v === 0x0437 || v === 0x0438; } catch (e) { return false; }
+            try { return scr.ids[a.readU16()] === 1; } catch (e) { return false; }
         });
         if (!(inRange || hasId)) return true;                       // not the call we want: keep waiting
     }
@@ -314,13 +314,14 @@ function scrProbeEntry(ctx) {
 }
 
 function scrProbe(ctx) {
-    var PROBE_IDS = {0x0437: 1, 0x0438: 1};                          // the encrypted client send ids
+    var PROBE_IDS = scr.ids;                                         // the encrypted client send ids to gate on
     var cand = {eax: ctx.eax, ebx: ctx.ebx, ecx: ctx.ecx, edx: ctx.edx, esi: ctx.esi, edi: ctx.edi, ebp: ctx.ebp};
-    var slotReg = null, slotPtr = null, slotId = -1, slotOff = null;
+    var slotReg = null, slotPtr = null, slotId = -1, slotOff = null, inRange = null;
     for (var rn in cand) {                                           // confirm a real send: a reg points at a slot id we expect
         var r = cand[rn];
         if (!(r instanceof NativePointer) || r.isNull()) continue;
-        if (scr.lo !== null && (r.compare(scr.lo) < 0 || r.compare(scr.hi) >= 0)) continue;
+        if (scr.lo !== null && (r.compare(scr.lo) < 0 || r.compare(scr.hi) >= 0)) continue;   // cheap reject
+        if (inRange === null) inRange = {rn: rn, r: r};              // first reg inside the range
         for (var ci = 0; ci < SCR_IDOFFS.length; ci++) {
             var o = SCR_IDOFFS[ci], idv;
             try { idv = r.add(o).readU16(); } catch (e) { continue; }
@@ -328,11 +329,21 @@ function scrProbe(ctx) {
         }
         if (slotReg) break;
     }
-    if (slotReg === null) return true;                               // not a send we recognise yet: keep waiting
+    if (slotReg === null && scr.anyid && inRange !== null) {         // range is the gate: take the first in-range hit
+        slotReg = inRange.rn; slotPtr = inRange.r.add(SCR_IDOFFS[0]); slotOff = SCR_IDOFFS[0];
+        try { slotId = inRange.r.add(SCR_IDOFFS[0]).readU16(); } catch (e) { slotId = -1; }
+    }
+    if (slotReg === null) {                                          // no match yet
+        if (inRange !== null && ++scr.nprobe >= 2000) {              // hard cap on in-range work -> disarm, never flood
+            send({tag: 'SENDWATCH-ERR', e: 'probe: ' + scr.nprobe + ' in-range hits, no id match; disarming'});
+            scr = null; scrDisarm();
+        }
+        return true;                                                // out-of-range hits are rejected cheaply, not counted
+    }
     var regs = {};
     GP.forEach(function (r) { try { regs[r] = ctx[r].toString(); } catch (e) {} });
     var frames = [], esp = ctx.esp;
-    for (var i = 0; i < 4096 && frames.length < 80; i++) {           // scan the stack for return addresses
+    for (var i = 0; i < 512 && frames.length < 64; i++) {            // scan the stack for return addresses
         var w;
         try { w = esp.add(i * 4).readPointer(); } catch (e) { break; }
         if (w.isNull()) continue;
@@ -351,27 +362,37 @@ function scrProbe(ctx) {
 // addresses against the mapped ranges directly, as peBase() does). `base` is the lowest range of
 // the same file - a usable module base for RVAs. Cached; recomputed only if a lookup misses.
 var CODE_RANGES = null;
-function codeRanges(refresh) {
-    if (CODE_RANGES && !refresh) return CODE_RANGES;
-    var byPath = {};
+// Faixas executaveis para resolver enderecos da pilha. O codigo do uaRO roda em memoria ANONIMA
+// (desempacotado pelo gepard, base 0x401000), por isso incluimos faixas anonimas executaveis de
+// endereco baixo (< 0x2000000: o uaRO em 0x401000 e o blob do gepard em 0x1717000) alem dos modulos
+// .exe/.dll com arquivo; pulamos .grf (dados) e as regioes anonimas altas (pilhas/heaps). Construida
+// UMA vez - reconstruir a cada endereco sem correspondencia travava a thread do jogo.
+var LIMITE_ANON = ptr('0x2000000');
+function codeRanges() {
+    if (CODE_RANGES) return CODE_RANGES;
+    var grupos = {};
     Process.enumerateRanges({protection: 'r-x', coalesce: false}).forEach(function (r) {
-        var p = (r.file && r.file.path) ? r.file.path : null;
-        if (!p || !/\.(exe|dll)$/i.test(p)) return;                  // PE modules only (skip mapped .grf data archives)
-        (byPath[p] = byPath[p] || []).push([r.base, r.base.add(r.size)]);
+        var cam = (r.file && r.file.path) ? r.file.path : null, chave, nome;
+        if (cam) {
+            if (!/\.(exe|dll)$/i.test(cam)) return;                  // pular arquivos de dados (.grf, .nls)
+            chave = cam; nome = cam.split('/').pop();
+        } else {
+            if (r.base.compare(LIMITE_ANON) >= 0) return;            // anonimo alto = pilha/heap, nao codigo
+            chave = 'anon:' + r.base; nome = 'anon@' + r.base;       // codigo desempacotado (uaRO, VM gepard)
+        }
+        (grupos[chave] = grupos[chave] || {nome: nome, faixas: []}).faixas.push([r.base, r.base.add(r.size)]);
     });
-    var out = [];
-    for (var p in byPath) {
-        var ranges = byPath[p], base = ranges[0][0], name = p.split('/').pop();
-        ranges.forEach(function (x) { if (x[0].compare(base) < 0) base = x[0]; });
-        ranges.forEach(function (x) { out.push({lo: x[0], hi: x[1], name: name, base: base}); });
+    var saida = [];
+    for (var k in grupos) {
+        var g = grupos[k], base = g.faixas[0][0];
+        g.faixas.forEach(function (x) { if (x[0].compare(base) < 0) base = x[0]; });
+        g.faixas.forEach(function (x) { saida.push({lo: x[0], hi: x[1], name: g.nome, base: base}); });
     }
-    return (CODE_RANGES = out);
+    return (CODE_RANGES = saida);
 }
-function codeAt(ptr) {
-    var rs = codeRanges(false);
+function codeAt(ptr) {                                               // sem reconstruir: evita o congelamento
+    var rs = codeRanges();
     for (var i = 0; i < rs.length; i++) if (ptr.compare(rs[i].lo) >= 0 && ptr.compare(rs[i].hi) < 0) return rs[i];
-    rs = codeRanges(true);                                           // stale cache? refresh once and retry
-    for (var j = 0; j < rs.length; j++) if (ptr.compare(rs[j].lo) >= 0 && ptr.compare(rs[j].hi) < 0) return rs[j];
     return null;
 }
 
@@ -478,6 +499,9 @@ function onScramble(m) {
                persist: !!m.persist,   // --inject merge: keep each body and replace every matching action
                probe: !!m.probe,       // --send-probe: one-shot read-only stack walk of a real send
                entry: !!m.entry,       // --probe-entry: one-shot capture of a function's args at entry
+               anyid: !!m.anyid,       // --probe-anyid: capture the first in-range hit regardless of id
+               nprobe: 0,              // in-range misses seen (hard cap -> disarm, never flood)
+               ids: (function () { var o = {}; (m.ids || [0x0437, 0x0438]).forEach(function (x) { o[x] = 1; }); return o; })(),
                bodies: {}};        // --inject merge: id -> plaintext body to substitute (pre-XOR)
         scrEntry = undefined;                       // recompute the prologue scan for this pc
         if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }

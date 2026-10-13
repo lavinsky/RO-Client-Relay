@@ -39,9 +39,10 @@ class Capture:
             lo = hi = None                             # optional gate: only a call whose args hit this range
             if getattr(opts, 'scramble_range', ''):
                 lo, hi = (int(x, 16) for x in opts.scramble_range.split('-'))
+            ids = [int(x, 16) for x in getattr(opts, 'probe_ids', '0437,0438').split(',') if x.strip()]
             self.scramble = {'reg': 'auto', 'pid': int(opts.scramble_id, 16), 'body': None,
                              'dry': False, 'idoff': 0, 'lo': lo, 'hi': hi, 'persist': False,
-                             'probe': True, 'entry': True}
+                             'probe': True, 'entry': True, 'ids': ids}
             if pa:                                     # absolute address (unpacked client code in anon memory)
                 self.scramble['pc'] = int(pa, 16)
                 where = f"0x{self.scramble['pc']:x}"
@@ -221,19 +222,23 @@ class Capture:
             if self._scramble_armed:
                 return
             store_off = int(m['enc'], 16) - self.gepard_base - SCRAMBLE_STORE_BACK
-            if getattr(self.opts, 'scramble_range', ''):   # honour an explicit range if set
+            probe = bool(getattr(self.opts, 'send_probe', False))
+            ids = [int(x, 16) for x in getattr(self.opts, 'probe_ids', '0437,0438').split(',') if x.strip()]
+            if getattr(self.opts, 'scramble_range', ''):   # explicit range (e.g. the stack region for 035f)
                 lo, hi = (int(x, 16) for x in self.opts.scramble_range.split('-'))
             else:
-                r = self._queue_range()                    # the recv-ring/send-queue block
+                r = self._queue_range()                    # the recv-ring/send-queue block (default)
                 lo, hi = (r[0], r[1]) if r else (None, None)
             persist = bool(getattr(self.opts, 'inject_persist', False))
-            probe = bool(getattr(self.opts, 'send_probe', False))
+            anyid = bool(getattr(self.opts, 'probe_anyid', False))
             pid = int(self.opts.scramble_id, 16)
             self.post(sendwatch_msg())                     # disarm the send watch (lo omitted = off)
             self.sendwatch = None
-            self.post(scramble_msg(store_off, 'auto', pid, None, False, 0, lo, hi, persist, probe=probe))
+            self.post(scramble_msg(store_off, 'auto', pid, None, False, 0, lo, hi, persist,
+                                   probe=probe, ids=ids if probe else None, anyid=anyid if probe else False))
             self.scramble = {'off': store_off, 'reg': 'auto', 'pid': pid, 'body': None, 'dry': False,
-                             'idoff': 0, 'lo': lo, 'hi': hi, 'persist': persist, 'probe': probe}
+                             'idoff': 0, 'lo': lo, 'hi': hi, 'persist': persist, 'probe': probe,
+                             'ids': ids if probe else None, 'anyid': anyid if probe else False}
             self._scramble_armed = True
         rng = f' range 0x{lo:x}-0x{hi:x}' if lo is not None else ' (id-match only, no range)'
         if probe:
@@ -250,7 +255,8 @@ class Capture:
             self.post(scramble_msg(off=c.get('off'), reg=c['reg'], pid=c['pid'], body=c['body'],
                                    dry=c['dry'], idoff=c['idoff'], lo=c['lo'], hi=c['hi'],
                                    persist=c['persist'], probe=c.get('probe', False),
-                                   entry=c.get('entry', False), pc=c.get('pc')))
+                                   entry=c.get('entry', False), pc=c.get('pc'), ids=c.get('ids'),
+                                   anyid=c.get('anyid', False)))
 
     def _queue_range(self):
         """(lo, hi, source) of the client send-queue block, or None - shared by the send watch and

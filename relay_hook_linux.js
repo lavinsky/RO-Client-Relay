@@ -595,6 +595,51 @@ function drainSendCall() {                       // called from the game thread 
 // never leave debug registers armed without our handler: the client would die on the next write
 rpc.exports = { dispose: function () { sw = null; swDisarm(); scr = null; scrDisarm(); scSend = null; } };
 
+// ---- rastreio com Stalker (opcional: o driver envia {type:'trace'}) ----------------------------
+// ARRISCADO em codigo protegido pelo gepard: o Stalker reescreve o codigo executado. Primeiro um
+// teste de sobrevivencia curto; se o cliente aguentar, com a faixa do uaRO registramos as chamadas
+// do codigo do uaRO para dentro do gepard (a chamada do envio do walk esta entre elas). Janela
+// curta e desliga sozinho.
+var traceSeen = null;
+function onTrace(m) {
+    var ms = m.ms || 200;
+    var th = Process.enumerateThreads().filter(function (t) { return t.id === Process.id; })[0];
+    if (!th) { send({tag: 'TRACE', erro: 'thread principal nao encontrada'}); recv('trace', onTrace); return; }
+    var ualo = m.ualo ? ptr(m.ualo) : null, uahi = m.uahi ? ptr(m.uahi) : null;
+    var gep = getGepard(), ghi = gep ? gep.add(0x2000000) : null;
+    traceSeen = ualo ? {} : null;
+    var nblocos = 0;
+    try {
+        Stalker.follow(th.id, {
+            events: {call: true},
+            onReceive: function (ev) {
+                nblocos += ev.byteLength;
+                if (traceSeen === null) return;                     // teste de sobrevivencia: so conta
+                var es = Stalker.parse(ev, {stringify: false});    // [['call', de, para, prof], ...]
+                for (var i = 0; i < es.length; i++) {
+                    if (es[i][0] !== 'call') continue;
+                    var de = es[i][1], para = es[i][2];
+                    if (!(de instanceof NativePointer) || !(para instanceof NativePointer)) continue;
+                    if (de.compare(ualo) >= 0 && de.compare(uahi) < 0 && gep &&
+                        para.compare(gep) >= 0 && para.compare(ghi) < 0) {
+                        traceSeen[de.sub(ualo).toString() + '>' + para.sub(gep).toString()] = 1;
+                    }
+                }
+            }
+        });
+    } catch (e) { send({tag: 'TRACE', erro: 'follow: ' + e.message}); recv('trace', onTrace); return; }
+    setTimeout(function () {
+        try { Stalker.unfollow(th.id); Stalker.flush(); } catch (e) {}
+        var msg = {tag: 'TRACE', ms: ms, bytes: nblocos};
+        if (traceSeen !== null) { msg.chamadas = Object.keys(traceSeen); msg.n = msg.chamadas.length; }
+        else { msg.nota = 'teste de sobrevivencia ok'; }
+        send(msg);
+        traceSeen = null;
+    }, ms);
+    recv('trace', onTrace);
+}
+recv('trace', onTrace);
+
 // ---- send --------------------------------------------------------------------------------------
 hookAll(['__sendmsg64', 'sendmsg'], {
     onEnter: function (args) {

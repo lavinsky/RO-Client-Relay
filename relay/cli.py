@@ -144,6 +144,14 @@ def parse_args(argv=None):
     ap.add_argument('--probe-ids', default='0437,0438',
                     help='comma-separated hex packet ids the probes gate on (default 0437,0438). e.g. 035f to '
                          'map the walk send path, together with --scramble-range set to the stack region.')
+    ap.add_argument('--trace-test', type=int, default=0, metavar='MS',
+                    help='Stalker (pesquisa): teste de sobrevivencia - segue a thread principal por MS '
+                         'milissegundos so contando eventos, depois desliga. Verifica se o gepard tolera '
+                         'o Stalker antes do rastreio completo. ARRISCADO num cliente protegido.')
+    ap.add_argument('--trace-walk', type=int, default=0, metavar='MS',
+                    help='Stalker (pesquisa): segue por MS ms e registra as chamadas do codigo do uaRO '
+                         '(anon 0x401000) para dentro do gepard. Rode parado e depois andando e compare '
+                         'para achar a chamada do envio do 035f. ARRISCADO; use janelas curtas.')
     ap.add_argument('--probe-anyid', action='store_true',
                     help='--send-probe: capture the first hit whose pointer is inside --scramble-range, '
                          'regardless of packet id (use when the id offset is unknown, e.g. mapping 035f on the '
@@ -244,6 +252,7 @@ def main(argv=None):
     capture.update_send_watch()
     capture.arm_scramble()                             # exec breakpoint at gepard+off, if --scramble-bp
     capture.arm_sendcall()                             # capture SendPacket `this`, if --inject-call
+    capture.arm_trace()                                # Stalker trace, if --trace-test / --trace-walk
     if capture.send_watch_waiting:
         print('[*] send watch: waiting for the recv ring to locate the send queue')
     print(f'[*] capturing -> {a.out}  (Ctrl-C to stop)')

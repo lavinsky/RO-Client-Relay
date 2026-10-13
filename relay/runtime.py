@@ -13,7 +13,8 @@ from .actors import ActorDecrypt
 from .inject import InjectError, SendInjector
 from .memory import ProcessMemoryWriter
 from .moves import MoveTracker, pack_move
-from .protocol import scramble_msg, scramble_set_msg, sendcall_emit_msg, sendcall_msg, sendwatch_msg
+from .protocol import (scramble_msg, scramble_set_msg, sendcall_emit_msg, sendcall_msg,
+                       sendwatch_msg, trace_msg)
 from .research import ActorDiag, ActorProbe
 from .sendwatch import SendWatch, send_queue_range
 from .wire_feed import ClientSendFeed, WireFeed
@@ -308,6 +309,17 @@ class Capture:
         pid = payload[0] | payload[1] << 8
         print(f"[inject] inbound id=0x{pid:04x} len={len(payload)} -> SendPacket: {payload[:16].hex()}")
         self.post(sendcall_emit_msg(payload.hex()))
+
+    def arm_trace(self):
+        """Dispara o rastreio com Stalker: teste de sobrevivencia (--trace-test) ou o rastreio das
+        chamadas uaRO->gepard (--trace-walk, faixa do codigo uaRO 0x401000..0x1717000)."""
+        w, t = getattr(self.opts, 'trace_walk', 0), getattr(self.opts, 'trace_test', 0)
+        if w:
+            print(f'[*] --trace-walk: Stalker por {w}ms registrando chamadas uaRO->gepard (ARRISCADO)')
+            self.post(trace_msg(w, 0x401000, 0x1717000))
+        elif t:
+            print(f'[*] --trace-test: Stalker por {t}ms (teste de sobrevivencia, ARRISCADO)')
+            self.post(trace_msg(t))
 
     def arm_sendcall(self):
         """Arm call-based injection: tell the agent where SendPacket is so it can capture `this`."""

@@ -100,6 +100,15 @@ def sendcall_msg(rva=None, module='uaRO.exe'):
     return {'type': 'sendcall', 'rva': rva, 'module': module}
 
 
+def trace_msg(ms=200, ualo=None, uahi=None):
+    """Rastreio com Stalker. Sem ualo/uahi: so teste de sobrevivencia (segue a thread principal por
+    `ms` e desliga). Com a faixa do codigo uaRO: registra as chamadas uaRO->gepard na janela."""
+    m = {'type': 'trace', 'ms': ms}
+    if ualo is not None:
+        m['ualo'], m['uahi'] = hex(ualo), hex(uahi)
+    return m
+
+
 def sendcall_emit_msg(data_hex):
     """Call-based injection: hand the agent one whole client->server packet (hex) to transmit via
     SendPacket. Queued and sent on the game thread; nothing here replaces a client packet."""

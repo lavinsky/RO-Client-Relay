@@ -57,6 +57,15 @@ def show(m):
             print(f"[sendcall] SENT len={m.get('len')} {m.get('data','')[:48]}")
         else:
             print(f"[sendcall] {hit}: {m.get('e')}")
+    elif tag == 'TRACE':
+        if m.get('erro'):
+            print(f"[trace] erro: {m.get('erro')}")
+        elif m.get('chamadas') is not None:
+            print(f"[trace] {m.get('ms')}ms, {m.get('n')} chamadas uaRO->gepard distintas:")
+            for c in (m.get('chamadas') or []):
+                print(f"        uaRO+{c.split('>')[0]} -> gepard+{c.split('>')[1]}")
+        else:
+            print(f"[trace] {m.get('ms')}ms: {m.get('nota')} ({m.get('bytes')} bytes de eventos) - cliente sobreviveu")
     elif tag == 'RECV-WIRE':
         print(f"[<= wire ] id=0x{i} len={m['len']:<4} conn={m.get('conn','?')} {m['C'][:48]}...")
     elif tag == 'RECV-LOST':

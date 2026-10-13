@@ -1,4 +1,4 @@
-"""Offline test for MoveTracker (relay/moves.py): decodes the server 0087 move destination and
+"""Offline test for MoveTracker (relay/packets.py): decodes the server 0087 move destination and
 cross-checks it against the recovered 035f walk. Uses the exact bytes from a live capture, where
 035f recovered (298,122) and the following 0087 confirmed dst (298,122)."""
 import importlib.util, os

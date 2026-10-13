@@ -73,16 +73,16 @@ Os campos das mensagens estão no docstring de `relay/protocol.py`.
 |---|---|---|
 | `protocol` | Tags e campos das mensagens (o contrato com o agente): `ring_msg`, `sendwatch_msg`, `scramble_msg`, `scramble_set_msg`, `sendcall_msg`, `sendcall_emit_msg`, `trace_msg`, `conn_of`. | sempre |
 | `agent` | `gadget_ports`, `pick_port`, `pid_of_port`; `Agent` (conecta ao gadget, carrega o JS, repassa/posta mensagens). Único módulo que importa `frida`. | sempre |
-| `cli` | Opções, leitura do arquivo de configuração (`relay_capture.conf`), tabela de tamanhos, `main` (trata `SIGTERM` para desligar limpo). | sempre |
-| `runtime` | `Capture`: monta os componentes conforme as opções, inicia as threads, roteia cada mensagem (`dispatch`), mantém o acompanhamento da fila apontado, e — na escrita sem ponto de parada fixado — autodescobre a cifragem. | sempre |
+| `config` | `load_config_defaults`: lê `relay_capture.conf` ([capture]) como defaults do argparse (defaults < config < linha de comando). | sempre |
+| `cli` | Opções, tabela de tamanhos, `main` (trata `SIGTERM` para desligar limpo; `SIGUSR1` re-arma o rastreio sob demanda). | sempre |
+| `runtime` | `Capture`: monta os componentes conforme as opções, inicia as threads, roteia cada mensagem (`dispatch`), mantém o acompanhamento da fila apontado. Herda o caminho de escrita de `writeback`. | sempre |
+| `writeback` | Mixin `WriteBack`: config do BP de cifragem, seleção do caminho de escrita (merge 035f / SendPacket / autodescoberta), handlers dos pacotes do consumidor, `arm_scramble`/`arm_sendcall`/`arm_trace`. | `--inject`/`--inject-call` |
 | `relay` | `Relay`: enquadramento XKore, (re)conexão, `--feed-dump`. `PacketAligner`: alinhador opcional (consumidor bruto). | com `--relay` |
-| `packets` | `load_lengths`, `packet_len`, `WireFilter` (divide o fluxo de cada conexão em pacotes; passa o id de conta; separa 09fd/09ff como itens a preencher). | sempre |
+| `packets` | `load_lengths`, `packet_len`, `WireFilter` (divide o fluxo de cada conexão em pacotes); `pack_move`, `unpack_pos2`, `MoveTracker` (corpo do `035f` e decodificação do `0087`/`MOVE-CHECK`). | sempre |
 | `actors` | `ActorDecrypt`: acha a ring de recepção e aceita a cópia decifrada de 09fd/09ff só com prova (recente, ou contexto em volta casa); senão descarta. `valid_actor`. | `--decrypt-actors` |
 | `wire_feed` | `WireFeed` (enfileira os trechos em ordem de chegada, anexa snapshots, thread alimentadora). `ClientSendFeed` (pacotes cliente→servidor). | sempre |
 | `sendwatch` | `SendWatch`, `plaintext_guess`, `packet_at`, `send_queue_range`. | `--send-watch` |
-| `moves` | `MoveTracker`, `unpack_pos2`, `pack_move`: decodifica o destino do movimento a partir do `0087` (texto claro) do servidor e registra (`MOVE-CHECK`); `pack_move` monta o corpo de 3 bytes de um `035f`. | sempre |
-| `memory` | `/proc/<pid>/maps` (`regions`, `region_at`), `ProcessMemory.read`, `ProcessMemoryWriter`. | com acesso a memória |
-| `inject` | `SendInjector`: escrita bruta de pacotes do consumidor na fila de envio, com checagem de limites. Primitivo de escrita; só válido para um cliente **sem cifragem** (ver §6). | escrita bruta |
+| `memory` | `/proc/<pid>/maps` (`regions`, `region_at`), `ProcessMemory.read` (somente leitura). | com acesso a memória |
 | `research` | `ActorProbe` (`--probe-actors`), `ActorDiag` (`--actor-diag`). | pesquisa |
 
 ### 3.2 Threads
@@ -146,8 +146,8 @@ Os campos das mensagens estão no docstring de `relay/protocol.py`.
 
 ## 6. Caminhos de escrita (reenvio de pacotes do consumidor)
 
-Três formas de fazer o cliente transmitir os pacotes que o consumidor devolve. Todas para um
-cliente/servidor próprio, desligadas por padrão.
+Duas formas de fazer o cliente transmitir os pacotes que o consumidor devolve, combináveis por id.
+Ambas para um cliente/servidor próprio, desligadas por padrão. Vivem no mixin `writeback.WriteBack`.
 
 1. **Chamar a função de envio do cliente** (`--inject-call`) — espontâneo, não troca nenhum
    pacote do cliente. O driver chama o `SendPacket(this, len, buf)` do próprio cliente, que
@@ -162,11 +162,12 @@ cliente/servidor próprio, desligadas por padrão.
    o controle ao cliente); `--inject-persist` mantém (substitui toda ação igual — uma armadilha
    para o `035f`, ver §10). É o caminho certo quando o cliente inicia a ação (ver §10, método 1
    para o `035f`).
-3. **Escrita bruta na fila** (`inject.SendInjector`, via `memory.ProcessMemoryWriter`) — escreve
-   direto na fila. Só vale para um cliente **sem cifragem** (os bytes não passam pela cifragem).
+
+(A escrita bruta na fila, só válida para um cliente **sem cifragem**, existia como terceira forma
+mas foi removida — recuperável no histórico do git se um dia for testar um cliente assim.)
 
 **Modo combinado (recomendado para o debug completo das ações):** com `--inject-call` **e**
-`--scramble-bp` juntos, o driver roteia por id (`runtime._on_inbound_split`): o `035f` vai pelo
+`--scramble-bp` juntos, o driver roteia por id (`writeback._on_inbound_split`): o `035f` vai pelo
 caminho 2 (merge, DR0) e as demais ações pelo caminho 1 (`SendPacket`, DR1). Como os dois usam
 registradores de depuração distintos, coexistem. Invocação de referência:
 

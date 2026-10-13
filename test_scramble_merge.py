@@ -50,7 +50,7 @@ print('_on_inbound_scramble ok')
 # --- _autodiscover_scramble: first encrypted send -> disarm send-watch, arm reg='auto' scramble ---
 import threading
 from types import SimpleNamespace
-from relay.runtime import SCRAMBLE_STORE_BACK
+from relay.writeback import SCRAMBLE_STORE_BACK
 
 class FakeDisc:
     def __init__(self):

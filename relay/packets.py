@@ -1,6 +1,10 @@
-"""Packet boundaries: the length table and the per-connection tokenizer (WireFilter)."""
+"""Packet semantics: the length table, the per-connection tokenizer (WireFilter), and the move
+packing/decoding (035f body, 0087 confirmation)."""
+import collections
+
 VAR = -1                                           # length table: variable length, read from bytes 2-3
 NEED_MORE = 0                                      # packet_len(): the length isn't readable yet
+MOVE_ID = 0x0087                                   # ZC_NOTIFY_PLAYERMOVE (own-character move)
 
 
 def load_lengths(path):
@@ -103,3 +107,48 @@ class WireFilter:
         if out:
             items.append(('B', bytes(out)))
         return items
+
+
+def pack_move(x, y, d=0):
+    """The 3-byte packed body of a client move (035f) for destination (x, y) and direction d."""
+    return bytes(((x >> 2) & 0xff,
+                  ((x & 3) << 6) | ((y >> 4) & 0x3f),
+                  ((y & 0xf) << 4) | (d & 0xf)))
+
+
+def unpack_pos2(b):
+    """(src_x, src_y, dst_x, dst_y) from the 6-byte MoveData2 (the RO WBUFPOS2 packing)."""
+    sx = (b[0] << 2) | (b[1] >> 6)
+    sy = ((b[1] & 0x3f) << 4) | (b[2] >> 4)
+    dx = ((b[2] & 0x0f) << 6) | (b[3] >> 2)
+    dy = ((b[3] & 0x03) << 8) | b[4]
+    return sx, sy, dx, dy
+
+
+class MoveTracker:
+    """Decodes the server's 0087 move confirmation and, when a walk request is known (tests/offline
+    replays set it via on_walk), cross-checks it. In live captures the client's own 035f is not
+    recovered, so MOVE-CHECKs carry no request and the 0087 destination is the walk destination."""
+
+    def __init__(self, log=None):
+        self.log = log
+        self.last_walk = None                      # (x, y) of the most recent recovered 035f
+        self.stats = collections.Counter()
+
+    def on_walk(self, x, y, d=0):
+        self.last_walk = (x, y)
+
+    def on_recv_packet(self, conn, pid, off, pkt):
+        """WireFilter.on_packet hook: on a 0087, decode its destination and compare to the walk."""
+        if pid != MOVE_ID or len(pkt) < 12:
+            return
+        sx, sy, dx, dy = unpack_pos2(pkt[6:12])
+        req = self.last_walk
+        state = 'match' if req == (dx, dy) else ('mismatch' if req else 'no-request')
+        self.stats[state] += 1
+        rec = {'tag': 'MOVE-CHECK', 'id': '0087', 'src': [sx, sy], 'dst': [dx, dy],
+               'req': list(req) if req else None, 'match': req == (dx, dy)}
+        if self.log:
+            self.log.write(rec)
+        self.last_walk = None                      # each 0087 confirms at most one walk
+        return rec

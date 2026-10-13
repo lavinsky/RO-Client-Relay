@@ -30,10 +30,8 @@ from relay.actors import ActorDecrypt, valid_actor                          # no
 from relay.agent import gadget_ports, pick_port                             # noqa: F401
 from relay.cli import main
 from relay.console import show                                              # noqa: F401
-from relay.inject import InjectError, SendInjector                          # noqa: F401
-from relay.memory import ProcessMemoryWriter                                # noqa: F401
-from relay.moves import MoveTracker, pack_move, unpack_pos2                 # noqa: F401
-from relay.packets import WireFilter, load_lengths                          # noqa: F401
+from relay.packets import (MoveTracker, WireFilter, load_lengths,           # noqa: F401
+                           pack_move, unpack_pos2)
 from relay.relay import PacketAligner, Relay                                # noqa: F401
 from relay.research import ActorDiag, ActorProbe                            # noqa: F401
 from relay.safety import LOGIN_SOCK, redact_login, sanitize                 # noqa: F401

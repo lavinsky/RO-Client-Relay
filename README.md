@@ -28,9 +28,9 @@ quadros "S"; `035f` (andar) e os não recuperados são descartados (as coordenad
 `0087` em texto claro do servidor). Credenciais são redigidas (`safety.py`).
 
 **Escrita (opcional, para teste em servidor próprio).** Os pacotes que o consumidor devolve podem
-sair pelo cliente de três formas (ver `ARCHITECTURE.md` §6): chamando a função de envio do próprio
-cliente (`--inject-call`), substituindo o corpo de um pacote do cliente no ponto de parada da
-cifragem, ou escrevendo direto na fila (só para cliente sem cifragem).
+sair pelo cliente de duas formas, combináveis por id (ver `ARCHITECTURE.md` §6): substituindo o
+corpo de um pacote que o próprio cliente monta no ponto de parada da cifragem (`035f`/andar), e/ou
+chamando a função de envio do próprio cliente (`--inject-call`, para `0437`/`0438`).
 
 ## Requisitos
 
@@ -81,19 +81,19 @@ O fluxo passa pelo pacote `relay/` nesta ordem:
 |---|---|
 | `protocol` | formatos das mensagens trocadas com o agente (`relay_hook_linux.js`) |
 | `agent` | conexão Frida: acha o gadget, carrega o agente, posta mensagens |
-| `packets` | tabela de tamanhos + `WireFilter` (separa o fluxo TCP em pacotes) |
+| `packets` | tabela de tamanhos + `WireFilter` (separa o fluxo TCP em pacotes) + movimento (`pack_move`, `MoveTracker` do `0087`) |
 | `actors` | `ActorDecrypt`: preenche os corpos cifrados de `09fd`/`09ff` da memória do cliente |
 | `sendwatch` | recupera o texto claro dos pacotes cifrados de envio |
 | `wire_feed` | pipeline padrão: trechos RECV → fluxo ordenado e preenchido |
 | `relay` | enquadramento XKore + conexão com o consumidor |
-| `inject` | escrita bruta de pacotes na fila (clientes sem cifragem) |
-| `moves` | decodifica o destino do movimento do `0087` (texto claro) do servidor |
+| `writeback` | caminho de escrita: merge (`035f`) + `SendPacket` (`0437`/`0438`) + autodescoberta + rastreio |
 | `safety` | redação de credenciais e a checagem de HTTP |
 | `console` | log JSONL redigido + linhas de console |
-| `memory` | leitura/escrita de `/proc/<pid>/mem` (nunca pausa o jogo) |
+| `memory` | leitura de `/proc/<pid>/mem` (nunca pausa o jogo) |
 | `research` | ferramentas de pesquisa (`--probe-actors` / `--actor-diag`) |
 | `runtime` | `Capture`: monta os componentes e roteia as mensagens |
-| `cli` | opções, config, threads |
+| `config` | lê `relay_capture.conf` como defaults |
+| `cli` | opções, threads, `main` |
 
 O agente Frida é `relay_hook_linux.js`. Veja `ARCHITECTURE.md` para o mapa completo, as
 descobertas de engenharia reversa (endereços, caminhos de envio, estado da cifragem) e as

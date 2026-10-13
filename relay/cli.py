@@ -6,57 +6,13 @@ import sys
 
 from . import ROOT
 from .agent import Agent, pick_port, pid_of_port
+from .config import DEFAULT_CONFIG, load_config_defaults
 from .console import CaptureLog
 from .packets import WireFilter, load_lengths
 from .relay import Relay
 from .runtime import Capture
 
 DEFAULT_LENGTHS = os.path.join(ROOT, 'uaro_recvpackets.txt')
-DEFAULT_CONFIG = os.path.join(ROOT, 'relay_capture.conf')
-
-
-def _config_value(act, val):
-    """Convert a config string to the type the option expects (bool / int / float / str)."""
-    if isinstance(act, (argparse._StoreTrueAction, argparse._StoreFalseAction,
-                        argparse.BooleanOptionalAction)):
-        s = val.strip().lower()
-        if s in ('1', 'true', 'yes', 'on'):
-            return True
-        if s in ('0', 'false', 'no', 'off'):
-            return False
-        raise ValueError(val)
-    if act.type in (int, float):
-        return act.type(val)
-    return val
-
-
-def load_config_defaults(parser, path):
-    """Use an INI file's [capture] section as argparse defaults, so the script runs with no launch
-    options. Precedence: built-in defaults < config file < command line. A missing/!unreadable file
-    is ignored (built-in defaults stand). Keys are long option names (dashes or underscores)."""
-    import configparser
-    cp = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
-    try:
-        if not cp.read(path) or not cp.has_section('capture'):
-            return
-    except configparser.Error as e:
-        print(f'[!] ignoring config {path}: {e}')
-        return
-    by_name = {opt[2:].replace('-', '_'): act          # --relay-format -> relay_format
-               for act in parser._actions for opt in act.option_strings if opt.startswith('--')}
-    defaults = {}
-    for key, val in cp.items('capture'):
-        act = by_name.get(key.replace('-', '_'))
-        if act is None:
-            print(f'[!] config: unknown setting "{key}" (ignored)')
-            continue
-        try:
-            defaults[act.dest] = _config_value(act, val)
-        except ValueError:
-            print(f'[!] config: bad value for "{key}": {val!r} (ignored)')
-    if defaults:
-        parser.set_defaults(**defaults)
-        print(f'[*] config: loaded {len(defaults)} settings from {path} (CLI options override these)')
 
 
 def parse_args(argv=None):
@@ -105,14 +61,12 @@ def parse_args(argv=None):
                          '"auto" = the recv-ring block ActorDecrypt finds at runtime (the queue lives there)')
     ap.add_argument('--inject', action=argparse.BooleanOptionalAction, default=False,
                     help='WRITE path (off by default): take the packets the consumer sends back '
-                         '(XKore "S" frames) and inject them so the client transmits them. '
-                         'For a client/server you control. With --scramble-bp, each packet\'s body '
-                         'is substituted at the scrambler BP (pre-XOR, one-shot) so the client\'s own '
-                         'scrambler encrypts it - the correct path for encrypted ids (035f/0437/0438). '
-                         'Without --scramble-bp it writes straight into the send queue via '
-                         '/proc/<pid>/mem (same block as --send-watch; --send-queue to override).')
-    ap.add_argument('--inject-dry-run', action='store_true',
-                    help='--inject: log what would be written (INJECT-DRY) without touching the client')
+                         '(XKore "S" frames) and have the client transmit them. For a client/server '
+                         'you control. With --scramble-bp, each packet\'s body is substituted at the '
+                         'scrambler BP (pre-XOR, one-shot) so the client\'s own scrambler encrypts it '
+                         '- the correct path for 035f. Combine with --inject-call to route 035f by the '
+                         'merge and 0437/0438 by the client SendPacket. Without --scramble-bp the '
+                         'scrambler is auto-discovered at runtime (needs --send-watch).')
     ap.add_argument('--inject-call', action=argparse.BooleanOptionalAction, default=False,
                     help='SPONTANEOUS injection (no client packet replaced): call the client\'s own '
                          'SendPacket(this,len,buf) with each consumer "S" packet, so the client builds, '
@@ -177,9 +131,6 @@ def parse_args(argv=None):
     ap.add_argument('--scramble-range', default='',
                     help='--scramble-bp: hex LO-HI; only act when the pointer is in this range (e.g. the stack '
                          'region for 035f, to skip the shared primitive\'s recv-decrypt hits)')
-    ap.add_argument('--inject-walk', default='',
-                    help='--scramble-bp: "X,Y[,DIR]" to inject as the move body (LIVE). Omit = DRY '
-                         '(log the slot bytes + registers, write nothing)')
     ap.add_argument('--feed-dump', default='',
                     help='append every framed byte sent to the consumer to this file (offline replay)')
     pre, _ = ap.parse_known_args(argv)                 # find --config first, then fold it in as defaults
@@ -264,6 +215,10 @@ def main(argv=None):
     def _on_term(signum, frame):                       # pkill/SIGTERM -> same clean path as Ctrl-C,
         raise KeyboardInterrupt                         # so the finally still runs agent.unload() ->
     signal.signal(signal.SIGTERM, _on_term)             # dispose() clears the debug registers
+
+    def _on_usr1(signum, frame):                       # re-arma o trace sob demanda (abrir a janela
+        capture.arm_trace()                             # na hora de clicar; repetir sem reiniciar)
+    signal.signal(signal.SIGUSR1, _on_usr1)
 
     try:
         sys.stdin.read()                               # hold stdin open (tail -f /dev/null | ...)

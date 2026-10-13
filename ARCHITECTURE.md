@@ -56,8 +56,8 @@ Um arquivo só (o Frida carrega um script). Seções, de cima para baixo:
 | ring de recepção | O driver avisa onde está a região de recepção (`{type:'ring'}`). **hook recvmsg**: na entrada manda uma **RINGSNAP** (cópia tirada antes do próximo trecho chegar); na saída manda **RECV** com os bytes e uma cópia de *antes* de o cliente decifrar. |
 | acompanhamento da fila | Desligado até o driver pedir (`{type:'sendwatch'}`). Mantém os 4 registradores de depuração sobre a próxima posição da fila; `swTrap` registra cada escrita. Recupera o texto claro de `0437`/`0438`. |
 | envio | **hook sendmsg**: manda **SEND**; para envios da fila com o acompanhamento ligado, anexa a janela de escritas `W` e move o acompanhamento para `buf + len`. |
-| ponto de parada da cifragem | Desligado até `{type:'scramble'}`. Um **breakpoint de execução** (DR0) sobre o *store* byte a byte da cifragem; enquanto a posição ainda tem o texto claro, o manipulador localiza a posição do pacote (por registrador nomeado, ou `reg:'auto'` casando o id) e, em modo de escrita, **substitui o corpo** — então a própria cifragem do cliente cifra os bytes fornecidos. Modos de leitura: relatório (dry), passeio de pilha (`--send-probe`), captura de argumentos na entrada (`--probe-entry`/`--probe-at`). Corpos por id chegam por `{type:'scramble-set'}`, usados uma vez ou mantidos (`persist`). Compartilha os registradores de depuração com o acompanhamento da fila (um ou outro). |
-| chamada de envio (`sendcall`) | Desligado até `{type:'sendcall'}`. Captura `this` do `SendPacket` do cliente uma vez (breakpoint de hardware, sem alterar código), monta um `NativeFunction` e, para cada pacote do consumidor (`{type:'sendcall-emit'}`), chama `SendPacket(this, len, buf)` **na thread do jogo** (drenado a partir dos hooks de recv/send). |
+| ponto de parada da cifragem | Desligado até `{type:'scramble'}`. Um **breakpoint de execução** (DR0) sobre o *store* byte a byte da cifragem; enquanto a posição ainda tem o texto claro, o manipulador localiza a posição do pacote (por registrador nomeado, ou `reg:'auto'` casando o id) e, em modo de escrita, **substitui o corpo** — então a própria cifragem do cliente cifra os bytes fornecidos. Modos de leitura: relatório (dry), passeio de pilha (`--send-probe`), captura de argumentos na entrada (`--probe-entry`/`--probe-at`). Corpos por id chegam por `{type:'scramble-set'}`, usados uma vez (padrão) ou mantidos (`persist`). Usa o **DR0**; o acompanhamento da fila usa os 4 registradores (um ou outro). A captura do `sendcall` usa o **DR1** — por isso o merge e a chamada de envio **coexistem** (ver §6). |
+| chamada de envio (`sendcall`) | Desligado até `{type:'sendcall'}`. Captura `this` do `SendPacket` do cliente uma vez com um breakpoint de execução **no DR1** (`scrCall`, sem alterar código), independente do merge do `035f` no DR0, que segue armado. Depois de capturado, monta um `NativeFunction` e, para cada pacote do consumidor (`{type:'sendcall-emit'}`), chama `SendPacket(this, len, buf)` **na thread do jogo** (drenado a partir dos hooks de recv/send). |
 | rastreio (Stalker) | Desligado até `{type:'trace'}`. Segue a thread principal por uma janela curta e registra chamadas (teste de sobrevivência; ou `uaRO→gepard`; ou `uaRO→uaRO`). Para achar a cadeia **viva** de chamadas (o passeio de pilha só dá quadros obsoletos). `codeRanges`/`codeAt` resolvem endereços contra as faixas mapeadas, incluindo o **código anônimo** do uaRO (ver §9). |
 | log inicial | Onde `gepard.dll` está carregada; manda **GEPARD** (base) para o driver resolver `gepard+off`. |
 
@@ -152,15 +152,26 @@ cliente/servidor próprio, desligadas por padrão.
 1. **Chamar a função de envio do cliente** (`--inject-call`) — espontâneo, não troca nenhum
    pacote do cliente. O driver chama o `SendPacket(this, len, buf)` do próprio cliente, que
    monta, cifra e envia pelo caminho normal. `this` é capturado uma vez com um breakpoint de
-   hardware (sem alterar código); a chamada é feita na thread do jogo. **Funciona** para os
-   pacotes da fila (`0437`/`0438`). Endereço: `uaRO.exe+0x816640` (ver §9).
-2. **Substituir o corpo no ponto de parada da cifragem** (`--inject` + `--scramble-bp`;
-   `--inject-persist`) — troca o corpo de um pacote que **o próprio cliente monta**, antes do
-   XOR, então a cifragem do cliente cifra os bytes fornecidos. Uma vez por pacote, ou mantido
-   (substitui toda ação igual). É o caminho certo quando o cliente inicia a ação (ver §10,
-   método 1 para o `035f`).
+   execução no DR1 (sem alterar código); a chamada é feita na thread do jogo. **Funciona** para
+   os pacotes da fila (`0437`/`0438`): atacar, sentar, levantar, perícia. **Não serve para o
+   `035f`** (andar), que tem caminho próprio — mandá-lo por aqui dessincroniza a cifra (ver §10).
+   Endereço: `uaRO.exe+0x816640` (ver §9).
+2. **Substituir o corpo no ponto de parada da cifragem** (`--inject` + `--scramble-bp`) — troca o
+   corpo de um pacote que **o próprio cliente monta**, antes do XOR, então a cifragem do cliente
+   cifra os bytes fornecidos. **Uso único por padrão** (substitui o próximo pacote igual e devolve
+   o controle ao cliente); `--inject-persist` mantém (substitui toda ação igual — uma armadilha
+   para o `035f`, ver §10). É o caminho certo quando o cliente inicia a ação (ver §10, método 1
+   para o `035f`).
 3. **Escrita bruta na fila** (`inject.SendInjector`, via `memory.ProcessMemoryWriter`) — escreve
    direto na fila. Só vale para um cliente **sem cifragem** (os bytes não passam pela cifragem).
+
+**Modo combinado (recomendado para o debug completo das ações):** com `--inject-call` **e**
+`--scramble-bp` juntos, o driver roteia por id (`runtime._on_inbound_split`): o `035f` vai pelo
+caminho 2 (merge, DR0) e as demais ações pelo caminho 1 (`SendPacket`, DR1). Como os dois usam
+registradores de depuração distintos, coexistem. Invocação de referência:
+
+    --inject-call --scramble-bp 18eff2 --scramble-reg auto --scramble-id 035f \
+    --scramble-range 2632000-2730000
 
 Cuidados: `--feed-send` é desligado automaticamente com `--inject` (senão os envios do próprio
 cliente voltariam pelo consumidor e seriam reenviados em laço). `SIGTERM`/Ctrl-C fazem o
@@ -233,8 +244,11 @@ agente resolve contra as faixas mapeadas (regiões anônimas de código baixo, `
 ## 10. O caso do `035f` (andar) — situação e método 1
 
 **Descobertas:**
-- O `035f` é cifrado na **pilha**, por um caminho próprio (não a fila). Reenviá-lo pela fila
-  (`SendPacket`) **dessincroniza** o estado da cifragem (precisa relogar).
+- O `035f` é cifrado na **pilha**, por um caminho próprio (não a fila). Reenviá-lo pela
+  `SendPacket` **dessincroniza** o estado da cifragem (precisa relogar). **Confirmado ao vivo em
+  2026-10-13:** rodando só com `--inject-call` (035f também pela `SendPacket`), o personagem **não
+  andou** e a cifra dessincronizou a ponto de travar até `0437`/`0438` até o relogin. É um beco sem
+  saída — o `035f` só sai correto pelo caminho de pilha do próprio cliente.
 - O envio do `035f` sai de `uaRO+0x9463b0`, que **monta o pacote e usa um objeto de estado**
   (`ecx`), e é invocado pela VM do gepard — não é um `enviar(buf,len)` simples.
 - Subindo a cadeia (via Stalker, confiável): `uaRO+0x873a80 → +0x875400 → API gepard`.
@@ -243,12 +257,21 @@ agente resolve contra as faixas mapeadas (regiões anônimas de código baixo, `
   **cedo** (perto do manipulador do clique). Um `andar(x,y)` limpo está mais acima na cadeia e
   exige mais sondas (caminho grande e ofuscado).
 
-**Método 1 (escolhido):** em vez de um `andar(x,y)` espontâneo, usar o caminho 2 (§6) para o
+**Método 1 (em uso):** em vez de um `andar(x,y)` espontâneo, usar o caminho 2 (§6) para o
 `035f`: quando **o próprio cliente** monta um `035f`, substituir os 3 bytes de destino pelos do
 consumidor, no ponto de parada da cifragem (faixa = pilha), antes do XOR. Mantém o canal e o
-estado da cifragem idênticos (**sem dessincronizar**). Limitação: o cliente precisa **iniciar**
-o andar (não é tão autônomo quanto o `0437`). Usa a maquinaria já existente (§6, caminho 2);
-o id fica em `ecx-2`, o corpo (3 bytes = `pack_move(x,y,dir)`) em `ecx`.
+estado da cifragem idênticos (**sem dessincronizar**). Usa a maquinaria já existente (§6, caminho
+2); o id fica em `ecx-2`, o corpo (3 bytes = `pack_move(x,y,dir)`) em `ecx`. **Uso único** (não
+`persist`): substitui só o próximo `035f` e devolve o controle ao cliente — se mantido, todo andar
+do cliente (inclusive o andar-até-o-alvo de um ataque e o passo de sentar/levantar) seria
+redirecionado.
+
+**Validado ao vivo (2026-10-13), modo combinado (§6):** andar, sentar, levantar e perícia pelo
+consumidor funcionam. **Limitação central:** o merge é **reativo** — só substitui quando o próprio
+cliente monta um `035f` (um clique seu). Não há como o consumidor andar **sozinho**, e por isso o
+**ataque autônomo não funciona**: atacar exige andar até o alvo primeiro, e esse andar só sairia de
+um clique (que cancelaria o ataque). Resolver isso é o próximo passo (§13): achar e chamar a função
+de movimento do cliente para **disparar** um `035f` espontâneo pelo caminho de pilha correto.
 
 ---
 
@@ -280,10 +303,22 @@ Cobrem `WireFilter`, `ActorDecrypt.settle`, `SendWatch`/`plaintext_guess`, `Move
 
 ## 13. Pendências e próximos passos
 
-- **Método 1 (em andamento):** substituir as coordenadas de destino do `035f` do próprio cliente
-  (§10) — reenvio de andar confiável, sem dessincronizar.
-- **`andar(x,y)` espontâneo:** exigiria subir mais na cadeia do clique (`uaRO+0x873a80` e acima)
-  até a função que recebe `(x,y)` crus; aberto, várias sondas de distância.
+- **Método 1 (feito, validado):** substituição de uso único das coordenadas do `035f` do próprio
+  cliente (§10) — reenvio de andar confiável, sem dessincronizar; coexiste com a `SendPacket` (§6).
+- **Movimento autônomo / ataque (próximo passo, o bloqueio central):** o merge é reativo (precisa
+  de um clique). Para o ataque funcionar é preciso **disparar** um `035f` espontâneo pelo caminho
+  de pilha correto. Plano: **não** mandar `035f` pela `SendPacket` (confirmado que dessincroniza,
+  §10); em vez disso, achar e chamar a função de movimento do cliente que o clique aciona — algo
+  como `pedirMover(x,y)`/`onClickMove` — que internamente monta o `035f` no caminho certo. Pontos
+  de partida já mapeados (§9/§10): a cadeia `uaRO+0x873a80 → +0x875400 → +0x9463b0` (envio do
+  `035f`). `+0x875400` recebe um **objeto de movimento** (posição já empacotada), então a função
+  que recebe `(x,y)` crus está **mais acima**, perto do manipulador do clique. Método sugerido:
+  Stalker (`--trace-internal`, comparando parado vs. um clique de andar para isolar as arestas do
+  andar) e sondas de entrada (`--probe-at`) nos candidatos para achar a assinatura; depois chamar
+  por `NativeFunction` com o `this` certo, como se faz com a `SendPacket`. Cuidado: Stalker em
+  código do gepard é arriscado — janelas curtas, começar pelo teste de sobrevivência.
 - **Latência (~700 ms)** na chamada de envio (`--inject-call`): a drenagem só ocorre nos hooks de
-  recv/send; um ponto de drenagem mais frequente na thread do jogo reduziria.
+  recv/send (`relay_hook_linux.js` linhas ~144 e ~693), então uma ação só dispara quando o cliente
+  envia ou recebe algo. Um ponto de drenagem mais frequente na thread do jogo (um tick/frame)
+  reduziria — mas a chamada **precisa** sair na thread do jogo, não na thread JS.
 - O passeio de pilha é pouco confiável (quadros obsoletos); preferir Stalker para mapear.

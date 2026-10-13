@@ -12,7 +12,7 @@ from .packets import WireFilter, load_lengths
 from .relay import Relay
 from .runtime import Capture
 
-DEFAULT_LENGTHS = os.path.join(ROOT, 'uaro_recvpackets.txt')
+DEFAULT_LENGTHS = os.path.join(ROOT, 'data', 'uaro_recvpackets.txt')
 
 
 def parse_args(argv=None):

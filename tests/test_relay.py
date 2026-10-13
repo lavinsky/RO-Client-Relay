@@ -1,9 +1,7 @@
 """Offline test: Relay deframes the consumer's inbound 'S' frames into whole packets, even when a
 frame is split across two reads."""
-import importlib.util, os, threading
-HERE = os.path.dirname(os.path.abspath(__file__))
-sp = importlib.util.spec_from_file_location('g', os.path.join(HERE, 'relay_capture_linux.py'))
-g = importlib.util.module_from_spec(sp); sp.loader.exec_module(g)
+import threading
+from _boot import g
 
 r = g.Relay.__new__(g.Relay)                                     # no socket/thread; exercise deframing only
 r.fmt, r._in, r.lock = 'xkore1', b'', threading.Lock()

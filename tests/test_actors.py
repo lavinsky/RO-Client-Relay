@@ -3,10 +3,8 @@ synthetic recv ring that also holds stale copies; drops it when unverifiable.
 Covers the 'score' rule (cleartext context), the 'fresh' rule (slot changed after arrival),
 the chained ring layout for chunks that continue a partial packet, and the closed-socket cutoff
 (a read taken after the next chunk arrived must never be used)."""
-import importlib.util, os, random, struct, collections, threading
-HERE = os.path.dirname(os.path.abspath(__file__))
-sp = importlib.util.spec_from_file_location('g', os.path.join(HERE, 'relay_capture_linux.py'))
-g = importlib.util.module_from_spec(sp); sp.loader.exec_module(g)
+import random, struct, collections, threading
+from _boot import g
 random.seed(1)
 
 def actor(name, aid):

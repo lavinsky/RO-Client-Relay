@@ -18,7 +18,7 @@ Dois programas cooperam:
 
 | Programa | Onde roda | Função |
 |---|---|---|
-| **Agente**, `relay_hook_linux.js` | dentro do processo do jogo, via Frida Gadget | Observa cada leitura/escrita de socket (hooks de `recvmsg`/`sendmsg` da libc). Opcionalmente copia a região de recepção, acompanha a fila de envio, e executa as ações de pesquisa/escrita que o driver pedir. Faz o mínimo dentro do jogo. |
+| **Agente**, `agent/relay_hook_linux.js` | dentro do processo do jogo, via Frida Gadget | Observa cada leitura/escrita de socket (hooks de `recvmsg`/`sendmsg` da libc). Opcionalmente copia a região de recepção, acompanha a fila de envio, e executa as ações de pesquisa/escrita que o driver pedir. Faz o mínimo dentro do jogo. |
 | **Driver**, `relay_capture_linux.py` → pacote `relay/` | processo Python normal, fora do jogo | Recebe os relatos do agente, monta um fluxo ordenado de pacotes em texto claro, preenche os poucos trechos cifrados lendo as cópias já decifradas da memória do cliente (`/proc/<pid>/mem`, somente leitura), e entrega ao consumidor. |
 
 ```
@@ -33,6 +33,22 @@ Dois programas cooperam:
           └─────────────────────────────────────────────────┘
 ```
 
+### 1.1 Estrutura do repositório
+
+```
+relay_capture_linux.py   ponto de entrada (reexporta nomes para os testes)
+relay_capture.conf       config opcional (seção [capture])
+setup.sh / run.sh        instala o ambiente (venv, gadget Frida) / roda o driver
+requirements.txt
+agent/                   o agente Frida (um arquivo .js)
+data/                    tabela de tamanhos de pacote (uaro_recvpackets.txt)
+relay/                   o pacote do driver — um módulo por responsabilidade (§3.1)
+  resources/             gadget Frida baixado pelo setup.sh (não versionado)
+tests/                   um teste por módulo (§12); _boot.py + fixtures/
+README.md                como instalar e rodar
+ARCHITECTURE.md          este documento
+```
+
 Por padrão o driver **não escreve** no jogo e nada do que produz chega ao servidor; o que o
 consumidor devolve é lido e descartado. As opções de **escrita** (§6) são o oposto: fazem os
 pacotes que o consumidor devolve (quadros XKore "S") saírem pelo cliente. São para um
@@ -45,7 +61,7 @@ o processo (o handler de SIGSEGV do Wine morre no `%gs` TLS zerado).
 
 ---
 
-## 2. O agente (`relay_hook_linux.js`)
+## 2. O agente (`agent/relay_hook_linux.js`)
 
 Um arquivo só (o Frida carrega um script). Seções, de cima para baixo:
 
@@ -293,12 +309,23 @@ aponta outro arquivo. Carregar o gadget: opção de inicialização do Steam
 ## 12. Testes (offline, sem o cliente)
 
 ```sh
-for t in test_*.py; do python3 "$t"; done
+for t in tests/test_*.py; do python3 "$t" || break; done
 ```
 
-Cobrem `WireFilter`, `ActorDecrypt.settle`, `SendWatch`/`plaintext_guess`, `MoveTracker`,
-`SendInjector` + o enquadramento do `Relay`, e o contrato de mensagens da escrita
-(`scramble_set_msg`, `scramble_msg`, `_on_inbound_scramble`, `_autodiscover_scramble`).
+Ficam em `tests/`, um por módulo, rodam como scripts e imprimem `ALL PASS`. `tests/_boot.py`
+põe a raiz no `sys.path`, carrega o ponto de entrada como `g` e aponta `FIXTURES`/`DATA`; os
+dados gravados ficam em `tests/fixtures/`.
+
+| teste | o que cobre |
+|---|---|
+| `test_packets` | `WireFilter` (bordas, corpos cifrados, lista de descarte, id desconhecido, remontagem) + `MoveTracker`/`pack_move` |
+| `test_actors` | `ActorDecrypt.settle` (regras de score/fresh, cadeia, corte de socket fechado) |
+| `test_relay` | desenquadramento dos quadros `S` do consumidor, inclusive cortados |
+| `test_integration` | fluxo ponta-a-ponta sobre socket real: alinhamento, descarte, remontagem e o caminho de escrita |
+| `test_sendwatch` | `SendWatch` recupera texto claro das janelas reais do breakpoint; descarta o que não é envio plausível |
+| `test_writeback` | contrato de mensagens e roteamento da escrita (`_on_inbound_scramble`/`_split`/`_sendcall`, `_autodiscover_scramble`) |
+| `test_safety` | a fronteira de credenciais (`redact_login`, `client_packet_to_feed`, `looks_like_http`, `sanitize`) |
+| `test_config` | precedência da config (defaults < arquivo < CLI) e coerção de tipo |
 
 ---
 

@@ -102,7 +102,7 @@ O fluxo passa pelo pacote `relay/` nesta ordem:
 
 | Módulo | Papel |
 |---|---|
-| `protocol` | formatos das mensagens trocadas com o agente (`relay_hook_linux.js`) |
+| `protocol` | formatos das mensagens trocadas com o agente (`agent/relay_hook_linux.js`) |
 | `agent` | conexão Frida: acha o gadget, carrega o agente, posta mensagens |
 | `packets` | tabela de tamanhos + `WireFilter` (separa o fluxo TCP em pacotes) + movimento (`pack_move`, `MoveTracker` do `0087`) |
 | `actors` | `ActorDecrypt`: preenche os corpos cifrados de `09fd`/`09ff` da memória do cliente |
@@ -118,14 +118,21 @@ O fluxo passa pelo pacote `relay/` nesta ordem:
 | `config` | lê `relay_capture.conf` como defaults |
 | `cli` | opções, threads, `main` |
 
-O agente Frida é `relay_hook_linux.js`. Veja `ARCHITECTURE.md` para o mapa completo, as
+O agente Frida é `agent/relay_hook_linux.js`. Veja `ARCHITECTURE.md` para o mapa completo, as
 descobertas de engenharia reversa (endereços, caminhos de envio, estado da cifragem) e as
 pendências.
 
 ## Testes
 
-Testes offline (sem o cliente), contra dados gravados:
+Testes offline (sem o cliente), contra dados gravados. Cada arquivo roda como script e
+imprime `ALL PASS` ao final:
 
 ```sh
-for t in test_*.py; do python3 "$t"; done
+for t in tests/test_*.py; do python3 "$t" || break; done
 ```
+
+Um teste por módulo: `test_packets` (tokenização do stream + andar), `test_actors`
+(decifra os corpos de ator), `test_relay` / `test_integration` (enquadramento e fluxo
+ponta-a-ponta sobre socket), `test_sendwatch` (recupera texto claro dos envios),
+`test_writeback` (o caminho de escrita e seu roteamento por id), `test_safety`
+(a fronteira de credenciais) e `test_config` (a precedência da config).

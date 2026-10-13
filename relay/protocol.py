@@ -53,14 +53,24 @@ def sendwatch_msg(lo=None, hi=None, ports=(MAP_PORT,)):
 
 
 def scramble_msg(off=None, reg='edi', pid=None, body=None, dry=True, idoff=0, lo=None, hi=None,
-                 persist=False):
+                 persist=False, probe=False, entry=False, pc=None):
     """Arm (or clear, with off=None and body=None) a scramble-intercept breakpoint at gepard+off.
     body (hex) in LIVE mode is written over the slot body; dry logs only. idoff: id position relative
     to the pointer. lo/hi: only act when the pointer is in [lo, hi). persist (--inject merge): keep
-    each consumer body and replace EVERY matching client action, instead of consuming it (one-shot)."""
-    if off is None and body is None:
+    each consumer body and replace EVERY matching client action, instead of consuming it (one-shot).
+    probe (--send-probe): one-shot, read-only - on the first recognised send capture the registers and
+    a stack walk of return addresses (to find the client's callable send routine), then disarm."""
+    if off is None and pc is None and body is None and not probe:
         return {'type': 'scramble'}
-    m = {'type': 'scramble', 'off': off, 'reg': reg, 'dry': dry, 'idoff': idoff, 'persist': persist}
+    m = {'type': 'scramble', 'reg': reg, 'dry': dry, 'idoff': idoff, 'persist': persist}
+    if pc is not None:                 # absolute breakpoint address (e.g. unpacked client code in anon memory)
+        m['pc'] = hex(pc)
+    else:                              # offset from gepard.dll base (resolved agent-side)
+        m['off'] = off
+    if probe:
+        m['probe'] = True
+    if entry:
+        m['entry'] = True          # probe a function ENTRY: capture on first hit, dump stack + arg derefs
     if pid is not None:
         m['id'] = pid
     if body is not None:
@@ -75,6 +85,21 @@ def scramble_set_msg(pid, body=None):
     the scramble BP sees it, then forget it (one-shot). body=None clears a pending substitution.
     The id itself is left as the client built it; only the body (at idoff+2) is overwritten."""
     return {'type': 'scramble-set', 'id': pid, 'body': body}
+
+
+def sendcall_msg(rva=None, module='uaRO.exe'):
+    """Call-based injection: arm (rva given) or disarm (rva=None) the client's SendPacket caller.
+    rva is the offset from `module`'s base to SendPacket(this, len, buf); the agent resolves the base
+    and captures `this` with a one-shot hardware breakpoint, then call-injects on the game thread."""
+    if rva is None:
+        return {'type': 'sendcall'}
+    return {'type': 'sendcall', 'rva': rva, 'module': module}
+
+
+def sendcall_emit_msg(data_hex):
+    """Call-based injection: hand the agent one whole client->server packet (hex) to transmit via
+    SendPacket. Queued and sent on the game thread; nothing here replaces a client packet."""
+    return {'type': 'sendcall-emit', 'data': data_hex}
 
 
 def conn_of(m):

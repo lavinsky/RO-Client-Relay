@@ -120,10 +120,34 @@ def parse_args(argv=None):
                          '/proc/<pid>/mem (same block as --send-watch; --send-queue to override).')
     ap.add_argument('--inject-dry-run', action='store_true',
                     help='--inject: log what would be written (INJECT-DRY) without touching the client')
+    ap.add_argument('--inject-call', action=argparse.BooleanOptionalAction, default=False,
+                    help='SPONTANEOUS injection (no client packet replaced): call the client\'s own '
+                         'SendPacket(this,len,buf) with each consumer "S" packet, so the client builds, '
+                         'encrypts and sends it through its normal path. Captures `this` once via a '
+                         'hardware breakpoint and calls on the game thread. For a client you own.')
+    ap.add_argument('--sendpacket-rva', default='816640',
+                    help='--inject-call: hex RVA of SendPacket(this,len,buf) from the client EXE base '
+                         '(default 0x816640, discovered for this uaRO build). Resolved against --sendpacket-module.')
+    ap.add_argument('--sendpacket-module', default='uaRO.exe',
+                    help='--inject-call: the module whose base --sendpacket-rva is relative to.')
     ap.add_argument('--inject-persist', action=argparse.BooleanOptionalAction, default=False,
                     help='--inject + --scramble-bp: keep each consumer packet and replace EVERY matching '
                          'client action of that id (persistent hijack), instead of one-shot per packet. '
                          'Clear by stopping the driver or sending an empty body.')
+    ap.add_argument('--send-probe', action='store_true',
+                    help='--inject research (read-only): instead of injecting, arm a one-shot breakpoint '
+                         'on the scrambler store and, on the first 0437/0438 send, capture the registers '
+                         'and a stack walk of return addresses (module+offset + nearest prologue), then '
+                         'disarm. Maps the client send routine for call-based injection (logs SCRAMBLE/probe).')
+    ap.add_argument('--probe-entry', default='',
+                    help='research (read-only): hex OFFSET from gepard.dll base of a function entry. Arms a '
+                         'one-shot breakpoint there and, on the first call, captures the registers, the top '
+                         'of the stack (args/return addr) and the bytes each points at, then disarms. Used to '
+                         'learn a send routine\'s calling convention (logs SCRAMBLE/entry).')
+    ap.add_argument('--probe-at', default='',
+                    help='research (read-only): like --probe-entry but an ABSOLUTE hex address (for unpacked '
+                         'client code in anonymous memory, not gepard-relative). With --scramble-range it only '
+                         'fires on a call whose args reference a 0437/0438 in that range.')
     ap.add_argument('--scramble-bp', default='',
                     help='scramble-intercept (injects a valid encrypted client->server packet): hex OFFSET '
                          'from gepard.dll base of the scrambler store. A hardware exec breakpoint there '
@@ -223,6 +247,7 @@ def main(argv=None):
     agent.load()                                       # messages start flowing here
     capture.update_send_watch()
     capture.arm_scramble()                             # exec breakpoint at gepard+off, if --scramble-bp
+    capture.arm_sendcall()                             # capture SendPacket `this`, if --inject-call
     if capture.send_watch_waiting:
         print('[*] send watch: waiting for the recv ring to locate the send queue')
     print(f'[*] capturing -> {a.out}  (Ctrl-C to stop)')

@@ -30,8 +30,33 @@ def show(m):
             print(f"           regs: {ptrs}")
             print(f"           stack: {stk}")
             print(f"           nearest prologue (candidate entry): {ent_s}")
+        elif m.get('hit') == 'entry':
+            rm = m.get('regmem') or {}
+            print(f"[entry] args at {m.get('pc')}:")
+            print("        regs: " + ' '.join(f"{r}={v}" + (f"->{rm[r]}" if rm.get(r) else '')
+                                               for r, v in (m.get('regs') or {}).items()))
+            for s in (m.get('stack') or []):
+                code = f" [{s['code']}]" if s.get('code') else ''
+                mem = f" ->{s['mem']}" if s.get('mem') else ''
+                print(f"        [esp+{s.get('off')}] {s.get('val')}{code}{mem}")
+        elif m.get('hit') == 'probe':
+            ptrs = ' '.join(f"{r}={v}" for r, v in (m.get('regs') or {}).items())
+            print(f"[probe] send mapped: id={_pid(m.get('id'))} via {m.get('reg')} (idoff={m.get('idoff')}) slot={m.get('slot')}")
+            print(f"        regs: {ptrs}")
+            for f in (m.get('frames') or []):
+                e = f.get('entry')
+                ent = f" entry={e['mod']}+{e['off']}" if e else ''
+                print(f"        [{f.get('sp')}] {f.get('mod')}+{f.get('off')} (ret {f.get('ret')}){ent}")
         else:
             print(f"[scramble] (other id={_pid(m.get('id'))} @{m.get('slot')} body={m.get('body')})")
+    elif tag == 'SENDCALL':
+        hit = m.get('hit')
+        if hit == 'ready':
+            print(f"[sendcall] captured this={m.get('this')} @ {m.get('pc')} (call-inject armed)")
+        elif hit == 'sent':
+            print(f"[sendcall] SENT len={m.get('len')} {m.get('data','')[:48]}")
+        else:
+            print(f"[sendcall] {hit}: {m.get('e')}")
     elif tag == 'RECV-WIRE':
         print(f"[<= wire ] id=0x{i} len={m['len']:<4} conn={m.get('conn','?')} {m['C'][:48]}...")
     elif tag == 'RECV-LOST':

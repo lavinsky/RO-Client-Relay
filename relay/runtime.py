@@ -15,7 +15,7 @@ from .inject import InjectError, SendInjector
 from .legacy import LegacyPipeline
 from .memory import ProcessMemoryWriter
 from .moves import MoveTracker, pack_move
-from .protocol import scramble_msg, scramble_set_msg, sendwatch_msg
+from .protocol import scramble_msg, scramble_set_msg, sendcall_emit_msg, sendcall_msg, sendwatch_msg
 from .research import ActorDiag, ActorProbe
 from .sendwatch import SendWatch, send_queue_range
 from .wire_feed import ClientSendFeed, WireFeed
@@ -36,7 +36,24 @@ class Capture:
         self._sw_posted = None                         # (lo, hi) the send watch was last pointed at
         self._sw_lock = threading.Lock()
         self.gepard_base = None                        # gepard.dll base (from the GEPARD message)
-        self.scramble = self._scramble_cfg(opts)       # scramble-intercept config, or None
+        pe, pa = getattr(opts, 'probe_entry', ''), getattr(opts, 'probe_at', '')
+        if pe or pa:                                   # research: one-shot capture of a function's entry args
+            lo = hi = None                             # optional gate: only a call whose args hit this range
+            if getattr(opts, 'scramble_range', ''):
+                lo, hi = (int(x, 16) for x in opts.scramble_range.split('-'))
+            self.scramble = {'reg': 'auto', 'pid': int(opts.scramble_id, 16), 'body': None,
+                             'dry': False, 'idoff': 0, 'lo': lo, 'hi': hi, 'persist': False,
+                             'probe': True, 'entry': True}
+            if pa:                                     # absolute address (unpacked client code in anon memory)
+                self.scramble['pc'] = int(pa, 16)
+                where = f"0x{self.scramble['pc']:x}"
+            else:                                      # offset from gepard.dll base
+                self.scramble['off'] = int(pe, 16)
+                where = f"gepard+0x{self.scramble['off']:x}"
+            gate = f' gated to a 0437/0438 copy into 0x{lo:x}-0x{hi:x}' if lo is not None else ' (first call)'
+            print(f'[*] --probe-entry: one-shot capture of args at {where}{gate}, read-only')
+        else:
+            self.scramble = self._scramble_cfg(opts)   # scramble-intercept config, or None
         feed_send = bool(opts.feed_send and relay and opts.relay_format == 'xkore1')
         if feed_send and getattr(opts, 'inject', False):
             # feeding client->server packets to the consumer, which echoes them back as "S" frames,
@@ -49,8 +66,9 @@ class Capture:
             self.dec = ActorDecrypt(pid) if (opts.decrypt_actors and wire) else None
             probe = ActorProbe(pid) if (opts.probe_actors and wire) else None
             diag = ActorDiag(self.dec) if (self.dec and opts.actor_diag) else None
-            # scramble intercept and the full send watch both need the debug registers: scramble wins.
-            self.sendwatch = SendWatch() if (opts.send_watch and not self.scramble) else None
+            # scramble intercept, call-inject and the full send watch all need the debug registers.
+            uses_dbg = self.scramble or getattr(opts, 'inject_call', False)
+            self.sendwatch = SendWatch() if (opts.send_watch and not uses_dbg) else None
             if self.dec:
                 print(f'[*] --decrypt-actors: 09fd/09ff bodies from the client recv ring (hold <= {opts.actor_delay*1000:.0f}ms)')
                 self.dec.on_ring = self._on_ring_found
@@ -81,11 +99,20 @@ class Capture:
         # pre-XOR so the client's own scrambler encrypts them (the only correct timing); otherwise
         # SendInjector writes them straight into the send queue via /proc/<pid>/mem.
         self.injector = None
+        self.sendcall_rva = None                       # --inject-call: SendPacket RVA (set below)
         self.autodiscover = False                      # discovering the scrambler at runtime
         self._scramble_armed = self.scramble is not None
         self._disc_lock = threading.Lock()
         if getattr(opts, 'inject', False) and relay is not None:
-            if pid is None:
+            if getattr(opts, 'probe_entry', '') or getattr(opts, 'probe_at', ''):
+                pass                                   # the entry probe owns the breakpoint; no injection
+            elif getattr(opts, 'inject_call', False):
+                self.sendcall_rva = int(opts.sendpacket_rva, 16)
+                relay.on_inbound = self._on_inbound_sendcall
+                print(f'[*] --inject-call: consumer "S" packets -> client SendPacket(this,len,buf) '
+                      f'at {opts.sendpacket_module}+0x{self.sendcall_rva:x} (spontaneous; captures this, '
+                      f'calls on the game thread)')
+            elif pid is None:
                 print('[!] --inject needs the gadget-port process (pid) to write its memory; disabled')
             elif self.scramble:
                 relay.on_inbound = self._on_inbound_scramble
@@ -203,23 +230,30 @@ class Capture:
                 r = self._queue_range()                    # the recv-ring/send-queue block
                 lo, hi = (r[0], r[1]) if r else (None, None)
             persist = bool(getattr(self.opts, 'inject_persist', False))
+            probe = bool(getattr(self.opts, 'send_probe', False))
             pid = int(self.opts.scramble_id, 16)
             self.post(sendwatch_msg())                     # disarm the send watch (lo omitted = off)
             self.sendwatch = None
-            self.post(scramble_msg(store_off, 'auto', pid, None, False, 0, lo, hi, persist))
+            self.post(scramble_msg(store_off, 'auto', pid, None, False, 0, lo, hi, persist, probe=probe))
             self.scramble = {'off': store_off, 'reg': 'auto', 'pid': pid, 'body': None, 'dry': False,
-                             'idoff': 0, 'lo': lo, 'hi': hi, 'persist': persist}
+                             'idoff': 0, 'lo': lo, 'hi': hi, 'persist': persist, 'probe': probe}
             self._scramble_armed = True
         rng = f' range 0x{lo:x}-0x{hi:x}' if lo is not None else ' (id-match only, no range)'
-        print(f"[*] auto-discovered scrambler: store @ gepard+0x{store_off:x} (from {m['enc_off']}), "
-              f"reg=auto{rng}, {'persistent' if persist else 'one-shot'} inject armed")
+        if probe:
+            print(f"[*] --send-probe: one-shot breakpoint on the scrambler store @ gepard+0x{store_off:x} "
+                  f"(from {m['enc_off']}){rng}; captures the next 0437/0438 send's stack + registers")
+        else:
+            print(f"[*] auto-discovered scrambler: store @ gepard+0x{store_off:x} (from {m['enc_off']}), "
+                  f"reg=auto{rng}, {'persistent' if persist else 'one-shot'} inject armed")
 
     def arm_scramble(self):
         """Post the scramble breakpoint to the agent (gepard+off is resolved agent-side)."""
         if self.scramble:
             c = self.scramble
-            self.post(scramble_msg(c['off'], c['reg'], c['pid'], c['body'], c['dry'],
-                                   c['idoff'], c['lo'], c['hi'], c['persist']))
+            self.post(scramble_msg(off=c.get('off'), reg=c['reg'], pid=c['pid'], body=c['body'],
+                                   dry=c['dry'], idoff=c['idoff'], lo=c['lo'], hi=c['hi'],
+                                   persist=c['persist'], probe=c.get('probe', False),
+                                   entry=c.get('entry', False), pc=c.get('pc')))
 
     def _queue_range(self):
         """(lo, hi, source) of the client send-queue block, or None - shared by the send watch and
@@ -260,6 +294,23 @@ class Capture:
         print(f"[inject] inbound id=0x{pid:04x} len={len(payload)} -> scramble body map (pre-XOR): "
               f"{payload[:16].hex()}")
         self.post(scramble_set_msg(pid, body.hex()))
+
+    def _on_inbound_sendcall(self, payload, typ):
+        """--inject-call: a packet the consumer sent back (XKore 'S' = client->server). Hand it to the
+        agent to transmit through the client's own SendPacket - spontaneous, replacing nothing. The
+        agent captures `this` once, then calls on the game thread."""
+        if typ != 'S' or len(payload) < 2:
+            print(f"[inject] skip typ={typ!r} len={len(payload)} (need an 'S' packet with an id)")
+            return
+        pid = payload[0] | payload[1] << 8
+        print(f"[inject] inbound id=0x{pid:04x} len={len(payload)} -> SendPacket: {payload[:16].hex()}")
+        self.post(sendcall_emit_msg(payload.hex()))
+
+    def arm_sendcall(self):
+        """Arm call-based injection: tell the agent where SendPacket is so it can capture `this`."""
+        if getattr(self.opts, 'inject_call', False) and self.relay is not None:
+            self.post(sendcall_msg(self.sendcall_rva, getattr(self.opts, 'sendpacket_module', 'uaRO.exe')))
+            print('[*] --inject-call: do one in-client 0437/0438 action to capture the send object (this)')
 
     def update_send_watch(self):
         """Point the agent's send watch at the queue block (again, if the ring moved)."""

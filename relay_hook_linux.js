@@ -141,6 +141,7 @@ hookAll(['__recvmsg64', 'recvmsg'], {
                   ptr: v[0].toString(), seq: seq++, ts: Date.now(),
                   pre: first ? ringBase[peer].toString() : undefined}, first ? pre : null);
         });
+        if (scSend !== null) drainSendCall();                       // game thread: safe point to call-inject
     }
 });
 
@@ -275,9 +276,137 @@ function scrPrologue() {
     return scrEntry;
 }
 
+// --send-probe: on the first recognised client send, capture the registers and walk the stack for
+// return addresses into mapped modules (resolved to module+offset and the nearest prologue), so the
+// driver can pick the client's callable send routine. One-shot and read-only - it never writes.
+function safeHead(p, n) {                                            // first n (default 16) bytes at p, hex, or null
+    if (!(p instanceof NativePointer) || p.isNull()) return null;
+    try { return hexOf(new Uint8Array(p.readByteArray(n || 16))); } catch (e) { return null; }
+}
+
+// --probe-entry: one-shot capture of a function's arguments at its entry. On the first hit we dump
+// the registers, the top of the stack (incoming args / return address), and the first bytes each of
+// those points at, so the driver can see how the packet/slot is passed. Read-only; disarms at once.
+function scrProbeEntry(ctx) {
+    if (scr.lo !== null) {                                           // gated: a send-packet copy into the queue
+        var args = [];                                              // at entry: [esp]=return addr, [esp+4..]=args
+        for (var j = 1; j <= 4; j++) { try { args.push(ctx.esp.add(j * 4).readPointer()); } catch (e) { args.push(null); } }
+        var inRange = args.some(function (a) { return a && a.compare(scr.lo) >= 0 && a.compare(scr.hi) < 0; });
+        var hasId = args.some(function (a) {
+            if (!a) return false;
+            try { var v = a.readU16(); return v === 0x0437 || v === 0x0438; } catch (e) { return false; }
+        });
+        if (!(inRange || hasId)) return true;                       // not the call we want: keep waiting
+    }
+    var regs = {}, regmem = {};
+    GP.forEach(function (r) { try { regs[r] = ctx[r].toString(); regmem[r] = safeHead(ctx[r]); } catch (e) {} });
+    var stack = [], esp = ctx.esp;
+    for (var i = 0; i < 12; i++) {                                   // [esp+0]=return addr, [esp+4..]=args (cdecl/stdcall)
+        var v;
+        try { v = esp.add(i * 4).readPointer(); } catch (e) { break; }
+        var c = codeAt(v);
+        stack.push({off: '0x' + (i * 4).toString(16), val: v.toString(),
+                    code: c ? (c.name + '+0x' + v.sub(c.base).toString(16)) : null, mem: safeHead(v)});
+    }
+    send({tag: 'SCRAMBLE', hit: 'entry', pc: scr.pc.toString(), regs: regs, regmem: regmem, stack: stack});
+    scr = null; scrDisarm();                                         // one-shot
+    return true;
+}
+
+function scrProbe(ctx) {
+    var PROBE_IDS = {0x0437: 1, 0x0438: 1};                          // the encrypted client send ids
+    var cand = {eax: ctx.eax, ebx: ctx.ebx, ecx: ctx.ecx, edx: ctx.edx, esi: ctx.esi, edi: ctx.edi, ebp: ctx.ebp};
+    var slotReg = null, slotPtr = null, slotId = -1, slotOff = null;
+    for (var rn in cand) {                                           // confirm a real send: a reg points at a slot id we expect
+        var r = cand[rn];
+        if (!(r instanceof NativePointer) || r.isNull()) continue;
+        if (scr.lo !== null && (r.compare(scr.lo) < 0 || r.compare(scr.hi) >= 0)) continue;
+        for (var ci = 0; ci < SCR_IDOFFS.length; ci++) {
+            var o = SCR_IDOFFS[ci], idv;
+            try { idv = r.add(o).readU16(); } catch (e) { continue; }
+            if (PROBE_IDS[idv]) { slotReg = rn; slotPtr = r.add(o); slotId = idv; slotOff = o; break; }
+        }
+        if (slotReg) break;
+    }
+    if (slotReg === null) return true;                               // not a send we recognise yet: keep waiting
+    var regs = {};
+    GP.forEach(function (r) { try { regs[r] = ctx[r].toString(); } catch (e) {} });
+    var frames = [], esp = ctx.esp;
+    for (var i = 0; i < 4096 && frames.length < 80; i++) {           // scan the stack for return addresses
+        var w;
+        try { w = esp.add(i * 4).readPointer(); } catch (e) { break; }
+        if (w.isNull()) continue;
+        var c = codeAt(w);                                           // file-backed executable range (Wine PE too)
+        if (c === null) continue;
+        frames.push({sp: '0x' + (i * 4).toString(16), ret: w.toString(), mod: c.name,
+                     off: '0x' + w.sub(c.base).toString(16), entry: scrPrologueBefore(w)});
+    }
+    send({tag: 'SCRAMBLE', hit: 'probe', pc: scr.pc.toString(), reg: slotReg, idoff: slotOff,
+          id: slotId, slot: slotPtr.toString(), regs: regs, frames: frames});
+    scr = null; scrDisarm();                                         // one-shot
+    return true;
+}
+
+// Executable, file-backed ranges (Frida's module API misses Wine-loaded PE modules, so resolve
+// addresses against the mapped ranges directly, as peBase() does). `base` is the lowest range of
+// the same file - a usable module base for RVAs. Cached; recomputed only if a lookup misses.
+var CODE_RANGES = null;
+function codeRanges(refresh) {
+    if (CODE_RANGES && !refresh) return CODE_RANGES;
+    var byPath = {};
+    Process.enumerateRanges({protection: 'r-x', coalesce: false}).forEach(function (r) {
+        var p = (r.file && r.file.path) ? r.file.path : null;
+        if (!p || !/\.(exe|dll)$/i.test(p)) return;                  // PE modules only (skip mapped .grf data archives)
+        (byPath[p] = byPath[p] || []).push([r.base, r.base.add(r.size)]);
+    });
+    var out = [];
+    for (var p in byPath) {
+        var ranges = byPath[p], base = ranges[0][0], name = p.split('/').pop();
+        ranges.forEach(function (x) { if (x[0].compare(base) < 0) base = x[0]; });
+        ranges.forEach(function (x) { out.push({lo: x[0], hi: x[1], name: name, base: base}); });
+    }
+    return (CODE_RANGES = out);
+}
+function codeAt(ptr) {
+    var rs = codeRanges(false);
+    for (var i = 0; i < rs.length; i++) if (ptr.compare(rs[i].lo) >= 0 && ptr.compare(rs[i].hi) < 0) return rs[i];
+    rs = codeRanges(true);                                           // stale cache? refresh once and retry
+    for (var j = 0; j < rs.length; j++) if (ptr.compare(rs[j].lo) >= 0 && ptr.compare(rs[j].hi) < 0) return rs[j];
+    return null;
+}
+
+function scrPrologueBefore(addr) {                                   // nearest push ebp;mov ebp,esp before addr
+    try {
+        var c = codeAt(addr);
+        if (c === null) return null;
+        var span = 0x600, base = addr.sub(span);
+        if (base.compare(c.lo) < 0) { base = c.lo; span = addr.sub(c.lo).toInt32(); }
+        if (span <= 3) return null;
+        var buf = new Uint8Array(base.readByteArray(span));
+        for (var k = buf.length - 3; k >= 0; k--) {
+            if (buf[k] === 0x55 && ((buf[k + 1] === 0x8b && buf[k + 2] === 0xec) || (buf[k + 1] === 0x89 && buf[k + 2] === 0xe5))) {
+                var e = base.add(k);
+                return {abs: e.toString(), off: '0x' + e.sub(c.base).toString(16), mod: c.name};
+            }
+        }
+    } catch (e) {}
+    return null;
+}
+
 function scrTrap(d) {
     if (scr === null || d.type !== 'breakpoint' || !d.context.pc.equals(scr.pc)) return false;
     var ctx = d.context;
+    if (scr.sendcall) {                                              // call-inject: capture `this` (ecx), build fn, disarm
+        try {
+            scSend['this'] = ctx.ecx;
+            scSend.fn = new NativeFunction(scr.pc, 'void', ['pointer', 'int', 'pointer'], 'thiscall');
+            send({tag: 'SENDCALL', hit: 'ready', 'this': ctx.ecx.toString(), pc: scr.pc.toString()});
+        } catch (e) { send({tag: 'SENDCALL', hit: 'error', e: 'arm: ' + e.message}); }
+        scr = null; scrDisarm();
+        return true;
+    }
+    if (scr.entry) return scrProbeEntry(ctx);                        // --probe-entry: capture args + disarm
+    if (scr.probe) return scrProbe(ctx);                             // --send-probe: capture + disarm, no write
     if (scr.dry) {                                                   // DRY: report everything, write nothing
         var regs = {}, stk = [], i;
         GP.forEach(function (r) { try { regs[r] = ctx[r].toString(); } catch (e) {} });
@@ -347,6 +476,8 @@ function onScramble(m) {
                lo: m.lo !== undefined ? ptr(m.lo) : null, hi: m.hi !== undefined ? ptr(m.hi) : null,
                body: m.body ? Array.from(hexToBytes(m.body)) : null, dry: m.dry !== false,
                persist: !!m.persist,   // --inject merge: keep each body and replace every matching action
+               probe: !!m.probe,       // --send-probe: one-shot read-only stack walk of a real send
+               entry: !!m.entry,       // --probe-entry: one-shot capture of a function's args at entry
                bodies: {}};        // --inject merge: id -> plaintext body to substitute (pre-XOR)
         scrEntry = undefined;                       // recompute the prologue scan for this pc
         if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
@@ -380,8 +511,65 @@ function hexToBytes(h) {
     return out;
 }
 
+// ---- call-based injection (opt-in: the driver posts {type:'sendcall'}) -------------------------
+// Spontaneous send, no client packet replaced: call the client's own SendPacket(this, len, buf)
+// so it builds+encrypts+sends our bytes through its normal path. `this` is captured once with a
+// one-shot hardware breakpoint at the entry (no code patching). Consumer packets are queued and
+// the call is made on the GAME thread (drained from the recv/send hooks), never from the JS thread.
+var scSend = null;                              // {pc, fn, this, queue:[[bytes]]}
+var scDraining = false;                         // re-entrancy guard
+
+function onSendCall(m) {
+    if (m.rva === undefined && m.pc === undefined) {                 // disarm
+        scSend = null;
+        if (scr !== null && scr.sendcall) { scr = null; scrDisarm(); }
+    } else {
+        var pc = null;
+        if (m.pc !== undefined) pc = ptr(m.pc);
+        else { var b = peBase(m.module || 'uaRO.exe'); pc = b !== null ? b.add(m.rva) : null; }
+        if (pc === null) {
+            send({tag: 'SENDCALL', hit: 'error', e: 'could not resolve ' + (m.module || 'uaRO.exe') + ' base'});
+        } else {
+            scSend = {pc: pc, fn: null, 'this': null, queue: []};
+            scr = {pc: pc, reg: 'auto', id: undefined, idoff: 0, lo: null, hi: null, body: null,
+                   dry: false, persist: false, probe: false, entry: false, sendcall: true, bodies: {}};
+            if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
+            scrArm();
+            console.log('[*] sendcall: capturing this @ ' + pc + ' (one-shot), then call-inject on the game thread');
+        }
+    }
+    recv('sendcall', onSendCall);
+}
+recv('sendcall', onSendCall);
+
+function onSendEmit(m) {
+    if (scSend === null) send({tag: 'SENDCALL', hit: 'error', e: 'emit with no sendcall armed'});
+    else if (m.data) scSend.queue.push(Array.from(hexToBytes(m.data)));
+    recv('sendcall-emit', onSendEmit);
+}
+recv('sendcall-emit', onSendEmit);
+
+function drainSendCall() {                       // called from the game thread (recv/send hooks)
+    if (scDraining || scSend === null || scSend.fn === null || scSend['this'] === null) return;
+    if (scSend.queue.length === 0) return;
+    scDraining = true;
+    try {
+        while (scSend.queue.length) {
+            var pk = scSend.queue.shift();
+            try {
+                var buf = Memory.alloc(pk.length < 8 ? 8 : pk.length);
+                buf.writeByteArray(pk);
+                scSend.fn(scSend['this'], pk.length, buf);           // client builds+encrypts+sends it
+                send({tag: 'SENDCALL', hit: 'sent', len: pk.length, data: hexOf(new Uint8Array(pk))});
+            } catch (e) {
+                send({tag: 'SENDCALL', hit: 'error', e: 'call: ' + e.message});
+            }
+        }
+    } finally { scDraining = false; }
+}
+
 // never leave debug registers armed without our handler: the client would die on the next write
-rpc.exports = { dispose: function () { sw = null; swDisarm(); scr = null; scrDisarm(); } };
+rpc.exports = { dispose: function () { sw = null; swDisarm(); scr = null; scrDisarm(); scSend = null; } };
 
 // ---- send --------------------------------------------------------------------------------------
 hookAll(['__sendmsg64', 'sendmsg'], {
@@ -408,6 +596,7 @@ hookAll(['__sendmsg64', 'sendmsg'], {
             }
         }
         send(m);
+        if (scSend !== null) drainSendCall();                       // game thread: safe point to call-inject
     }
 });
 console.log('[*] no PE code patched');

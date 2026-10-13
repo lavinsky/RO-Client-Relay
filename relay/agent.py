@@ -6,7 +6,7 @@ import sys
 
 from . import ROOT
 
-AGENT_JS = os.path.join(ROOT, 'relay_hook_linux.js')
+AGENT_JS = os.path.join(ROOT, 'agent', 'relay_hook_linux.js')
 GADGET_PORTS = range(27052, 27100)                 # frida-gadget-32.config: 27052, pick-next on conflict
 
 

@@ -18,7 +18,7 @@ Dois programas cooperam:
 
 | Programa | Onde roda | Função |
 |---|---|---|
-| **Agente**, `relay_hook_linux.js` | dentro do processo do jogo, via Frida Gadget | Observa cada leitura/escrita de socket (hooks de `recvmsg`/`sendmsg` da libc). Opcionalmente copia a região de recepção, acompanha a fila de envio, e executa as ações de pesquisa/escrita que o driver pedir. Faz o mínimo dentro do jogo. |
+| **Agente**, `agent/relay_hook_linux.js` | dentro do processo do jogo, via Frida Gadget | Observa cada leitura/escrita de socket (hooks de `recvmsg`/`sendmsg` da libc). Opcionalmente copia a região de recepção, acompanha a fila de envio, e executa as ações de pesquisa/escrita que o driver pedir. Faz o mínimo dentro do jogo. |
 | **Driver**, `relay_capture_linux.py` → pacote `relay/` | processo Python normal, fora do jogo | Recebe os relatos do agente, monta um fluxo ordenado de pacotes em texto claro, preenche os poucos trechos cifrados lendo as cópias já decifradas da memória do cliente (`/proc/<pid>/mem`, somente leitura), e entrega ao consumidor. |
 
 ```
@@ -33,6 +33,22 @@ Dois programas cooperam:
           └─────────────────────────────────────────────────┘
 ```
 
+### 1.1 Estrutura do repositório
+
+```
+relay_capture_linux.py   ponto de entrada (reexporta nomes para os testes)
+relay_capture.conf       config opcional (seção [capture])
+setup.sh / run.sh        instala o ambiente (venv, gadget Frida) / roda o driver
+requirements.txt
+agent/                   o agente Frida (um arquivo .js)
+data/                    tabela de tamanhos de pacote (uaro_recvpackets.txt)
+relay/                   o pacote do driver — um módulo por responsabilidade (§3.1)
+  resources/             gadget Frida baixado pelo setup.sh (não versionado)
+tests/                   um teste por módulo (§12); _boot.py + fixtures/
+README.md                como instalar e rodar
+ARCHITECTURE.md          este documento
+```
+
 Por padrão o driver **não escreve** no jogo e nada do que produz chega ao servidor; o que o
 consumidor devolve é lido e descartado. As opções de **escrita** (§6) são o oposto: fazem os
 pacotes que o consumidor devolve (quadros XKore "S") saírem pelo cliente. São para um
@@ -45,7 +61,7 @@ o processo (o handler de SIGSEGV do Wine morre no `%gs` TLS zerado).
 
 ---
 
-## 2. O agente (`relay_hook_linux.js`)
+## 2. O agente (`agent/relay_hook_linux.js`)
 
 Um arquivo só (o Frida carrega um script). Seções, de cima para baixo:
 
@@ -73,16 +89,16 @@ Os campos das mensagens estão no docstring de `relay/protocol.py`.
 |---|---|---|
 | `protocol` | Tags e campos das mensagens (o contrato com o agente): `ring_msg`, `sendwatch_msg`, `scramble_msg`, `scramble_set_msg`, `sendcall_msg`, `sendcall_emit_msg`, `trace_msg`, `conn_of`. | sempre |
 | `agent` | `gadget_ports`, `pick_port`, `pid_of_port`; `Agent` (conecta ao gadget, carrega o JS, repassa/posta mensagens). Único módulo que importa `frida`. | sempre |
-| `cli` | Opções, leitura do arquivo de configuração (`relay_capture.conf`), tabela de tamanhos, `main` (trata `SIGTERM` para desligar limpo). | sempre |
-| `runtime` | `Capture`: monta os componentes conforme as opções, inicia as threads, roteia cada mensagem (`dispatch`), mantém o acompanhamento da fila apontado, e — na escrita sem ponto de parada fixado — autodescobre a cifragem. | sempre |
+| `config` | `load_config_defaults`: lê `relay_capture.conf` ([capture]) como defaults do argparse (defaults < config < linha de comando). | sempre |
+| `cli` | Opções, tabela de tamanhos, `main` (trata `SIGTERM` para desligar limpo; `SIGUSR1` re-arma o rastreio sob demanda). | sempre |
+| `runtime` | `Capture`: monta os componentes conforme as opções, inicia as threads, roteia cada mensagem (`dispatch`), mantém o acompanhamento da fila apontado. Herda o caminho de escrita de `writeback`. | sempre |
+| `writeback` | Mixin `WriteBack`: config do BP de cifragem, seleção do caminho de escrita (merge 035f / SendPacket / autodescoberta), handlers dos pacotes do consumidor, `arm_scramble`/`arm_sendcall`/`arm_trace`. | `--inject`/`--inject-call` |
 | `relay` | `Relay`: enquadramento XKore, (re)conexão, `--feed-dump`. `PacketAligner`: alinhador opcional (consumidor bruto). | com `--relay` |
-| `packets` | `load_lengths`, `packet_len`, `WireFilter` (divide o fluxo de cada conexão em pacotes; passa o id de conta; separa 09fd/09ff como itens a preencher). | sempre |
+| `packets` | `load_lengths`, `packet_len`, `WireFilter` (divide o fluxo de cada conexão em pacotes); `pack_move`, `unpack_pos2`, `MoveTracker` (corpo do `035f` e decodificação do `0087`/`MOVE-CHECK`). | sempre |
 | `actors` | `ActorDecrypt`: acha a ring de recepção e aceita a cópia decifrada de 09fd/09ff só com prova (recente, ou contexto em volta casa); senão descarta. `valid_actor`. | `--decrypt-actors` |
 | `wire_feed` | `WireFeed` (enfileira os trechos em ordem de chegada, anexa snapshots, thread alimentadora). `ClientSendFeed` (pacotes cliente→servidor). | sempre |
 | `sendwatch` | `SendWatch`, `plaintext_guess`, `packet_at`, `send_queue_range`. | `--send-watch` |
-| `moves` | `MoveTracker`, `unpack_pos2`, `pack_move`: decodifica o destino do movimento a partir do `0087` (texto claro) do servidor e registra (`MOVE-CHECK`); `pack_move` monta o corpo de 3 bytes de um `035f`. | sempre |
-| `memory` | `/proc/<pid>/maps` (`regions`, `region_at`), `ProcessMemory.read`, `ProcessMemoryWriter`. | com acesso a memória |
-| `inject` | `SendInjector`: escrita bruta de pacotes do consumidor na fila de envio, com checagem de limites. Primitivo de escrita; só válido para um cliente **sem cifragem** (ver §6). | escrita bruta |
+| `memory` | `/proc/<pid>/maps` (`regions`, `region_at`), `ProcessMemory.read` (somente leitura). | com acesso a memória |
 | `research` | `ActorProbe` (`--probe-actors`), `ActorDiag` (`--actor-diag`). | pesquisa |
 
 ### 3.2 Threads
@@ -146,8 +162,8 @@ Os campos das mensagens estão no docstring de `relay/protocol.py`.
 
 ## 6. Caminhos de escrita (reenvio de pacotes do consumidor)
 
-Três formas de fazer o cliente transmitir os pacotes que o consumidor devolve. Todas para um
-cliente/servidor próprio, desligadas por padrão.
+Duas formas de fazer o cliente transmitir os pacotes que o consumidor devolve, combináveis por id.
+Ambas para um cliente/servidor próprio, desligadas por padrão. Vivem no mixin `writeback.WriteBack`.
 
 1. **Chamar a função de envio do cliente** (`--inject-call`) — espontâneo, não troca nenhum
    pacote do cliente. O driver chama o `SendPacket(this, len, buf)` do próprio cliente, que
@@ -162,11 +178,12 @@ cliente/servidor próprio, desligadas por padrão.
    o controle ao cliente); `--inject-persist` mantém (substitui toda ação igual — uma armadilha
    para o `035f`, ver §10). É o caminho certo quando o cliente inicia a ação (ver §10, método 1
    para o `035f`).
-3. **Escrita bruta na fila** (`inject.SendInjector`, via `memory.ProcessMemoryWriter`) — escreve
-   direto na fila. Só vale para um cliente **sem cifragem** (os bytes não passam pela cifragem).
+
+(A escrita bruta na fila, só válida para um cliente **sem cifragem**, existia como terceira forma
+mas foi removida — recuperável no histórico do git se um dia for testar um cliente assim.)
 
 **Modo combinado (recomendado para o debug completo das ações):** com `--inject-call` **e**
-`--scramble-bp` juntos, o driver roteia por id (`runtime._on_inbound_split`): o `035f` vai pelo
+`--scramble-bp` juntos, o driver roteia por id (`writeback._on_inbound_split`): o `035f` vai pelo
 caminho 2 (merge, DR0) e as demais ações pelo caminho 1 (`SendPacket`, DR1). Como os dois usam
 registradores de depuração distintos, coexistem. Invocação de referência:
 
@@ -292,12 +309,23 @@ aponta outro arquivo. Carregar o gadget: opção de inicialização do Steam
 ## 12. Testes (offline, sem o cliente)
 
 ```sh
-for t in test_*.py; do python3 "$t"; done
+for t in tests/test_*.py; do python3 "$t" || break; done
 ```
 
-Cobrem `WireFilter`, `ActorDecrypt.settle`, `SendWatch`/`plaintext_guess`, `MoveTracker`,
-`SendInjector` + o enquadramento do `Relay`, e o contrato de mensagens da escrita
-(`scramble_set_msg`, `scramble_msg`, `_on_inbound_scramble`, `_autodiscover_scramble`).
+Ficam em `tests/`, um por módulo, rodam como scripts e imprimem `ALL PASS`. `tests/_boot.py`
+põe a raiz no `sys.path`, carrega o ponto de entrada como `g` e aponta `FIXTURES`/`DATA`; os
+dados gravados ficam em `tests/fixtures/`.
+
+| teste | o que cobre |
+|---|---|
+| `test_packets` | `WireFilter` (bordas, corpos cifrados, lista de descarte, id desconhecido, remontagem) + `MoveTracker`/`pack_move` |
+| `test_actors` | `ActorDecrypt.settle` (regras de score/fresh, cadeia, corte de socket fechado) |
+| `test_relay` | desenquadramento dos quadros `S` do consumidor, inclusive cortados |
+| `test_integration` | fluxo ponta-a-ponta sobre socket real: alinhamento, descarte, remontagem e o caminho de escrita |
+| `test_sendwatch` | `SendWatch` recupera texto claro das janelas reais do breakpoint; descarta o que não é envio plausível |
+| `test_writeback` | contrato de mensagens e roteamento da escrita (`_on_inbound_scramble`/`_split`/`_sendcall`, `_autodiscover_scramble`) |
+| `test_safety` | a fronteira de credenciais (`redact_login`, `client_packet_to_feed`, `looks_like_http`, `sanitize`) |
+| `test_config` | precedência da config (defaults < arquivo < CLI) e coerção de tipo |
 
 ---
 

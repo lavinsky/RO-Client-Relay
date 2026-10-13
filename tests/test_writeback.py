@@ -1,15 +1,11 @@
-"""Offline test for the --inject + --scramble-bp merge (relay/runtime.py, relay/protocol.py).
+"""Offline test for the WRITE path (relay/writeback.py + relay/protocol.py).
 
-The driver turns each inbound consumer 'S' packet into a per-id scramble-set for the agent, and the
-scramble / scramble-set messages carry the right fields (persist flag, one-shot clear, idoff/range).
-The agent-side scrTrap substitution (substitute pre-XOR, one-shot vs persist) was validated live;
-here we cover the driver wiring and the message contract the agent relies on."""
-import os
-import sys
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-from relay.protocol import scramble_msg, scramble_set_msg
+Covers the driver wiring and the message contract the agent relies on: the scramble / scramble-set
+messages carry the right fields (persist flag, one-shot clear, idoff/range); the per-id routing
+(035f -> merge, everything else -> client SendPacket); the sendcall emit; and the send-watch ->
+scramble handoff of auto-discovery. The agent-side substitution was validated live."""
+import _boot  # noqa: F401  (puts the repo on sys.path)
+from relay.protocol import scramble_msg, scramble_set_msg, sendcall_emit_msg, sendcall_msg
 from relay.runtime import Capture
 
 # --- message builders -------------------------------------------------------------------------
@@ -47,10 +43,60 @@ c._on_inbound_scramble(bytes.fromhex('5f03bec3fd'), 'S')           # a different
 assert c.posted == [{'type': 'scramble-set', 'id': 0x035f, 'body': 'bec3fd'}], c.posted
 print('_on_inbound_scramble ok')
 
+# --- _on_inbound_sendcall: inbound 'S' -> sendcall-emit com o pacote inteiro em hex -----------
+class FakeSend:
+    def __init__(self):
+        self.posted = []
+
+    def post(self, msg):
+        self.posted.append(msg)
+
+    _on_inbound_sendcall = Capture._on_inbound_sendcall
+
+s = FakeSend()
+s._on_inbound_sendcall(bytes.fromhex('3704854b5c0707'), 'S')      # ataque 0437 -> SendPacket
+assert s.posted == [sendcall_emit_msg('3704854b5c0707')], s.posted
+assert s.posted == [{'type': 'sendcall-emit', 'data': '3704854b5c0707'}], s.posted
+s.posted.clear()
+s._on_inbound_sendcall(bytes.fromhex('3704854b5c0707'), 'R')      # não-'S' é ignorado
+s._on_inbound_sendcall(b'\x37', 'S')                             # curto demais: ignorado
+assert s.posted == [], s.posted
+print('_on_inbound_sendcall ok')
+
+# --- _on_inbound_split: roteia por id (035f -> merge, demais acoes -> SendPacket) --------------
+class FakeSplit:
+    WALK_ID = Capture.WALK_ID
+    def __init__(self):
+        self.posted = []
+
+    def post(self, msg):
+        self.posted.append(msg)
+
+    _on_inbound_split = Capture._on_inbound_split
+    _on_inbound_scramble = Capture._on_inbound_scramble
+    _on_inbound_sendcall = Capture._on_inbound_sendcall
+
+assert FakeSplit.WALK_ID == 0x035f
+sp = FakeSplit()
+sp._on_inbound_split(bytes.fromhex('5f03bec3fd'), 'S')            # 035f (andar) -> merge pre-XOR
+assert sp.posted == [{'type': 'scramble-set', 'id': 0x035f, 'body': 'bec3fd'}], sp.posted
+sp.posted.clear()
+sp._on_inbound_split(bytes.fromhex('3704854b5c0707'), 'S')       # 0437 (ataque) -> SendPacket
+assert sp.posted == [{'type': 'sendcall-emit', 'data': '3704854b5c0707'}], sp.posted
+sp.posted.clear()
+sp._on_inbound_split(bytes.fromhex('380405000600'), 'S')         # 0438 (skill) -> SendPacket
+assert sp.posted == [{'type': 'sendcall-emit', 'data': '380405000600'}], sp.posted
+sp.posted.clear()
+sp._on_inbound_split(bytes.fromhex('3704854b5c0707'), 'R')       # não-'S' ignorado em ambas as rotas
+assert sp.posted == [], sp.posted
+print('_on_inbound_split ok')
+
+assert sendcall_msg(0x9463b0, 'uaRO.exe') == {'type': 'sendcall', 'rva': 0x9463b0, 'module': 'uaRO.exe'}
+
 # --- _autodiscover_scramble: first encrypted send -> disarm send-watch, arm reg='auto' scramble ---
 import threading
 from types import SimpleNamespace
-from relay.runtime import SCRAMBLE_STORE_BACK
+from relay.writeback import SCRAMBLE_STORE_BACK
 
 class FakeDisc:
     def __init__(self):

@@ -1,14 +1,12 @@
 """Offline test for SendWatch (--send-watch): recovers 0437/0438 plaintext from the real watchpoint
 windows of the live relay_sendbp.py --queue run (sendbp_queue.jsonl), passes cleartext sends through
 unchanged, and drops 035f walks, unarmed sends and implausible plaintext instead of feeding ciphertext."""
-import importlib.util, json, os
-HERE = os.path.dirname(os.path.abspath(__file__))
-sp = importlib.util.spec_from_file_location('g', os.path.join(HERE, 'relay_capture_linux.py'))
-g = importlib.util.module_from_spec(sp); sp.loader.exec_module(g)
+import json, os
+from _boot import g, FIXTURES
 
 sw = g.SendWatch()
 got = []
-for line in open(os.path.join(HERE, 'sendbp_queue.jsonl')):
+for line in open(os.path.join(FIXTURES, 'sendbp_queue.jsonl')):
     r = json.loads(line)
     if r.get('tag') != 'SEND' or r['id'] not in (0x0437, 0x0438) or not r.get('win'):
         continue

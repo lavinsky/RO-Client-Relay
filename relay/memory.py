@@ -37,29 +37,3 @@ class ProcessMemory:
             return os.pread(self.fd, n, addr)
         except OSError:
             return b''
-
-
-class ProcessMemoryWriter:
-    """Read/write access to the game's memory through /proc/<pid>/mem (never pauses the game).
-
-    The rest of the driver only reads; this is the one writer, used by inject.SendInjector to
-    plant a packet in the client's send queue. A single pwrite lands atomically for the lengths
-    we write (one packet), so the client never sees a torn slot."""
-
-    def __init__(self, pid):
-        self.pid = pid
-        self.fd = os.open(f'/proc/{pid}/mem', os.O_RDWR)
-
-    def read(self, addr, n):
-        """Up to n bytes at addr; b'' if unmapped."""
-        try:
-            return os.pread(self.fd, n, addr)
-        except OSError:
-            return b''
-
-    def write(self, addr, data):
-        """Write `data` at addr; bytes written, or 0 if the span isn't writable."""
-        try:
-            return os.pwrite(self.fd, data, addr)
-        except OSError:
-            return 0

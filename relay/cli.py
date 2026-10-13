@@ -152,6 +152,10 @@ def parse_args(argv=None):
                     help='Stalker (pesquisa): segue por MS ms e registra as chamadas do codigo do uaRO '
                          '(anon 0x401000) para dentro do gepard. Rode parado e depois andando e compare '
                          'para achar a chamada do envio do 035f. ARRISCADO; use janelas curtas.')
+    ap.add_argument('--trace-internal', type=int, default=0, metavar='MS',
+                    help='Stalker (pesquisa): como --trace-walk, mas registra as chamadas uaRO->uaRO '
+                         '(internas) para achar o manipulador de alto nivel do movimento. Volume maior; '
+                         'use janelas bem curtas (300-500ms). ARRISCADO.')
     ap.add_argument('--probe-anyid', action='store_true',
                     help='--send-probe: capture the first hit whose pointer is inside --scramble-range, '
                          'regardless of packet id (use when the id offset is unknown, e.g. mapping 035f on the '

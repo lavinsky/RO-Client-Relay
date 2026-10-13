@@ -61,9 +61,11 @@ def show(m):
         if m.get('erro'):
             print(f"[trace] erro: {m.get('erro')}")
         elif m.get('chamadas') is not None:
-            print(f"[trace] {m.get('ms')}ms, {m.get('n')} chamadas uaRO->gepard distintas:")
+            print(f"[trace] {m.get('ms')}ms, {m.get('n')} chamadas distintas:")
             for c in (m.get('chamadas') or []):
-                print(f"        uaRO+{c.split('>')[0]} -> gepard+{c.split('>')[1]}")
+                de, para = c.split('>', 1)
+                destino = f"uaRO+{para[1:]}" if para.startswith('u') else f"gepard+{para}"
+                print(f"        uaRO+{de} -> {destino}")
         else:
             print(f"[trace] {m.get('ms')}ms: {m.get('nota')} ({m.get('bytes')} bytes de eventos) - cliente sobreviveu")
     elif tag == 'RECV-WIRE':

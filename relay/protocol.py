@@ -100,12 +100,15 @@ def sendcall_msg(rva=None, module='uaRO.exe'):
     return {'type': 'sendcall', 'rva': rva, 'module': module}
 
 
-def trace_msg(ms=200, ualo=None, uahi=None):
+def trace_msg(ms=200, ualo=None, uahi=None, interno=False):
     """Rastreio com Stalker. Sem ualo/uahi: so teste de sobrevivencia (segue a thread principal por
-    `ms` e desliga). Com a faixa do codigo uaRO: registra as chamadas uaRO->gepard na janela."""
+    `ms` e desliga). Com a faixa do codigo uaRO: registra as chamadas uaRO->gepard na janela, ou,
+    com interno=True, as chamadas uaRO->uaRO (para achar o manipulador de alto nivel do movimento)."""
     m = {'type': 'trace', 'ms': ms}
     if ualo is not None:
         m['ualo'], m['uahi'] = hex(ualo), hex(uahi)
+    if interno:
+        m['interno'] = True
     return m
 
 

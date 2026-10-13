@@ -314,7 +314,11 @@ class Capture:
         """Dispara o rastreio com Stalker: teste de sobrevivencia (--trace-test) ou o rastreio das
         chamadas uaRO->gepard (--trace-walk, faixa do codigo uaRO 0x401000..0x1717000)."""
         w, t = getattr(self.opts, 'trace_walk', 0), getattr(self.opts, 'trace_test', 0)
-        if w:
+        ti = getattr(self.opts, 'trace_internal', 0)
+        if ti:
+            print(f'[*] --trace-internal: Stalker por {ti}ms registrando chamadas uaRO->uaRO (ARRISCADO)')
+            self.post(trace_msg(ti, 0x401000, 0x1717000, interno=True))
+        elif w:
             print(f'[*] --trace-walk: Stalker por {w}ms registrando chamadas uaRO->gepard (ARRISCADO)')
             self.post(trace_msg(w, 0x401000, 0x1717000))
         elif t:

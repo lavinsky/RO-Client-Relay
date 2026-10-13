@@ -607,7 +607,9 @@ function onTrace(m) {
     if (!th) { send({tag: 'TRACE', erro: 'thread principal nao encontrada'}); recv('trace', onTrace); return; }
     var ualo = m.ualo ? ptr(m.ualo) : null, uahi = m.uahi ? ptr(m.uahi) : null;
     var gep = getGepard(), ghi = gep ? gep.add(0x2000000) : null;
+    var interno = !!m.interno;                                       // true: registrar uaRO->uaRO
     traceSeen = ualo ? {} : null;
+    var nvistos = 0, TETO = 8000;
     var nblocos = 0;
     try {
         Stalker.follow(th.id, {
@@ -620,10 +622,16 @@ function onTrace(m) {
                     if (es[i][0] !== 'call') continue;
                     var de = es[i][1], para = es[i][2];
                     if (!(de instanceof NativePointer) || !(para instanceof NativePointer)) continue;
-                    if (de.compare(ualo) >= 0 && de.compare(uahi) < 0 && gep &&
-                        para.compare(gep) >= 0 && para.compare(ghi) < 0) {
-                        traceSeen[de.sub(ualo).toString() + '>' + para.sub(gep).toString()] = 1;
+                    if (nvistos >= TETO) continue;                  // teto de memoria
+                    if (de.compare(ualo) < 0 || de.compare(uahi) >= 0) continue;   // origem no uaRO
+                    var chave = null;
+                    if (interno) {                                  // destino tambem no uaRO
+                        if (para.compare(ualo) >= 0 && para.compare(uahi) < 0)
+                            chave = de.sub(ualo).toString() + '>u' + para.sub(ualo).toString();
+                    } else if (gep && para.compare(gep) >= 0 && para.compare(ghi) < 0) {
+                        chave = de.sub(ualo).toString() + '>' + para.sub(gep).toString();
                     }
+                    if (chave !== null && traceSeen[chave] === undefined) { traceSeen[chave] = 1; nvistos++; }
                 }
             }
         });

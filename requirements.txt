@@ -1,0 +1,2 @@
+# A versão do frida precisa casar com o gadget baixado pelo setup.sh (ele lê esta versão).
+frida==17.23.3

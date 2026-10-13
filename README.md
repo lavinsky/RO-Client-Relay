@@ -42,31 +42,54 @@ chamando a função de envio do próprio cliente (`--inject-call`, para `0437`/`
 A ligação é pelo **gadget** (`LD_PRELOAD`), não ptrace: dar ptrace num Proton 32 bits derruba o
 processo.
 
-## Preparação
+## Setup rápido (nova máquina)
 
-Pré-carregue o gadget. No Steam, opção de inicialização:
+Um script faz o trabalho chato (venv do Python, `frida` fixado, e o **gadget de 32 bits que casa
+essa versão** baixado e configurado em `relay/resources/`):
+
+```sh
+./setup.sh                 # ou: ./setup.sh /caminho/do/venv
+```
+
+Ao terminar, ele imprime a opção de inicialização do Steam, já com o caminho absoluto do gadget:
 
 ```
-LD_PRELOAD=/caminho/para/frida-gadget/frida-gadget-32.so %command%
+LD_PRELOAD=/.../relay/resources/frida-gadget-32.so %command%
 ```
 
-O gadget escuta numa porta em `27052–27100`; o driver o encontra pelo nome do processo (padrão
-`uaRO.exe`).
+Cole isso nas opções de inicialização do jogo no Steam. O gadget escuta numa porta em
+`27052–27100`; o driver o encontra pelo nome do processo (padrão `uaRO.exe`). Para rebaixar o
+gadget (p.ex. após trocar a versão do frida): `./setup.sh --force-gadget`.
+
+> O gadget (`.so`, ~24 MB) e o OpenKore não são versionados (`relay/resources/`); o `setup.sh`
+> baixa o gadget, e o consumidor você instala à parte (abaixo).
+
+## Consumidor (OpenKore)
+
+O consumidor é o OpenKore em **XKore 1**. No `control/config.txt` dele, o que importa para ligar ao
+relay (preencha servidor/conta à parte, conforme a comunidade uaRO):
+
+```
+master uaRO
+server 0
+XKore 1
+XKore_port 2350            # o relay conecta aqui (= --relay 127.0.0.1:2350)
+XKore_listenIp 127.0.0.1
+XKore_publicIp 127.0.0.1
+```
 
 ## Executando
 
-Mantenha o stdin aberto (o driver encerra no EOF). Sem opções, lê `relay_capture.conf`:
+Com o cliente aberto e o consumidor rodando:
 
 ```sh
-tail -f /dev/null | ~/.venv-frida/bin/python relay_capture_linux.py
+./run.sh                   # sem opções, lê relay_capture.conf; Ctrl-C encerra
+./run.sh --no-inject       # ex.: captura só de leitura, ignorando a config
 ```
 
-Precedência: padrões embutidos < arquivo de config < linha de comando. Ex.: uma captura só de
-leitura, ignorando a config:
-
-```sh
-tail -f /dev/null | ~/.venv-frida/bin/python relay_capture_linux.py --no-inject
-```
+`run.sh` segura o stdin aberto e usa o venv (padrão `~/.venv-frida`; `VENV=... ./run.sh` troca).
+Equivale a `tail -f /dev/null | ~/.venv-frida/bin/python relay_capture_linux.py`. Precedência das
+opções: padrões embutidos < arquivo de config < linha de comando.
 
 ## Configuração
 

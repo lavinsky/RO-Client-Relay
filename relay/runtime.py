@@ -104,10 +104,19 @@ class Capture:
                 pass                                   # the entry probe owns the breakpoint; no injection
             elif getattr(opts, 'inject_call', False):
                 self.sendcall_rva = int(opts.sendpacket_rva, 16)
-                relay.on_inbound = self._on_inbound_sendcall
-                print(f'[*] --inject-call: consumer "S" packets -> client SendPacket(this,len,buf) '
-                      f'at {opts.sendpacket_module}+0x{self.sendcall_rva:x} (spontaneous; captures this, '
-                      f'calls on the game thread)')
+                if self.scramble:
+                    # Rota por id: o andar (035f) tem de ir pelo merge no ponto de cifragem -- envia-lo
+                    # pela SendPacket dessincroniza a cifra. As demais acoes (0437 ataque/sentar/levantar,
+                    # 0438 pericia, ...) vao pela SendPacket do proprio cliente.
+                    relay.on_inbound = self._on_inbound_split
+                    print(f'[*] --inject-call + --scramble-bp: andar (0x{self.WALK_ID:04x}) -> merge no BP '
+                          f'de cifragem (uso unico); demais acoes -> SendPacket do cliente em '
+                          f'{opts.sendpacket_module}+0x{self.sendcall_rva:x}')
+                else:
+                    relay.on_inbound = self._on_inbound_sendcall
+                    print(f'[*] --inject-call: consumer "S" packets -> client SendPacket(this,len,buf) '
+                          f'at {opts.sendpacket_module}+0x{self.sendcall_rva:x} (spontaneous; captures this, '
+                          f'calls on the game thread)')
             elif pid is None:
                 print('[!] --inject needs the gadget-port process (pid) to write its memory; disabled')
             elif self.scramble:
@@ -298,6 +307,21 @@ class Capture:
         print(f"[inject] inbound id=0x{pid:04x} len={len(payload)} -> scramble body map (pre-XOR): "
               f"{payload[:16].hex()}")
         self.post(scramble_set_msg(pid, body.hex()))
+
+    WALK_ID = 0x035f                                   # andar: unico pacote roteado para o merge
+
+    def _on_inbound_split(self, payload, typ):
+        """--inject-call + --scramble-bp: roteia o pacote do consumidor por id. O andar (035f) vai pelo
+        merge no ponto de cifragem (uso unico); as demais acoes (0437 ataque/sentar/levantar, 0438
+        pericia, ...) vao pela SendPacket do proprio cliente. Roda na thread da conexao com o consumidor."""
+        if typ != 'S' or len(payload) < 2:
+            print(f"[inject] skip typ={typ!r} len={len(payload)} (need an 'S' packet with an id)")
+            return
+        pid = payload[0] | payload[1] << 8
+        if pid == self.WALK_ID:
+            self._on_inbound_scramble(payload, typ)
+        else:
+            self._on_inbound_sendcall(payload, typ)
 
     def _on_inbound_sendcall(self, payload, typ):
         """--inject-call: a packet the consumer sent back (XKore 'S' = client->server). Hand it to the

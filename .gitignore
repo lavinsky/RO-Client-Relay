@@ -11,3 +11,6 @@ relay_log.jsonl
 
 # Local snapshots (git is the history now)
 backup_*/
+
+# Artefatos de terceiros (gadget Frida, consumidor OpenKore) - nao versionados
+relay/resources/

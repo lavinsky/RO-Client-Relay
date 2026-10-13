@@ -233,6 +233,7 @@ recv('sendwatch', onSendWatch);
 // NOTE: a debug register is exactly what the anti-cheat may detect - this is for a client you own.
 var scr = null;                                 // {pc, reg, id, body(array)|null, dry} or null
 var scrThread = null, scrHandler = false;
+var scrCall = null;                              // sendcall: {pc} do ponto de captura do `this`, em DR1
 var GP = ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp'];
 var SCR_IDOFFS = [-2, 0];                        // reg='auto': try id just before the body pointer, then at it
 
@@ -247,6 +248,20 @@ function scrArm() {
     if (scrThread === null) { send({tag: 'SENDWATCH-ERR', e: 'scramble: main thread not found'}); return; }
     try { scrThread.setHardwareBreakpoint(0, scr.pc); }      // DR0 as an execution breakpoint
     catch (e) { scr = null; send({tag: 'SENDWATCH-ERR', e: 'scramble bp: ' + e.message}); }
+}
+
+// sendcall: captura do `this` num slot de debug proprio (DR1), para o merge de 035f (DR0) seguir intacto.
+function scrCallDisarm() {
+    if (scrThread !== null) { try { scrThread.unsetHardwareBreakpoint(1); } catch (e) {} }
+}
+
+function scrCallArm() {
+    scrCallDisarm();
+    if (scrCall === null) return;
+    scrThread = scrThread || Process.enumerateThreads().filter(function (t) { return t.id === Process.id; })[0] || null;
+    if (scrThread === null) { send({tag: 'SENDCALL', hit: 'error', e: 'main thread not found'}); return; }
+    try { scrThread.setHardwareBreakpoint(1, scrCall.pc); }   // DR1 as an execution breakpoint
+    catch (e) { scrCall = null; send({tag: 'SENDCALL', hit: 'error', e: 'bp: ' + e.message}); }
 }
 
 function slotFrom(ctx, reg) {                     // the slot pointer: a register, or 'sN' = [esp + 4*N]
@@ -415,17 +430,20 @@ function scrPrologueBefore(addr) {                                   // nearest 
 }
 
 function scrTrap(d) {
-    if (scr === null || d.type !== 'breakpoint' || !d.context.pc.equals(scr.pc)) return false;
+    if (d.type !== 'breakpoint') return false;
     var ctx = d.context;
-    if (scr.sendcall) {                                              // call-inject: capture `this` (ecx), build fn, disarm
+    // sendcall: captura de uso unico do `this` (ecx) na entrada da SendPacket, no DR1 -- independente
+    // do merge de 035f (DR0), que segue armado. Depois a SendPacket e chamada por NativeFunction.
+    if (scrCall !== null && ctx.pc.equals(scrCall.pc)) {
         try {
             scSend['this'] = ctx.ecx;
-            scSend.fn = new NativeFunction(scr.pc, 'void', ['pointer', 'int', 'pointer'], 'thiscall');
-            send({tag: 'SENDCALL', hit: 'ready', 'this': ctx.ecx.toString(), pc: scr.pc.toString()});
+            scSend.fn = new NativeFunction(scrCall.pc, 'void', ['pointer', 'int', 'pointer'], 'thiscall');
+            send({tag: 'SENDCALL', hit: 'ready', 'this': ctx.ecx.toString(), pc: scrCall.pc.toString()});
         } catch (e) { send({tag: 'SENDCALL', hit: 'error', e: 'arm: ' + e.message}); }
-        scr = null; scrDisarm();
+        scrCall = null; scrCallDisarm();
         return true;
     }
+    if (scr === null || !ctx.pc.equals(scr.pc)) return false;
     if (scr.entry) return scrProbeEntry(ctx);                        // --probe-entry: capture args + disarm
     if (scr.probe) return scrProbe(ctx);                             // --send-probe: capture + disarm, no write
     if (scr.dry) {                                                   // DRY: report everything, write nothing
@@ -546,7 +564,7 @@ var scDraining = false;                         // re-entrancy guard
 function onSendCall(m) {
     if (m.rva === undefined && m.pc === undefined) {                 // disarm
         scSend = null;
-        if (scr !== null && scr.sendcall) { scr = null; scrDisarm(); }
+        scrCall = null; scrCallDisarm();
     } else {
         var pc = null;
         if (m.pc !== undefined) pc = ptr(m.pc);
@@ -555,11 +573,10 @@ function onSendCall(m) {
             send({tag: 'SENDCALL', hit: 'error', e: 'could not resolve ' + (m.module || 'uaRO.exe') + ' base'});
         } else {
             scSend = {pc: pc, fn: null, 'this': null, queue: []};
-            scr = {pc: pc, reg: 'auto', id: undefined, idoff: 0, lo: null, hi: null, body: null,
-                   dry: false, persist: false, probe: false, entry: false, sendcall: true, bodies: {}};
+            scrCall = {pc: pc};                              // DR1, independente do merge de 035f (DR0)
             if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
-            scrArm();
-            console.log('[*] sendcall: capturing this @ ' + pc + ' (one-shot), then call-inject on the game thread');
+            scrCallArm();
+            console.log('[*] sendcall: capturing this @ ' + pc + ' (one-shot, DR1), then call-inject on the game thread');
         }
     }
     recv('sendcall', onSendCall);
@@ -593,7 +610,7 @@ function drainSendCall() {                       // called from the game thread 
 }
 
 // never leave debug registers armed without our handler: the client would die on the next write
-rpc.exports = { dispose: function () { sw = null; swDisarm(); scr = null; scrDisarm(); scSend = null; } };
+rpc.exports = { dispose: function () { sw = null; swDisarm(); scr = null; scrDisarm(); scrCall = null; scrCallDisarm(); scSend = null; } };
 
 // ---- rastreio com Stalker (opcional: o driver envia {type:'trace'}) ----------------------------
 // ARRISCADO em codigo protegido pelo gepard: o Stalker reescreve o codigo executado. Primeiro um

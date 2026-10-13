@@ -31,12 +31,15 @@ Two programs cooperate:
 By default the driver never writes to the game, and nothing it produces reaches the game server;
 everything the consumer sends back to the relay is read and ignored. The opt-in **`--inject`** path
 is the exception: the packets the consumer sends back (XKore "S" frames) are made to leave the
-client. With the scrambler breakpoint armed (the default when injecting) each packet's body is
-substituted into the client's send slot *before* the client obfuscates it, so the client's own
-scrambler encrypts the driver-supplied bytes and sends them (the `scramble` path, agent-side).
-Without a scrambler breakpoint the bytes are written straight into the send queue instead
-(`inject.SendInjector`, via `memory.ProcessMemoryWriter`). It's for a client/server you control, so
-it's off unless asked for.
+client. There are three ways, all for a client/server you control:
+- **`--inject-call`** (spontaneous, §8): call the client's own `SendPacket(this, len, buf)` so it
+  builds, encrypts and sends our bytes through its normal path — replacing nothing.
+- **scramble merge** (hijack, §7): with the scrambler breakpoint armed, each packet's body is
+  substituted into the client's send slot *before* the client obfuscates it, so the client's own
+  scrambler encrypts the driver-supplied bytes — but it only *replaces* a packet the client itself
+  builds.
+- **`inject.SendInjector`** (raw, via `memory.ProcessMemoryWriter`): writes straight into the send
+  queue. Only valid for an *unencrypted* client (the bytes are never run through the scrambler).
 
 `relay_capture_linux.py` is only the entry point. It re-exports the old names (`ActorDecrypt`,
 `WireFilter`, `SendWatch`, `plaintext_guess`, …) so existing tests and `relay_sendbp.py` keep
@@ -56,6 +59,8 @@ One file, because Frida loads one script. Sections, top to bottom:
 | send watch | Off until the driver posts `{type:'sendwatch'}`. Keeps all 4 debug registers on the next send-queue slot; `swTrap` records each write into a fixed buffer. `rpc.exports.dispose` clears the registers on unload. |
 | send | **sendmsg hook**: sends **SEND**; for queue sends while the watch is on, attaches the recorded window `W` and moves the watch to `buf + len`. |
 | scramble hook | Off until the driver posts `{type:'scramble'}`. A hardware **execution** breakpoint (DR0) on the scrambler's in-place byte store (`gepard+off`) fires while the slot still holds the plain body. In LIVE mode the handler finds the packet slot — from a named register or stack arg (`sN` = `[esp+4N]`), or, with `reg:'auto'`, by scanning the general registers for one that points at a slot whose id the driver has a body for — and replaces the body, so the client obfuscates and sends the driver-supplied bytes. Bodies are supplied per id by `{type:'scramble-set'}`, used once or kept (`persist`). DRY reports slot/regs/stack and writes nothing. Shares the debug registers with the send watch (one or the other). |
+| send-probe / entry-probe | Research modes of the scramble breakpoint (read-only, one-shot). `--send-probe` walks the stack at the scrambler store and reports return addresses (resolved against file-backed PE ranges; Wine's unpacked code is anonymous). `--probe-entry`/`--probe-at` capture a function's registers + stack args at its entry, optionally gated to a 0437/0438 touching the send queue. Used to map the send path. |
+| sendcall | Off until the driver posts `{type:'sendcall'}`. Call-based injection: a one-shot hardware breakpoint at `SendPacket` captures `this` (ecx) and builds a `NativeFunction`; then `{type:'sendcall-emit'}` packets are queued and `SendPacket(this, len, buf)` is called on the **game thread** (drained from the recv/send hooks), so the client builds+encrypts+sends them. `dispose` clears it. |
 | startup log | Where `gepard.dll` is loaded; sends **GEPARD** (base) so the driver can set `gepard+off`. |
 
 The message fields are written down in one place: the docstring of `relay/protocol.py`.
@@ -68,7 +73,7 @@ The message fields are written down in one place: the docstring of `relay/protoc
 
 | Module | Contents | Used when |
 |---|---|---|
-| `protocol` | Message tags and fields (the agent contract), `ring_msg`, `sendwatch_msg`, `scramble_msg`, `scramble_set_msg`, `conn_of`. | always |
+| `protocol` | Message tags and fields (the agent contract), `ring_msg`, `sendwatch_msg`, `scramble_msg`, `scramble_set_msg`, `sendcall_msg`, `sendcall_emit_msg`, `conn_of`. | always |
 | `agent` | `gadget_ports`, `pick_port`, `pid_of_port`; `Agent`: connects to the gadget, loads the JS, forwards messages, posts, unloads. The only module that imports `frida`. | always |
 | `cli` | Options, config-file loading (`relay_capture.conf`), length-table loading, building Relay + WireFilter, `main` (SIGTERM → clean shutdown). | always |
 | `runtime` | `Capture`: builds the components the options ask for, starts the threads, routes each agent message (`dispatch`), keeps the send watch pointed at the queue, and — for `--inject` with no scrambler location set — auto-discovers it at runtime and arms the merge. | always |
@@ -77,13 +82,12 @@ The message fields are written down in one place: the docstring of `relay/protoc
 | `actors` | `ActorDecrypt`: finds the client's receive ring and accepts a deobfuscated 09fd/09ff copy only with proof it's fresh or its surroundings match; otherwise the packet is dropped. `valid_actor`. | default (`--decrypt-actors`) |
 | `wire_feed` | `WireFeed`: queues chunks in arrival order, attaches ring snapshots, runs the feeder thread. `ClientSendFeed`: client→server packets. | default (`--wire`) |
 | `sendwatch` | `SendWatch`, `plaintext_guess`, `packet_at`, `send_queue_range`. | default (`--send-watch`) |
-| `inject` | `SendInjector`: writes the consumer's "S" packets into the client send queue (same block as the send watch), bounds-checked, dry-run by default in the class. Used for `--inject` only when no scrambler breakpoint is armed; otherwise the consumer's packets go through the `scramble` path (pre-obfuscation body substitution). | `--inject` only |
-| `moves` | `MoveTracker`, `unpack_pos2`, `pack_move`: decode the walk **destination** from the server's unobfuscated 0087 (ZC_NOTIFY_PLAYERMOVE) and log it (`MOVE-CHECK`); `pack_move` builds a 035f body for the send path. Read-only decode, driver-side. | default (`--wire`) |
+| `inject` | `SendInjector`: writes the consumer's "S" packets straight into the client send queue, bounds-checked, dry-run by default in the class. A raw memory-write primitive; valid only for an unencrypted client (encrypted ids need the `scramble` or `sendcall` paths). | `--inject` (unencrypted) |
+| `moves` | `MoveTracker`, `unpack_pos2`, `pack_move`: decode the walk **destination** from the server's unobfuscated 0087 (ZC_NOTIFY_PLAYERMOVE) and log it (`MOVE-CHECK`); `pack_move` builds a 035f body. Read-only decode, driver-side. | default |
 | `safety` | `LOGIN_SOCK`, `is_game_sock`, the single `looks_like_http`, `redact_login`, `client_packet_to_feed`, `sanitize`. | always |
 | `console` | `CaptureLog` (sanitized JSONL log + console line), `show`. | always |
-| `memory` | `/proc/<pid>/maps` parsing (`regions`, `region_at`), `ProcessMemory.read`. Shared by every memory reader. | whenever memory is read |
+| `memory` | `/proc/<pid>/maps` parsing (`regions`, `region_at`), `ProcessMemory.read`, `ProcessMemoryWriter`. Shared by every memory reader/writer. | whenever memory is used |
 | `research` | `ActorProbe` (`--probe-actors`), `ActorDiag` (`--actor-diag`). | research only |
-| `legacy` | `RingMatcher`, `SendFinder`, `LegacyPipeline` (reorder buffer + watchdog). | `--no-wire` only |
 
 ### 3.2 Threads
 
@@ -92,8 +96,8 @@ The message fields are written down in one place: the docstring of `relay/protoc
 | Frida callback | `Agent._message` | Puts every agent message on one queue. Nothing else, so the agent is never kept waiting. |
 | **worker** | `Capture.run_worker` | One message at a time, in agent order. `RINGSNAP` → attaches to waiting chunks of the same connection. `RECV` → tokenizes, notes obfuscated packets, queues the chunk. `SEND` → redacts, runs SendWatch, feeds the `S` frame (and, while auto-discovering, arms the scramble merge from the recovered scrambler pc). `GEPARD` records the gepard.dll base; `SCRAMBLE` is logged. An exception in one message is printed, not fatal. |
 | **wire feeder** | `WireFeed.run` | Sleeps until a chunk is queued. While a chunk is held it polls every 5 ms, lets ActorDecrypt settle it, and feeds finished chunks **strictly in arrival order**. Stats every 30 s. |
-| feed watchdog | `LegacyPipeline.run_watchdog` | Legacy path only: flushes a slot stuck > 0.5 s as raw bytes. |
-| relay connect | inside `Relay` | Connects/reconnects to the consumer once a second, discards what the consumer sends. |
+| relay connect | inside `Relay` | Connects/reconnects to the consumer once a second, reads what the consumer sends (discarded, or handed to an inject handler). |
+| game thread (call-inject) | `drainSendCall` | `--inject-call`: pending consumer packets are sent via `SendPacket` from the recv/send hooks (game thread). |
 | short helpers | — | ActorDecrypt's quick ring search; research and legacy scans. |
 
 ### 3.3 Shared state and its locks
@@ -106,7 +110,7 @@ The message fields are written down in one place: the docstring of `relay/protoc
 | ActorDecrypt `stream` | worker writes, feeder reads | replaced with one assignment, never mutated in place |
 | Relay socket, aligner, counters | all senders, connect loop | `Relay.lock` |
 | WireFilter per-connection state | worker only | — |
-| legacy reorder buffer | worker, watchdog | `LegacyPipeline.lock` |
+| scramble `bodies` map / `scSend` capture | worker posts, agent-side (one JS thread) | agent runs handlers on one thread |
 
 ---
 
@@ -135,7 +139,7 @@ The message fields are written down in one place: the docstring of `relay/protoc
 
 | Option (default) | Turns on |
 |---|---|
-| `--wire` (on) | WireFilter + WireFeed. `--no-wire` switches to `legacy.LegacyPipeline`. |
+| (always) | WireFilter + WireFeed (the only recv pipeline; the old `--no-wire` memory path was removed) |
 | `--decrypt-actors` (on) | ActorDecrypt |
 | `--send-watch` (on), `--send-queue auto` | SendWatch + the agent's send watch |
 | `--feed-send` (on) | `S` frames to the consumer |
@@ -143,6 +147,8 @@ The message fields are written down in one place: the docstring of `relay/protoc
 | `--inject` (off), `--inject-dry-run` | the write path: consumer "S" packets → client. Through the scramble merge when a breakpoint is armed (discovered or set), else `SendInjector` into the send queue. The shipped `relay_capture.conf` turns this on. `--feed-send` is auto-disabled while it runs. |
 | `--inject-persist` (off) | scramble merge: replace **every** matching client action with the consumer's latest packet of that id, instead of one-shot (just the next one). |
 | `--scramble-bp OFF` (off, else auto), `--scramble-reg` (`auto`), `--scramble-idoff`, `--scramble-range`, `--scramble-id`, `--inject-walk X,Y` | agent HW **execution** breakpoint on the scrambler store at gepard+OFF: rewrites the slot's plain body before the client scrambles and sends it (a valid obfuscated packet). With `--inject` and OFF left empty, the breakpoint and its register/offset/range are auto-discovered (see §7). `--inject-walk` writes one fixed walk body (DRY otherwise, logging slot+regs). Disables the send watch (shares the debug registers); 1 register. |
+| `--inject-call` (off), `--sendpacket-rva`, `--sendpacket-module` | SPONTANEOUS injection (§8): call `SendPacket(this,len,buf)` so the client sends consumer packets through its own path, replacing nothing. |
+| `--send-probe`, `--probe-entry OFF`, `--probe-at ADDR` | research probes (read-only, one-shot): map the send path by capturing a stack walk / a function's entry args. |
 | `--probe-actors`, `--actor-diag` | research tools |
 | `--feed-dump FILE`, `--out FILE` | copies of the feed / sanitized log |
 | `--config FILE` (`relay_capture.conf`) | defaults read from this INI; the command line still overrides (built-in defaults < config file < CLI). |
@@ -242,3 +248,43 @@ Tests:
   placement, and `Relay` deframing of inbound "S" frames.
 - The agent's `reg='auto'` locate and the whole merge were confirmed live against the real client
   (discovered `store @ gepard+0x18eff2`, located `reg=ecx, idoff=-2`).
+
+---
+
+## 8. Call-based spontaneous injection (2026-10-13)
+
+The scramble merge (§7) can only *replace* a packet the client itself builds. To issue a packet
+spontaneously — with nothing replaced — the driver calls the client's own send routine so the
+client builds, encrypts and transmits our bytes through its normal path.
+
+**How the send path was mapped.** The obfuscation is a gepard VM, so the stack near the scrambler
+is all gepard frames and a plain stack walk gives stale/ambiguous callers. The reliable signal was
+the send watch's *write PCs*: a generic `memcpy` (`gepard+0xa0770`, a normal function) copies the
+built packet into the send-queue slot. A one-shot entry probe at that `memcpy`, gated to a
+0437/0438 copy into the send-queue block, captured its return address — which is the client's own
+send routine, **in `uaRO.exe` code that gepard unpacked into anonymous `rwx` memory based at
+`0x401000`** (so it is not a file-backed module; probes resolve it via the mapped ranges). Reading
+that routine gave:
+
+```
+thiscall  SendPacket(this /*ecx*/, int len /*[esp+4]*/, void* buf /*[esp+8]*/)
+          memcpy(this->buf + this->cursor, buf, len); this->cursor += len;   (gepard encrypts + flushes after)
+```
+
+**`--inject-call`.** The driver tells the agent where `SendPacket` is (`--sendpacket-rva`, default
+`0x816640` from the `uaRO.exe` base, resolved by `--sendpacket-module`). The agent captures `this`
+once with a one-shot hardware breakpoint at the entry (no code patching, so no anti-tamper trip),
+builds a `NativeFunction`, and for each inbound consumer "S" packet (`Capture._on_inbound_sendcall`
+→ `sendcall_emit_msg`) queues it and calls `SendPacket(this, len, buf)` from a **game-thread** hook
+(`drainSendCall`, off the recv/send hooks) — never the JS/relay thread.
+
+Verified live: `sit`/`stand` from the consumer are sent and the client acts on them with no client
+input and nothing replaced.
+
+**Known limits (work in progress):**
+- Injecting `035f` (walk) through this queue path desyncs the encrypted send channel (035f uses a
+  separate stack-based path, and the obfuscation carries per-connection state); a relog resets it.
+  Walks need their own send routine, and/or the call should go one level up through the function
+  that manages the per-packet sequence/counter.
+- There is a noticeable latency (~700 ms) because the call is drained only from the recv/send
+  hooks; a more frequent game-thread drain point is needed.

@@ -10,7 +10,6 @@ Modules, in the order data flows through them:
   relay        XKore framing + connection to the consumer
   safety       credential redaction and the one HTTP check
   console      sanitized JSONL log + console lines
-  legacy       --no-wire memory-only path (RingMatcher, SendFinder, reorder buffer)
   research     --probe-actors / --actor-diag tools
   cli          options, wiring, threads
 """

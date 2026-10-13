@@ -80,17 +80,10 @@ def parse_args(argv=None):
                          'Default 09fd/09ff = actor packets whose bodies are encrypted (only reach the consumer '
                          'once --decrypt-actors has verified them). Global chat (02c1, npc_chat/#main) is fed; '
                          'add 02c1 here if the consumer crashes on chat from off-map senders.')
-    ap.add_argument('--find-send', action='store_true',
-                    help='--no-wire: also recover PLAINTEXT of outgoing (client->server) packets by locating the '
-                         'client send buffer in memory (logs SEND-PLAIN). Reads /proc/<pid>/mem.')
     ap.add_argument('--feed-send', action=argparse.BooleanOptionalAction, default=True,
                     help='feed client->server packets to the consumer as XKore "S" frames so it sees a full '
                          'bidirectional session. Still observation-only: the consumer\'s own outgoing frames are '
                          'discarded, nothing reaches the real server. --no-feed-send keeps the recv-only "R" feed.')
-    ap.add_argument('--wire', action=argparse.BooleanOptionalAction, default=True,
-                    help='feed the WIRE bytes (uaRO server->client is cleartext except 09fd/09ff bodies) '
-                         'instead of reading "decrypted" copies from client memory. '
-                         '--no-wire = old RingMatcher/SendFinder path (its cached ring went stale -> garbage).')
     ap.add_argument('--decrypt-actors', action=argparse.BooleanOptionalAction, default=True,
                     help='--wire: fill in the encrypted 09fd/09ff bodies from the client\'s decrypted '
                          'recv ring (verified against the cleartext stream; unverifiable ones are dropped)')
@@ -209,14 +202,10 @@ def build_feed(a, drop):
         return None, None
     host, _, port = a.relay.rpartition(':')
     host = host or '127.0.0.1'
-    lengths = read_lengths(a.recvpackets, required=a.wire)
-    if a.wire:
-        wire = WireFilter(lengths, drop)
-        relay = Relay(host, int(port), a.relay_format)   # unaligned: the filter tokenizes
-        print('[*] --wire: feeding cleartext wire bytes, per-connection tokenized')
-    else:
-        wire = None
-        relay = Relay(host, int(port), a.relay_format, lengths=lengths, drop=drop)
+    lengths = read_lengths(a.recvpackets, required=True)
+    wire = WireFilter(lengths, drop)
+    relay = Relay(host, int(port), a.relay_format)       # unaligned: the filter tokenizes
+    print('[*] feeding cleartext wire bytes, per-connection tokenized')
     if a.feed_dump:
         relay.dump = open(a.feed_dump, 'wb')
     print(f'[*] feeding decrypted server->client packets -> {host}:{port} ({a.relay_format})')
@@ -231,7 +220,7 @@ def main(argv=None):
 
     port = a.port or pick_port(a.name)
     pid = pid_of_port(port)
-    reads_memory = not a.wire or (wire is not None and (a.decrypt_actors or a.probe_actors))
+    reads_memory = wire is not None and (a.decrypt_actors or a.probe_actors)
     if pid is None and reads_memory:
         sys.exit(f'[!] no process found listening on gadget port {port} (needed to read its memory)')
 

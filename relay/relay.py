@@ -21,8 +21,9 @@ class Relay:
 
     Connects as a client to host:port; a background thread keeps (re)connecting and drops a
     peer that closed. While nothing listens, bytes are dropped rather than buffered unbounded.
-    With a length table (`lengths`, legacy --no-wire path) server->client bytes first pass
-    through a PacketAligner so the consumer only ever sees whole packets."""
+    Optionally, with a length table (`lengths`) server->client bytes first pass through a
+    PacketAligner so the consumer only ever sees whole packets (not used by the default wiring,
+    which feeds pre-tokenized wire bytes; kept for a raw/aligned stream consumer)."""
     FRAME_MAX = 0xFFFF                                 # 'len' is a 16-bit field
 
     def __init__(self, host, port, fmt='xkore1', lengths=None, align=True, drop=None):
@@ -178,7 +179,8 @@ class Relay:
 
 
 class PacketAligner:
-    """Legacy (--no-wire): cuts an unaligned server->client byte stream at packet boundaries.
+    """Cuts an unaligned server->client byte stream at packet boundaries (optional; for a raw
+    consumer fed through Relay with a length table).
 
     Holds bytes until it finds an offset from which several packets in a row tokenize, then
     emits only whole packets (minus `drop` ids) and keeps the trailing partial one. An unknown

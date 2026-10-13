@@ -3,16 +3,14 @@
 Threads:
   Frida callback   Agent._message -> work queue (does nothing else, so the agent never waits)
   worker           Capture.run_worker: one message at a time, in agent order
-  wire feeder      WireFeed.run (default path, with a relay)
-  watchdog         LegacyPipeline.run_watchdog (--no-wire, with a relay)
-  relay connect    inside Relay; short-lived discovery threads inside ActorDecrypt/legacy"""
+  wire feeder      WireFeed.run (with a relay)
+  relay connect    inside Relay; short-lived discovery threads inside ActorDecrypt"""
 import queue
 import threading
 
 from . import protocol
 from .actors import ActorDecrypt
 from .inject import InjectError, SendInjector
-from .legacy import LegacyPipeline
 from .memory import ProcessMemoryWriter
 from .moves import MoveTracker, pack_move
 from .protocol import scramble_msg, scramble_set_msg, sendcall_emit_msg, sendcall_msg, sendwatch_msg
@@ -62,9 +60,10 @@ class Capture:
             print('[!] --inject is on: disabling --feed-send to avoid a re-inject feedback loop')
             feed_send = False
 
-        if opts.wire:
-            self.dec = ActorDecrypt(pid) if (opts.decrypt_actors and wire) else None
-            probe = ActorProbe(pid) if (opts.probe_actors and wire) else None
+        self.recv_path = self.send_path = None
+        if wire is not None:                           # the feed pipeline (needs a relay/WireFilter)
+            self.dec = ActorDecrypt(pid) if opts.decrypt_actors else None
+            probe = ActorProbe(pid) if opts.probe_actors else None
             diag = ActorDiag(self.dec) if (self.dec and opts.actor_diag) else None
             # scramble intercept, call-inject and the full send watch all need the debug registers.
             uses_dbg = self.scramble or getattr(opts, 'inject_call', False)
@@ -85,11 +84,6 @@ class Capture:
             self.recv_path = WireFeed(wire, relay, log, post, dec=self.dec, diag=diag, probe=probe,
                                       actor_delay=opts.actor_delay, report_stats=self.report_stats)
             self.send_path = ClientSendFeed(relay, feed_send, self.sendwatch)
-        else:
-            find_send = opts.find_send or feed_send
-            if find_send:
-                print('[*] --find-send: locating client plaintext send buffer (logs SEND-PLAIN)')
-            self.recv_path = self.send_path = LegacyPipeline(pid, relay, log, post, feed_send, find_send)
         if feed_send:
             print('[*] --feed-send: relaying client->server packets to the consumer as "S" frames '
                   '(bidirectional observation; nothing reaches the real server)')
@@ -120,7 +114,7 @@ class Capture:
                     else 'one-shot per packet'
                 print(f'[*] --inject + --scramble-bp: consumer "S" packets -> scramble BP body map '
                       f'(substituted pre-XOR, {mode})')
-            elif opts.wire and not getattr(opts, 'scramble_bp', ''):
+            elif wire is not None and not getattr(opts, 'scramble_bp', ''):
                 # No scrambler location given: discover it at runtime. The send watch (already on)
                 # reports the scrambler write pc on the first encrypted 0437/0438; then we disarm it
                 # and arm the exec breakpoint there with reg='auto' (the agent self-locates the
@@ -146,8 +140,6 @@ class Capture:
         threading.Thread(target=self.run_worker, name='worker', daemon=True).start()
         if self.relay and isinstance(self.recv_path, WireFeed):
             threading.Thread(target=self.recv_path.run, name='wire-feeder', daemon=True).start()
-        if self.relay and isinstance(self.recv_path, LegacyPipeline):
-            threading.Thread(target=self.recv_path.run_watchdog, name='feed-watchdog', daemon=True).start()
 
     def run_worker(self):
         while True:
@@ -162,16 +154,21 @@ class Capture:
         if tag == protocol.SENDWATCH_ERR:
             print(f"[!] send watch: {m.get('e')}")
         elif tag == protocol.RINGSNAP:
-            self.recv_path.on_ringsnap(m)
+            if self.recv_path:
+                self.recv_path.on_ringsnap(m)
         elif tag == protocol.RECV:
-            self.recv_path.on_recv(m)                  # logs the chunk itself (maybe later, legacy)
+            if self.recv_path:
+                self.recv_path.on_recv(m)              # logs the chunk itself
+            else:
+                self.log.write(m)                      # no feed (no --relay): log only
         elif tag == protocol.GEPARD:
             self.gepard_base = int(m['base'], 16) if m.get('base') else None
             print(f"[*] gepard.dll base: {m.get('base')}")
             self.log.write(m)                          # record it in the JSONL too
         else:
             if tag == protocol.SEND:
-                self.send_path.on_send(m)
+                if self.send_path:
+                    self.send_path.on_send(m)
                 if self.injector:
                     self.injector.on_send(m)           # follow the live send-queue tail slot
                 if m.get('enc') and self.gepard_base:  # discovery: scrambler write-pc as gepard+offset

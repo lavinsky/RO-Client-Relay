@@ -33,11 +33,11 @@ unrecoverable ones and `035f` walks are dropped (walk coordinates are read
 instead from the server's cleartext `0087`). Credentials are redacted
 (`safety.py`).
 
-**Inject path (opt-in, write).** Packets the consumer sends back are substituted
-into the client's packet slot at the scrambler breakpoint — *before* the
-client's in-place XOR — so the client encrypts them with the live key and
-transmits them. One-shot per packet, or persistent (replace every matching
-client action). See [Injection](#injection-write-path).
+**Inject path (opt-in, write).** Packets the consumer sends back are made to leave
+the client, either **spontaneously** by calling the client's own `SendPacket`
+(`--inject-call`, nothing replaced) or by **hijacking** the client's next matching
+packet at the scrambler breakpoint — *before* the client's in-place XOR — so the
+client encrypts our bytes with the live key. See [Injection](#injection-write-path).
 
 ## Requirements
 
@@ -82,10 +82,22 @@ Settings precedence: **built-in defaults < config file < command line.**
 
 ## Injection (write path)
 
-When `inject` is on, the consumer's `S` frames are injected into the client's
-send queue at the scrambler breakpoint. This needs to know where the scrambler
-is and how it addresses the packet slot — four values that are **auto-discovered
-at runtime** when left unset:
+There are two ways to make the client transmit the consumer's packets (both for a
+client/server you own):
+
+- **Spontaneous — `--inject-call`** (no client packet replaced): the driver calls
+  the client's own `SendPacket(this, len, buf)` so it builds, encrypts and sends
+  each consumer `S` packet through its normal path. `this` is captured once with a
+  hardware breakpoint and the call is made on the game thread. `SendPacket` is at
+  `--sendpacket-module` + `--sendpacket-rva` (default `uaRO.exe+0x816640`).
+  Bootstrap: do one in-client `0437` action so `this` is captured.
+  *Known WIP:* `035f` (walk) uses a separate path and desyncs the cipher if sent
+  this way (relog resets it); and there's ~700 ms latency. See `ARCHITECTURE.md` §8.
+- **Hijack — scramble merge** (replaces the client's next matching packet): the
+  consumer's `S` frames are substituted into the client's send slot at the
+  scrambler breakpoint, pre-XOR. This needs to know where the scrambler is and how
+  it addresses the packet slot — four values that are **auto-discovered at runtime**
+  when left unset:
 
 1. the scrambler store pc — from the send watch, on the first encrypted
    `0437`/`0438` you send;
@@ -122,12 +134,11 @@ Data flows through the `relay/` package in this order:
 | `sendwatch`   | recovers plaintext of encrypted client→server packets |
 | `wire_feed`   | default pipeline: RECV chunks → ordered, filled-in feed |
 | `relay`       | XKore framing + connection to the consumer |
-| `inject`      | write path: plant crafted packets in the client send queue |
+| `inject`      | write path: `SendInjector` plants raw packets in the client send queue (unencrypted clients) |
 | `moves`       | decode the server's cleartext `0087` move destination |
 | `safety`      | credential redaction and the one HTTP check |
 | `console`     | sanitized JSONL log + console lines |
 | `memory`      | read/write `/proc/<pid>/mem` (never pauses the game) |
-| `legacy`      | `--no-wire` memory-only path (superseded) |
 | `research`    | `--probe-actors` / `--actor-diag` tools |
 | `runtime`     | `Capture`: builds components and routes agent messages |
 | `cli`         | options, config loading, wiring, threads |

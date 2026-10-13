@@ -31,7 +31,6 @@ from relay.agent import gadget_ports, pick_port                             # no
 from relay.cli import main
 from relay.console import show                                              # noqa: F401
 from relay.inject import InjectError, SendInjector                          # noqa: F401
-from relay.legacy import RingMatcher, SendFinder                            # noqa: F401
 from relay.memory import ProcessMemoryWriter                                # noqa: F401
 from relay.moves import MoveTracker, pack_move, unpack_pos2                 # noqa: F401
 from relay.packets import WireFilter, load_lengths                          # noqa: F401

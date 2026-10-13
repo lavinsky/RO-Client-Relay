@@ -1,0 +1,13 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Runtime capture artifacts (session-specific; regenerated each run, not source)
+relay_log.jsonl
+.relay_actor_ring
+.relay_ring
+*.out
+*.bin
+
+# Local snapshots (git is the history now)
+backup_*/

@@ -437,8 +437,9 @@ function scrTrap(d) {
     if (scrCall !== null && ctx.pc.equals(scrCall.pc)) {
         try {
             scSend['this'] = ctx.ecx;
+            scSend.tid = Process.getCurrentThreadId();   // a thread em que a SendPacket roda; drenar so nela
             scSend.fn = new NativeFunction(scrCall.pc, 'void', ['pointer', 'int', 'pointer'], 'thiscall');
-            send({tag: 'SENDCALL', hit: 'ready', 'this': ctx.ecx.toString(), pc: scrCall.pc.toString()});
+            send({tag: 'SENDCALL', hit: 'ready', 'this': ctx.ecx.toString(), pc: scrCall.pc.toString(), tid: scSend.tid});
         } catch (e) { send({tag: 'SENDCALL', hit: 'error', e: 'arm: ' + e.message}); }
         scrCall = null; scrCallDisarm();
         return true;
@@ -446,6 +447,18 @@ function scrTrap(d) {
     if (scr === null || !ctx.pc.equals(scr.pc)) return false;
     if (scr.entry) return scrProbeEntry(ctx);                        // --probe-entry: capture args + disarm
     if (scr.probe) return scrProbe(ctx);                             // --send-probe: capture + disarm, no write
+    if (scr.trace) {                                                 // TRACE: snapshot por byte, so no fluxo de envio
+        var ex = ctx.ecx, bx = ctx.ebx;
+        if (!(ex instanceof NativePointer) || scr.lo === null ||
+            ex.compare(scr.lo) < 0 || ex.compare(scr.hi) >= 0) return true;   // so envio (ecx no range)
+        if (scr.traceN >= scr.traceMax) { scr.trace = false; scrDisarm(); send({tag: 'SCRAMBLE', hit: 'trace-done', n: scr.traceN}); return true; }
+        scr.traceN++;
+        var wb = bx.sub(bx.and(0x3ff)), tbl = null, db = null;       // janela 1KB-alinhada ao ebx
+        try { tbl = toHex(wb, 0x600); } catch (e) {}
+        try { db = toHex(ex, 1); } catch (e) {}
+        send({tag: 'SCRAMBLE', hit: 'trace', n: scr.traceN, ecx: ex.toString(), ebx: bx.toString(), win: wb.toString(), db: db, tbl: tbl});
+        return true;
+    }
     if (scr.dry) {                                                   // DRY: report everything, write nothing
         var regs = {}, stk = [], i;
         GP.forEach(function (r) { try { regs[r] = ctx[r].toString(); } catch (e) {} });
@@ -518,6 +531,8 @@ function onScramble(m) {
                probe: !!m.probe,       // --send-probe: one-shot read-only stack walk of a real send
                entry: !!m.entry,       // --probe-entry: one-shot capture of a function's args at entry
                anyid: !!m.anyid,       // --probe-anyid: capture the first in-range hit regardless of id
+               trace: !!m.trace,       // --scramble-trace: snapshot da tabela/posicoes por byte (so envio)
+               traceMax: m.traceMax || 400, traceN: 0,
                nprobe: 0,              // in-range misses seen (hard cap -> disarm, never flood)
                ids: (function () { var o = {}; (m.ids || [0x0437, 0x0438]).forEach(function (x) { o[x] = 1; }); return o; })(),
                bodies: {}};        // --inject merge: id -> plaintext body to substitute (pre-XOR)
@@ -560,6 +575,9 @@ function hexToBytes(h) {
 // the call is made on the GAME thread (drained from the recv/send hooks), never from the JS thread.
 var scSend = null;                              // {pc, fn, this, queue:[[bytes]]}
 var scDraining = false;                         // re-entrancy guard
+var scCastMs = 800;                             // janela de paceamento dos casts (0 desliga)
+var scLastCast = 0;                             // Date.now() do ultimo cast realmente enviado
+var CAST_IDS = {0x0438: 1, 0x0af4: 1};          // pericias com tempo de cast: so uma por janela
 
 function onSendCall(m) {
     if (m.rva === undefined && m.pc === undefined) {                 // disarm
@@ -573,6 +591,7 @@ function onSendCall(m) {
             send({tag: 'SENDCALL', hit: 'error', e: 'could not resolve ' + (m.module || 'uaRO.exe') + ' base'});
         } else {
             scSend = {pc: pc, fn: null, 'this': null, queue: []};
+            if (m.castMs !== undefined) scCastMs = m.castMs;
             scrCall = {pc: pc};                              // DR1, independente do merge de 035f (DR0)
             if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
             scrCallArm();
@@ -590,13 +609,23 @@ function onSendEmit(m) {
 }
 recv('sendcall-emit', onSendEmit);
 
-function drainSendCall() {                       // called from the game thread (recv/send hooks)
+function drainSendCall() {                       // only runs on the game thread (SendPacket must)
     if (scDraining || scSend === null || scSend.fn === null || scSend['this'] === null) return;
     if (scSend.queue.length === 0) return;
+    if (scSend.tid && Process.getCurrentThreadId() !== scSend.tid) return;   // so na thread que roda a SendPacket
     scDraining = true;
     try {
         while (scSend.queue.length) {
             var pk = scSend.queue.shift();
+            var id = pk.length >= 2 ? (pk[0] | (pk[1] << 8)) : 0;
+            if (scCastMs > 0 && CAST_IDS[id]) {              // pericia com cast: so uma por janela
+                var now = Date.now();                        // retentativas enfileiradas drenariam
+                if (now - scLastCast < scCastMs) {           // em rajada e uma cancelaria a outra
+                    send({tag: 'SENDCALL', hit: 'throttled', len: pk.length, id: id});
+                    continue;                                // descarta este cast (nao reenfileira)
+                }
+                scLastCast = now;
+            }
             try {
                 var buf = Memory.alloc(pk.length < 8 ? 8 : pk.length);
                 buf.writeByteArray(pk);
@@ -692,6 +721,21 @@ hookAll(['__sendmsg64', 'sendmsg'], {
         send(m);
         if (scSend !== null) drainSendCall();                       // game thread: safe point to call-inject
     }
+});
+
+// ---- dreno periodico ---------------------------------------------------------------------------
+// drainSendCall so roda depois de trafego de socket (recv/send), entao uma acao enfileirada
+// (0437/0438) esperava o proximo pacote -- muitas vezes o 035f de um clique de andar. O cliente
+// consulta o socket e processa mensagens a cada frame na thread do jogo; drenar a partir dessas
+// chamadas frequentes entrega a acao sem precisar de trafego. drainSendCall ja se restringe a
+// thread do jogo e sai barato com a fila vazia, entao isto e estritamente aditivo e seguro.
+['poll', 'ppoll', 'select', 'pselect', 'pselect6'].forEach(function (name) {
+    var a = Module.findGlobalExportByName(name);
+    if (a === null) return;
+    console.log('[+] dreno periodico em ' + name + ' @ ' + a);
+    Interceptor.attach(a, { onEnter: function () {
+        if (scSend !== null && scSend.queue.length) drainSendCall();
+    }});
 });
 console.log('[*] no PE code patched');
 

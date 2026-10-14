@@ -43,7 +43,8 @@ requirements.txt
 agent/                   o agente Frida (um arquivo .js)
 data/                    tabela de tamanhos de pacote (uaro_recvpackets.txt)
 relay/                   o pacote do driver — um módulo por responsabilidade (§3.1)
-  resources/             gadget Frida baixado pelo setup.sh (não versionado)
+  resources/             gadget Frida (baixado pelo setup.sh, não versionado) +
+                         Gepard-SRC-LGP-master (fonte de referência do gepard, versionado)
 tests/                   um teste por módulo (§12); _boot.py + fixtures/
 README.md                como instalar e rodar
 ARCHITECTURE.md          este documento
@@ -158,6 +159,38 @@ Os campos das mensagens estão no docstring de `relay/protocol.py`.
   pacote fica em `ecx-2`). O acompanhamento da fila relata o pc como `gepard+0x18eff4`
   (= store + 2, pois o watchpoint de dados dispara depois da escrita).
 
+### 5.1 Modelo do gepard (fonte de 2016 em `relay/resources/Gepard-SRC-LGP-master`)
+
+Um fonte de servidor rAthena com a integração do gepard (build `CODE_VERSION=2016122701`) revela o
+modelo que o build atual ainda segue. Está em `src/common/socket.cpp`/`.hpp`. Resumo (detalhe pleno
+em `gepard_investigation.md` §22):
+
+- **Cifra = stream cipher auto-modificante** (`gepard_enc_dec`): estado `{pos_1,pos_2,pos_3,key[256]}`,
+  XOR independente do texto, keystream depende do `size`, avança por byte. Três unidades por sessão:
+  `recv_crypt`, `send_crypt`, `sync_crypt`.
+- **Cifragem é SELETIVA por id** e cobre só o **corpo (a partir do offset 2)**: andar (`035f`),
+  ação (`0437`), perícia on-target (`0438`), perícia on-ground (`0af4`), login, sussurro, init-ack e
+  sync. IDs fora disso (ex. `0368`) vão **em claro** — bate com o fio.
+- **Sem validação por-ação.** O servidor só faz `gepard_enc_dec(corpo, recv_crypt)` e parseia. A ação
+  é aceita se e só se o corpo **decifra com o `recv_crypt` na posição certa do stream**.
+- **`8280` (CS_GEPARD_SYNC) é heartbeat**, não validação: corpo = constante `0xDDCCBBAA` cifrada.
+- Por isso a ação **injetada crua falha por SINCRONIA de cifra** (corpo cifrado na posição/estado
+  errado, ou sem cifra), não por falta de token. O merge do `035f` funciona porque passa pela
+  cifragem real do cliente, que avança o estado naturalmente.
+
+### 5.2 Diferenças do build atual e tentativa de resolver a cifra (§23)
+
+- As **constantes/derivação por seed de 2016 NÃO valem** no build atual: a `key[256]` começa de um
+  **ramp fixo** `key[i]=rol8(i,2)` e as posições caminham de forma **linear** (`0x101`/`0x104` variam;
+  `0x100`/`0x102`/`0x103` constantes por sessão).
+- Unidades localizáveis em memória pelo ramp (sessão de referência: recv `key[0]=0x3efdd00`, send
+  `0x3efddd8`; mudam a cada relog).
+- **`gepard+0x18eff2` fica DEPOIS da geração do keystream** (é o XOR/store final). O traço por-byte
+  ali mostra tabela/posições **estáticas** e nenhuma relação `db==key[pos]` — então esse BP **não**
+  expõe a função por-palavra `f`. Resolver `f` exigiria achar a estrutura de estado real e as
+  instruções que a mutam (RE profundo). Conclusão em §23: **o caminho robusto é chamar a função do
+  próprio cliente** (caminho 1 / `--inject-call`), que dispensa `f`.
+
 ---
 
 ## 6. Caminhos de escrita (reenvio de pacotes do consumidor)
@@ -227,6 +260,12 @@ contra inundação:
 - `--trace-test MS` / `--trace-walk MS` / `--trace-internal MS`: **Stalker**. Segue a thread
   principal por MS ms. `test` só conta eventos (sobrevivência); `walk` registra chamadas
   `uaRO→gepard`; `internal` registra `uaRO→uaRO`. Comparar parado vs andando isola o fluxo.
+- `--scramble-trace N`: traço passo-a-passo no breakpoint do scramble (precisa `--scramble-bp` e,
+  na prática, `--scramble-range` para gatear por fluxo). A cada byte emite `SCRAMBLE hit='trace'`
+  com `ecx` (ponteiro do dado), `ebx`, o byte e um snapshot de **~1 KB** alinhado ao `ebx`
+  (tabela `key[256]` + posições). **Teto `N`** (auto-desarma) e gate de range evitam inundação;
+  é leitura fixa barata, não varredura. Usado em §23 (recv limpo anda `+1`/byte; envio é ruidoso).
+  Resultado: `0x18eff2` fica depois do keystream, então não revelou `f` — ver §5.2/§23.
 
 **Lição importante:** o passeio de pilha no store da cifragem pega muitos endereços de retorno
 **obsoletos** (a pilha é profunda, cheia de histórico do laço de UI), então não é confiável para
@@ -350,3 +389,9 @@ dados gravados ficam em `tests/fixtures/`.
   envia ou recebe algo. Um ponto de drenagem mais frequente na thread do jogo (um tick/frame)
   reduziria — mas a chamada **precisa** sair na thread do jogo, não na thread JS.
 - O passeio de pilha é pouco confiável (quadros obsoletos); preferir Stalker para mapear.
+- **Cifra "feita por nós" (descartado por ora, §22/§23):** a ideia de cifrar os pacotes no driver
+  esbarra em resolver a função por-palavra `f` do stream cipher. O fonte de 2016 (§5.1) dá o esqueleto
+  e as unidades são localizáveis em memória, mas `gepard+0x18eff2` fica **depois** do keystream e não
+  expõe `f`; obtê-la exige RE profundo. Como o diagnóstico (§5.1) mostra que a ação injetada só falha
+  por **sincronia de cifra** — que o próprio cliente resolve ao enviar — a rota robusta é o **caminho 1**
+  (chamar a função do cliente). Ver o `HANDOFF.md` para o estado e o próximo passo concreto.

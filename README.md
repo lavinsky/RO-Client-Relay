@@ -122,6 +122,11 @@ O agente Frida é `agent/relay_hook_linux.js`. Veja `ARCHITECTURE.md` para o map
 descobertas de engenharia reversa (endereços, caminhos de envio, estado da cifragem) e as
 pendências.
 
+`relay/resources/Gepard-SRC-LGP-master` é o fonte de um build **antigo** do gepard (lado servidor),
+usado como referência da cifra e do protocolo (ver `ARCHITECTURE.md` §5.1 e `gepard_investigation.md`
+§22). `--scramble-trace N` é a sonda de traço passo-a-passo da cifragem (§8 do ARCHITECTURE).
+O estado atual da investigação e o próximo passo concreto estão em `HANDOFF.md`.
+
 ## Testes
 
 Testes offline (sem o cliente), contra dados gravados. Cada arquivo roda como script e

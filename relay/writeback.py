@@ -21,6 +21,15 @@ SCRAMBLE_STORE_BACK = 2
 
 class WriteBack:
     WALK_ID = 0x035f                                   # andar: único pacote roteado para o merge
+    SELECT_ID = 0x0368                                 # seleção de alvo por GID (o que um clique gera)
+    SKILL_ID = 0x0438                                  # perícia em alvo: [id][nível:2][skill:2][GID:4]
+    ACT_ID = 0x0437                                    # ação: [id][GID:4][ação:1] (ataque tem GID != 0)
+    CAST_IDS = (0x0438, 0x0af4)                         # perícias com tempo de cast (alvo e chão): um novo
+    #                                                    cast cancela o anterior, então o consumidor não
+    #                                                    pode repeti-las em rajada (ver _on_inbound_sendcall).
+    SKIP_IDS = (0x0368, 0x0369, 0x0193, 0x0094, 0x0360)   # tagarelice que o cliente já emite sozinho
+    #                                                    (pedido de nome por GID / tick): não reinjetamos
+    #                                                    a do consumidor, senão floda o servidor (gepard).
 
     # ---- configuração do ponto de cifragem --------------------------------------------------
     def _build_scramble(self, opts):
@@ -58,7 +67,8 @@ class WriteBack:
             lo, hi = (int(x, 16) for x in opts.scramble_range.split('-'))
         cfg = {'off': int(sb, 16), 'reg': opts.scramble_reg, 'pid': int(opts.scramble_id, 16),
                'body': None, 'dry': dry, 'idoff': getattr(opts, 'scramble_idoff', 0), 'lo': lo,
-               'hi': hi, 'persist': bool(getattr(opts, 'inject_persist', False))}
+               'hi': hi, 'persist': bool(getattr(opts, 'inject_persist', False)),
+               'trace': int(getattr(opts, 'scramble_trace', 0) or 0)}
         rng = f" range 0x{lo:x}-0x{hi:x}" if lo is not None else ''
         mode = 'DRY (log only)' if dry else 'LIVE --inject merge (bodies from the consumer)'
         print(f"[*] --scramble-bp: exec breakpoint at gepard+0x{cfg['off']:x} reg {cfg['reg']} "
@@ -72,6 +82,11 @@ class WriteBack:
         self.autodiscover = False
         self._scramble_armed = self.scramble is not None
         self._disc_lock = threading.Lock()
+        # Paceamento dos casts: o consumidor (OpenKore) re-tenta a perícia várias vezes; enfileiradas,
+        # elas drenam em rajada e cada cast cancela o anterior. O agente deixa passar no máximo um cast
+        # por esta janela, NO DRENO (arm_sendcall envia cast_ms). 0 desliga. (Política do lado do
+        # consumidor por natureza; vive aqui até o plugin dele fazê-la.)
+        self._cast_throttle = float(getattr(opts, 'cast_throttle', 0.0) or 0.0)
         if not (getattr(opts, 'inject', False) and self.relay is not None):
             return
         relay = self.relay
@@ -151,13 +166,16 @@ class WriteBack:
                                    dry=c['dry'], idoff=c['idoff'], lo=c['lo'], hi=c['hi'],
                                    persist=c['persist'], probe=c.get('probe', False),
                                    entry=c.get('entry', False), pc=c.get('pc'), ids=c.get('ids'),
-                                   anyid=c.get('anyid', False)))
+                                   anyid=c.get('anyid', False), trace=c.get('trace', 0)))
 
     def arm_sendcall(self):
         """Diz ao agente onde está a SendPacket para ele capturar `this` (DR1)."""
         if getattr(self.opts, 'inject_call', False) and self.relay is not None:
-            self.post(sendcall_msg(self.sendcall_rva, getattr(self.opts, 'sendpacket_module', 'uaRO.exe')))
-            print('[*] --inject-call: do one in-client 0437/0438 action to capture the send object (this)')
+            cast_ms = int(getattr(self, '_cast_throttle', 0.0) * 1000)
+            self.post(sendcall_msg(self.sendcall_rva, getattr(self.opts, 'sendpacket_module', 'uaRO.exe'),
+                                   cast_ms=cast_ms))
+            print(f'[*] --inject-call: do one in-client 0437/0438 action to capture the send object (this)'
+                  f'{f"; casts pacejados a {cast_ms}ms no dreno" if cast_ms else ""}')
 
     def arm_trace(self):
         """Rastreio com Stalker: teste de sobrevivência (--trace-test), uaRO->gepard (--trace-walk)
@@ -198,11 +216,32 @@ class WriteBack:
         else:
             self._on_inbound_sendcall(payload, typ)
 
+    def _target_gid(self, pid, payload):
+        """GID do alvo de uma ação, ou None quando ela não tem alvo (sentar/levantar têm GID 0).
+        Perícia 0438: GID no deslocamento 6. Ação 0437: GID no deslocamento 2 (ataque = GID != 0)."""
+        if pid == self.SKILL_ID and len(payload) >= 10:
+            return payload[6:10]
+        if pid == self.ACT_ID and len(payload) >= 7 and payload[2:6] != b'\x00\x00\x00\x00':
+            return payload[2:6]
+        return None
+
     def _on_inbound_sendcall(self, payload, typ):
-        """Entrega ao agente para transmitir pela SendPacket do próprio cliente (espontâneo)."""
+        """Entrega ao agente para transmitir pela SendPacket do próprio cliente (espontâneo).
+        Para ações com alvo, emite antes um 0368 (seleção do alvo por GID) como o clique do cliente
+        faz — sem ele o cliente/gepard não honra a perícia/ataque (observado no envio real)."""
         if typ != 'S' or len(payload) < 2:
             print(f"[inject] skip typ={typ!r} len={len(payload)} (need an 'S' packet with an id)")
             return
         pid = payload[0] | payload[1] << 8
+        if pid in self.SKIP_IDS:                       # o cliente já emite isso; não reinjetar (anti-flood)
+            return
+        # O paceamento dos casts (0438/0af4) é feito no DRENO do agente, não aqui: o consumidor manda
+        # re-tentativas espaçadas que passariam deste filtro mas, enfileiradas, drenam juntas e cada
+        # cast cancela o anterior. O agente deixa passar um cast por janela (ver cast_ms em sendcall).
+        gid = self._target_gid(pid, payload)
+        if gid is not None:
+            select = bytes([self.SELECT_ID & 0xff, self.SELECT_ID >> 8]) + gid
+            print(f"[inject] target-select 0x{self.SELECT_ID:04x} GID={gid.hex()} antes de 0x{pid:04x}")
+            self.post(sendcall_emit_msg(select.hex()))
         print(f"[inject] inbound id=0x{pid:04x} len={len(payload)} -> SendPacket: {payload[:16].hex()}")
         self.post(sendcall_emit_msg(payload.hex()))

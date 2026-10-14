@@ -45,33 +45,65 @@ print('_on_inbound_scramble ok')
 
 # --- _on_inbound_sendcall: inbound 'S' -> sendcall-emit com o pacote inteiro em hex -----------
 class FakeSend:
+    SELECT_ID = Capture.SELECT_ID
+    SKILL_ID = Capture.SKILL_ID
+    ACT_ID = Capture.ACT_ID
+    CAST_IDS = Capture.CAST_IDS
+    SKIP_IDS = Capture.SKIP_IDS
     def __init__(self):
         self.posted = []
 
     def post(self, msg):
         self.posted.append(msg)
 
+    _target_gid = Capture._target_gid
     _on_inbound_sendcall = Capture._on_inbound_sendcall
 
 s = FakeSend()
-s._on_inbound_sendcall(bytes.fromhex('3704854b5c0707'), 'S')      # ataque 0437 -> SendPacket
-assert s.posted == [sendcall_emit_msg('3704854b5c0707')], s.posted
-assert s.posted == [{'type': 'sendcall-emit', 'data': '3704854b5c0707'}], s.posted
+# tagarelice do consumidor (pedido de nome 0368) NÃO é reinjetada
+s._on_inbound_sendcall(bytes.fromhex('680384c18e06'), 'S')
+assert s.posted == [], s.posted
+# ataque 0437 (GID 854b5c07 != 0): emite 0368 do alvo ANTES do 0437
+s._on_inbound_sendcall(bytes.fromhex('3704854b5c0707'), 'S')
+assert s.posted == [{'type': 'sendcall-emit', 'data': '6803854b5c07'},
+                    {'type': 'sendcall-emit', 'data': '3704854b5c0707'}], s.posted
+s.posted.clear()
+# perícia 0438 (Fire Ball nv9 no GID 84c18e06): 0368 do alvo antes do 0438
+s._on_inbound_sendcall(bytes.fromhex('38040900110084c18e06'), 'S')
+assert s.posted == [{'type': 'sendcall-emit', 'data': '680384c18e06'},
+                    {'type': 'sendcall-emit', 'data': '38040900110084c18e06'}], s.posted
+s.posted.clear()
+# sentar 0437 (GID 0, ação 2): sem alvo -> sem 0368
+s._on_inbound_sendcall(bytes.fromhex('37040000000002'), 'S')
+assert s.posted == [{'type': 'sendcall-emit', 'data': '37040000000002'}], s.posted
 s.posted.clear()
 s._on_inbound_sendcall(bytes.fromhex('3704854b5c0707'), 'R')      # não-'S' é ignorado
 s._on_inbound_sendcall(b'\x37', 'S')                             # curto demais: ignorado
 assert s.posted == [], s.posted
 print('_on_inbound_sendcall ok')
 
+# --- sendcall_msg leva a janela de paceamento (cast_ms) para o agente --------------------------
+assert sendcall_msg(0x9463b0, 'uaRO.exe', cast_ms=800) == \
+    {'type': 'sendcall', 'rva': 0x9463b0, 'module': 'uaRO.exe', 'castMs': 800}
+assert sendcall_msg(None) == {'type': 'sendcall'}                # desarmar não leva campos
+# o paceamento em si é feito no dreno do agente (relay_hook_linux.js), validado ao vivo
+print('sendcall_msg com cast_ms ok')
+
 # --- _on_inbound_split: roteia por id (035f -> merge, demais acoes -> SendPacket) --------------
 class FakeSplit:
     WALK_ID = Capture.WALK_ID
+    SELECT_ID = Capture.SELECT_ID
+    SKILL_ID = Capture.SKILL_ID
+    ACT_ID = Capture.ACT_ID
+    CAST_IDS = Capture.CAST_IDS
+    SKIP_IDS = Capture.SKIP_IDS
     def __init__(self):
         self.posted = []
 
     def post(self, msg):
         self.posted.append(msg)
 
+    _target_gid = Capture._target_gid
     _on_inbound_split = Capture._on_inbound_split
     _on_inbound_scramble = Capture._on_inbound_scramble
     _on_inbound_sendcall = Capture._on_inbound_sendcall
@@ -81,17 +113,18 @@ sp = FakeSplit()
 sp._on_inbound_split(bytes.fromhex('5f03bec3fd'), 'S')            # 035f (andar) -> merge pre-XOR
 assert sp.posted == [{'type': 'scramble-set', 'id': 0x035f, 'body': 'bec3fd'}], sp.posted
 sp.posted.clear()
-sp._on_inbound_split(bytes.fromhex('3704854b5c0707'), 'S')       # 0437 (ataque) -> SendPacket
-assert sp.posted == [{'type': 'sendcall-emit', 'data': '3704854b5c0707'}], sp.posted
+sp._on_inbound_split(bytes.fromhex('3704854b5c0707'), 'S')       # 0437 (ataque) -> 0368 alvo + SendPacket
+assert sp.posted == [{'type': 'sendcall-emit', 'data': '6803854b5c07'},
+                     {'type': 'sendcall-emit', 'data': '3704854b5c0707'}], sp.posted
 sp.posted.clear()
-sp._on_inbound_split(bytes.fromhex('380405000600'), 'S')         # 0438 (skill) -> SendPacket
+sp._on_inbound_split(bytes.fromhex('380405000600'), 'S')         # 0438 curto (sem GID) -> SendPacket direto
 assert sp.posted == [{'type': 'sendcall-emit', 'data': '380405000600'}], sp.posted
 sp.posted.clear()
 sp._on_inbound_split(bytes.fromhex('3704854b5c0707'), 'R')       # não-'S' ignorado em ambas as rotas
 assert sp.posted == [], sp.posted
 print('_on_inbound_split ok')
 
-assert sendcall_msg(0x9463b0, 'uaRO.exe') == {'type': 'sendcall', 'rva': 0x9463b0, 'module': 'uaRO.exe'}
+assert sendcall_msg(0x9463b0, 'uaRO.exe')['rva'] == 0x9463b0 and sendcall_msg(0x9463b0)['type'] == 'sendcall'
 
 # --- _autodiscover_scramble: first encrypted send -> disarm send-watch, arm reg='auto' scramble ---
 import threading

@@ -21,6 +21,10 @@ def show(m):
     elif tag == 'SCRAMBLE':
         if m.get('hit') == 'wrote':
             print(f"[scramble] WROTE id={_pid(m.get('id'))} @{m.get('slot')} was={m.get('body')} -> {m.get('wrote')}")
+        elif m.get('hit') == 'trace':
+            print(f"[trace#{m.get('n')}] ecx={m.get('ecx')} ebx={m.get('ebx')} db={m.get('db')}")
+        elif m.get('hit') == 'trace-done':
+            print(f"[trace] concluido ({m.get('n')} passos)")
         elif m.get('hit') == 'dry':
             ptrs = ' '.join(f"{r}={v}" for r, v in (m.get('regs') or {}).items())
             stk = ' '.join(f"s{k}={v}" for k, v in enumerate(m.get('stack') or []))
@@ -55,6 +59,8 @@ def show(m):
             print(f"[sendcall] captured this={m.get('this')} @ {m.get('pc')} (call-inject armed)")
         elif hit == 'sent':
             print(f"[sendcall] SENT len={m.get('len')} {m.get('data','')[:48]}")
+        elif hit == 'throttled':
+            print(f"[sendcall] cast 0x{m.get('id', 0):04x} pacejado (rajada evitada)")
         else:
             print(f"[sendcall] {hit}: {m.get('e')}")
     elif tag == 'TRACE':

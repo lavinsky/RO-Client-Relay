@@ -81,6 +81,10 @@ def parse_args(argv=None):
                     help='--inject + --scramble-bp: keep each consumer packet and replace EVERY matching '
                          'client action of that id (persistent hijack), instead of one-shot per packet. '
                          'Clear by stopping the driver or sending an empty body.')
+    ap.add_argument('--cast-throttle', type=float, default=0.8,
+                    help='--inject-call: minimum seconds between injected cast-time skills (0438/0af4). '
+                         'The consumer retries a skill many times; without this they flush back-to-back '
+                         'and each cast cancels the previous. 0 disables (default 0.8).')
     ap.add_argument('--send-probe', action='store_true',
                     help='--inject research (read-only): instead of injecting, arm a one-shot breakpoint '
                          'on the scrambler store and, on the first 0437/0438 send, capture the registers '
@@ -128,6 +132,9 @@ def parse_args(argv=None):
     ap.add_argument('--scramble-idoff', type=int, default=0,
                     help='--scramble-bp: signed byte offset from the pointer to the packet id. 0 = pointer at '
                          'packet start; -2 = pointer at body[0] (id just before it). Body is written at id+2.')
+    ap.add_argument('--scramble-trace', type=int, default=0,
+                    help='--scramble-bp: captura passo-a-passo (snapshot da tabela/posicoes por byte, '
+                         'so no fluxo de envio em --scramble-range); valor = teto de disparos (auto-desarma)')
     ap.add_argument('--scramble-range', default='',
                     help='--scramble-bp: hex LO-HI; only act when the pointer is in this range (e.g. the stack '
                          'region for 035f, to skip the shared primitive\'s recv-decrypt hits)')

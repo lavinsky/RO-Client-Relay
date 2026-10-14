@@ -43,7 +43,8 @@ requirements.txt
 agent/                   o agente Frida (um arquivo .js)
 data/                    tabela de tamanhos de pacote (uaro_recvpackets.txt)
 relay/                   o pacote do driver — um módulo por responsabilidade (§3.1)
-  resources/             gadget Frida baixado pelo setup.sh (não versionado)
+  resources/             gadget Frida (baixado pelo setup.sh, não versionado) +
+                         Gepard-SRC-LGP-master (fonte de referência do gepard, versionado)
 tests/                   um teste por módulo (§12); _boot.py + fixtures/
 README.md                como instalar e rodar
 ARCHITECTURE.md          este documento

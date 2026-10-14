@@ -448,8 +448,13 @@ function scrTrap(d) {
     if (scr.entry) return scrProbeEntry(ctx);                        // --probe-entry: capture args + disarm
     if (scr.probe) return scrProbe(ctx);                             // --send-probe: capture + disarm, no write
     if (scr.trace) {                                                 // TRACE: snapshot por byte, so no fluxo de envio
+        if (scr.lo === null) {                                       // trace exige --scramble-range; sem ele, desarma
+            scr.trace = false; scrDisarm();
+            send({tag: 'SCRAMBLE', hit: 'trace-done', n: scr.traceN, e: 'trace needs --scramble-range'});
+            return true;
+        }
         var ex = ctx.ecx, bx = ctx.ebx;
-        if (!(ex instanceof NativePointer) || scr.lo === null ||
+        if (!(ex instanceof NativePointer) ||
             ex.compare(scr.lo) < 0 || ex.compare(scr.hi) >= 0) return true;   // so envio (ecx no range)
         if (scr.traceN >= scr.traceMax) { scr.trace = false; scrDisarm(); send({tag: 'SCRAMBLE', hit: 'trace-done', n: scr.traceN}); return true; }
         scr.traceN++;

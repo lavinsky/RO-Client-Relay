@@ -80,6 +80,20 @@ s.posted.clear()
 s._on_inbound_sendcall(bytes.fromhex('3704854b5c0707'), 'R')      # não-'S' é ignorado
 s._on_inbound_sendcall(b'\x37', 'S')                             # curto demais: ignorado
 assert s.posted == [], s.posted
+
+# dedup do 0368: ataque/perícia repetidos no MESMO alvo NÃO reemitem o target-select (anti-flood);
+# só quando o GID muda. Numa rajada de retentativas do consumidor isso evita floodar o gepard.
+d = FakeSend()
+d._on_inbound_sendcall(bytes.fromhex('3704854b5c0707'), 'S')      # 1º ataque no alvo A: 0368 + 0437
+assert d.posted == [{'type': 'sendcall-emit', 'data': '6803854b5c07'},
+                    {'type': 'sendcall-emit', 'data': '3704854b5c0707'}], d.posted
+d.posted.clear()
+d._on_inbound_sendcall(bytes.fromhex('3704854b5c0707'), 'S')      # mesmo alvo A: só o 0437, sem 0368
+assert d.posted == [{'type': 'sendcall-emit', 'data': '3704854b5c0707'}], d.posted
+d.posted.clear()
+d._on_inbound_sendcall(bytes.fromhex('380409001100aabbccdd'), 'S')  # alvo B (muda GID): 0368 + 0438
+assert d.posted == [{'type': 'sendcall-emit', 'data': '6803aabbccdd'},
+                    {'type': 'sendcall-emit', 'data': '380409001100aabbccdd'}], d.posted
 print('_on_inbound_sendcall ok')
 
 # --- sendcall_msg leva a janela de paceamento (cast_ms) para o agente --------------------------

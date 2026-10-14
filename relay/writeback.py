@@ -87,6 +87,11 @@ class WriteBack:
         # por esta janela, NO DRENO (arm_sendcall envia cast_ms). 0 desliga. (Política do lado do
         # consumidor por natureza; vive aqui até o plugin dele fazê-la.)
         self._cast_throttle = float(getattr(opts, 'cast_throttle', 0.0) or 0.0)
+        # GID do último alvo que já selecionamos (0368). Só reemitimos o 0368 quando o alvo MUDA:
+        # como todo 0368 que chega ao servidor é nosso (o do cliente/consumidor cai em SKIP_IDS),
+        # este cache reflete a seleção do lado do servidor. Sem ele, cada ataque/perícia repetida no
+        # mesmo alvo reemitiria um 0368 e flodaria o gepard (o que SKIP_IDS existe para evitar).
+        self._last_select_gid = None
         if not (getattr(opts, 'inject', False) and self.relay is not None):
             return
         relay = self.relay
@@ -239,9 +244,10 @@ class WriteBack:
         # re-tentativas espaçadas que passariam deste filtro mas, enfileiradas, drenam juntas e cada
         # cast cancela o anterior. O agente deixa passar um cast por janela (ver cast_ms em sendcall).
         gid = self._target_gid(pid, payload)
-        if gid is not None:
+        if gid is not None and gid != getattr(self, '_last_select_gid', None):
             select = bytes([self.SELECT_ID & 0xff, self.SELECT_ID >> 8]) + gid
             print(f"[inject] target-select 0x{self.SELECT_ID:04x} GID={gid.hex()} antes de 0x{pid:04x}")
             self.post(sendcall_emit_msg(select.hex()))
+            self._last_select_gid = gid                # só reemite o 0368 quando o alvo muda (anti-flood)
         print(f"[inject] inbound id=0x{pid:04x} len={len(payload)} -> SendPacket: {payload[:16].hex()}")
         self.post(sendcall_emit_msg(payload.hex()))

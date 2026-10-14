@@ -596,3 +596,174 @@ caminho **1 — chamar a função de alto nível do próprio cliente (uso de per
 — é o robusto, porque dispara a emissão natural do `8280` de validação. Próximo passo prático: caçar a
 função de uso de perícia do cliente (análoga à cadeia de movimento `uaRO+0x873a80 -> +0x875400 ->
 +0x9463b0` do `pedirMover`).
+
+### Opção B executada: ler o texto limpo do 8280 por varredura externa — inconclusivo e, no fim, irrelevante (2026-10-13)
+
+Tentativa de ver o conteúdo do `8280` para decidir se "cifrar nós mesmos e enviar direto" é viável.
+Dois métodos, ambos só-leitura:
+
+1. **Varredura de dentro do agente** (Frida `Memory.scanSync`): travou o cliente. A varredura de
+   ~600 MB é pesada demais para a thread do cliente e, no *miss*, repetia a cada heartbeat. Mesma
+   classe do watchpoint que já travou antes. **Abandonada** — não varrer de dentro do agente.
+2. **Varredura externa** (`/proc/<pid>/mem`, não pausa o cliente — método do §17): o id `80 82` em
+   claro aparece em 4000+ janelas de 128 bytes (quase todas são bytes baixos de ponteiros LE e
+   buffers de GPU), sem nenhuma que pareça um pacote de heartbeat. O buffer de texto limpo do `8280`
+   **não é localizável** pela âncora óbvia do id — provavelmente o gepard monta/emoldura o id só no
+   momento da cifragem, ou o buffer é transitório.
+
+**As strings do §17 eram pista falsa.** `FEFA3`/`0.23`/`0x3020ffff`/`0x7a959568` são registros de
+uma **tabela interna do gepard** (cada registro: string curta + token de 5 chars + o valor constante
+`0x7a959568` + dois inteiros), sem nenhum id `80 82` por perto. Não são o payload do heartbeat. O §17
+confundiu "achei strings na memória" com "conteúdo do heartbeat em texto limpo".
+
+**Mas isto é secundário diante do muro da cifra.** Mesmo que o texto limpo fosse lido e constante,
+"enviar direto cifrado por nós" exige **reproduzir a cifra de fluxo com estado do gepard** (VMProtect,
+sem solução — §6) para gerar o ciphertext no estado de keystream atual do servidor. Não conseguimos.
+Reenviar o ciphertext capturado também falha (o keystream do servidor já avançou). Logo, o conteúdo
+ser constante ou não **não muda o veredito**: o caminho "cifrar/enviar direto" está bloqueado na cifra.
+
+A única forma ainda segura de LER o conteúdo seria interceptar a rotina da cifra *sync* (achar o
+"scrambler store" sync, análogo ao do `035f`) e ler o buffer de entrada antes da cifragem — trabalho
+substancial de engenharia reversa sobre código VMProtect e arriscado (lição do watchpoint). E mesmo
+assim o "enviar direto" continuaria bloqueado. **Conclusão: abandonar o caminho 2; seguir o caminho 1.**
+
+## 22. Fonte de um build antigo do gepard (2016) — reescreve o diagnóstico (2026-10-14)
+
+`relay/resources/Gepard-SRC-LGP-master` é um rAthena com a integração do gepard do **lado servidor**
+(build `CODE_VERSION = 2016122701`). Mesmo sendo antigo e sem VMProtect, expõe o modelo que o build
+atual quase certamente ainda segue. Está tudo em `src/common/socket.cpp` / `socket.hpp`.
+
+### A cifra é um stream cipher simples e conhecido (NÃO é opaca no algoritmo)
+
+`struct gepard_crypt_unit { uint32 flag; uint8 pos_1, pos_2, pos_3; uint8 key[256]; }`. Três unidades
+por sessão: `recv_crypt`, `send_crypt`, `sync_crypt`.
+
+```c
+void gepard_session_unit(uint seed, unit) {               // deriva a unidade da seed
+    for (i=0;i<256;++i) unit->key[i] = (((seed -= seed*SESSION_CONST_1 - SESSION_CONST_2*i) >> 15) & 0xFF);
+    unit->pos_1 = seed % 20; unit->pos_2 = seed % 30; unit->pos_3 = seed % 50;
+}
+void gepard_enc_dec(data, size, unit) {                   // XOR stream auto-modificante; enc == dec
+    for (i=0;i<size;++i) {
+        unit->pos_1 += unit->key[unit->pos_2] * ALGO_KEY_1;
+        unit->key[unit->pos_3] ^= unit->pos_1;
+        unit->pos_2 += unit->key[unit->pos_3] * ALGO_KEY_2;
+        unit->key[unit->pos_1] ^= unit->pos_2;
+        unit->pos_1 -= unit->pos_3 * ALGO_KEY_3;
+        data[i] ^= unit->key[unit->pos_3];                // keystream = key[pos_3] (pós-updates)
+        unit->pos_2 ^= unit->pos_3 + (size % 0xFF);
+        unit->pos_3++;
+    }
+}
+```
+pos_1/2/3 e key são `uint8` → toda a aritmética é mod 256. O keystream **não depende do texto**
+(data[i] só é XORado, não realimenta), mas **depende de `size`** e **avança o estado da unidade** a
+cada byte. Constantes: `SESSION_CONST_1=0x582B11D8`, `SESSION_CONST_2=0xB63EBE8B`,
+`ALGO_KEY_1=0x2A`, `ALGO_KEY_2=0x4E`, `ALGO_KEY_3=0x5D`, `DATA_HASH_CONST_1=0xBD72F3DA`,
+`DATA_HASH_CONST_2=0xCD7972A4`.
+
+As seeds vêm no `SC_GEPARD_INIT` (id `0x4753`, 36 bytes, servidor->cliente, no login):
+`send_session_key @4`, `recv_session_key @6`, `sync_session_key @8` (uint16, do `rand()` do servidor).
+O cliente monta as três unidades espelhadas com as mesmas seeds (send do servidor = recv do cliente, etc.).
+
+### A cifragem é SELETIVA por id — e só o CORPO (a partir do offset 2) é cifrado
+
+`gepard_process_cs_packet` (cliente->servidor) só cifra/decifra estes ids:
+- `cs_packet_request_move` (035f), `cs_packet_action_request` (0437),
+  `cs_packet_use_skill_to_id` (0438), `cs_packet_use_skill_to_ground` (0af4):
+  `gepard_enc_dec(data+2, size-2, &recv_crypt); return false;` → decifra o corpo e deixa o rAthena
+  parsear normalmente. **Sem hash, sem token, sem validação por-ação.**
+- login (0064/0277/...), whisper (0096), `CS_GEPARD_INIT_ACK` (0xC392, verifica data_hash), e
+  `CS_GEPARD_SYNC` (0x8285).
+- IDs fora dessa lista (ex.: `0368` seleção de alvo) passam **em claro** → bate com o fio.
+
+Os 4 ids de ação ficam no `gepard_info`, preenchidos pelo `INIT_ACK` (offsets 28/30/32/34).
+
+### O 8280 (CS_GEPARD_SYNC) é um heartbeat, NÃO uma validação por-ação — §21 estava errado
+
+`CS_GEPARD_SYNC` (0x8285 neste build; 0x8280 no nosso) tem 6 bytes: id + `0xDDCCBBAA` cifrado com
+`sync_crypt`. O servidor decifra 4 bytes, confere `== 0xDDCCBBAA` e atualiza `sync_tick`. É batimento
+puro — **não libera ação nenhuma**. A observação do §21 (um 8280 ~7ms antes de cada cast) é incidental
+(o cliente atualiza o sync perto do input), não um requisito. O nosso 8280 tem 128 bytes (build mais
+novo, provavelmente estendido), mas o papel é o mesmo.
+
+### O REAL motivo de a ação injetada falhar: SINCRONIA do stream, não pacote de validação
+
+O servidor aceita a ação se e somente se o **corpo decifra com `recv_crypt` na posição certa**. Logo o
+corpo injetado precisa estar cifrado com o `send_crypt` do cliente (= seed do `recv_crypt` do servidor)
+**na posição corrente do stream**, e com o **mesmo `size`** (o keystream depende de `size`). Se
+injetamos pela `SendPacket` interna abaixo da camada de cifragem do gepard, o corpo vai sem cifra (ou
+com posição errada) → servidor decifra lixo → sem efeito; e pior, avança o `recv_crypt` do servidor →
+dessincroniza os pacotes reais seguintes. Isto explica tudo do §20/§21 **sem** precisar de token de
+validação. (E explica por que o merge do 035f funciona: ele passa pela cifragem real do cliente, que
+avança a unidade naturalmente.)
+
+### O que isto destrava para "cifrar nós mesmos"
+
+Se o build atual usa o mesmo algoritmo/constantes (a verificar), dá para **replicar `gepard_enc_dec`**
+em Python e:
+1. capturar o `SC_GEPARD_INIT` (0x4753) no login → extrair as 3 seeds → derivar as unidades;
+2. avançar as unidades observando todo o tráfego cifrado no fio (vemos tudo);
+3. cifrar nós mesmos o corpo de uma ação com `recv_crypt`(cliente->servidor) na posição corrente.
+Para não dessincronizar o cliente, ou (a) avançar também a `send_crypt` do cliente em memória pelo
+nosso pacote, ou (b) chamar a própria `gepard_enc_dec` do cliente sobre o nosso buffer (cifra e avança
+de uma vez). O "enviar direto sem o cliente" ainda esbarra em não termos socket próprio ao servidor
+(XKore 1); o caminho natural continua sendo o cliente transmitir os bytes já cifrados por nós.
+
+### Próximo passo decisivo (só-leitura, seguro): validar a cifra no build atual
+
+No login, capturar `0x4753` (INIT) + os pacotes de ação cifrados seguintes do MESMO sessão; derivar as
+unidades pelas seeds e verificar se `gepard_enc_dec` decifra o corpo para um pacote válido (ou se
+re-cifra o nosso 035f de merge, cujo texto limpo conhecemos). Casou → a cifra está replicada e o
+caminho "cifrar nós mesmos" fica aberto, sem varredura de memória nem engenharia reversa do VMProtect.
+
+## 23. Caminho do breakpoint de exec: unidades localizadas, mas f NÃO sai de 0x18eff2 (2026-10-14)
+
+Tentativa de observar a `enc_dec` passo-a-passo pelo breakpoint de execução em `gepard+0x18eff2`
+(o mesmo do merge do `035f`), para resolver a função por-palavra `f` do build atual.
+
+### O que se confirmou (vivo, cliente ileso o tempo todo)
+
+- **Modelo de ramp fixo + posições lineares (seu levantamento anterior) bate ao vivo.** A tabela
+  `key[256]` começa do ramp `key[i]=rol8(i,2)` e muta aos poucos; as posições em `key[0]+0x100`
+  têm `0x100/0x102/0x103` **constantes** e `0x101/0x104` **variáveis** (lidas mudando entre dois
+  instantes). Confirma que a derivação por seed do build 2016 (§22) **não** vale mais.
+- **Unidades de cifra localizadas nesta sessão** (endereços mudam a cada relog):
+  - recv: `key[0] = 0x3efdd00`
+  - send: `key[0] = 0x3efddd8`
+  Achadas pontuando os registradores logados no BP (modo dry) contra o ramp (`ramp 130/256` no
+  send) e varredura **limitada** (~KB) ao redor do ponteiro-âncora `ebx`. Sem varredura grande.
+- **O BP dispara POR BYTE** no fluxo recv (`ecx` do dado anda `+1`/byte, `ebx` caminha pela
+  tabela). Dá para separar envio de recepção pelo `ecx` (envio em `0x2632000–0x2730000`;
+  recepção fora, ex. `0x254a00xx`).
+
+### O resultado negativo decisivo
+
+Capturamos o traço por-byte (modo `--scramble-trace`, com teto e gate de range, seguro) e
+ajustamos offline contra o esqueleto de 2016. Em 200 passos recv:
+- As **posições** (`fb a4 a8 f4 b0`) e a **tabela** aparecem **estáticas** passo a passo.
+- **Nenhuma** hipótese de saída casou (`db==key[pos4]`, `db==key[pos1]`, `db==key[ebx-key0]`:
+  1/200 em todas). O `db` (byte decifrado) muda, mas `ebx-key0` pula de forma não-linear e não
+  corresponde a `key[pos]`.
+
+Interpretação: **`0x18eff2` fica DEPOIS da geração do keystream** — é o XOR/store final que consome
+um byte de keystream já calculado em outra estrutura. A `key[256]`+posições que localizei não são o
+estado vivo que muta neste ponto. Logo, **nem observação passo-a-passo (A) nem ajuste por snapshots
+(B) via este BP recuperam `f`**. Resolver `f` exigiria achar a estrutura de estado real e as
+instruções que a mutam (RE bem mais profundo do gepard, caro e sem garantia).
+
+### Conclusão e direção
+
+O caminho "cifrar nós mesmos" depende de `f`, que não é barato de obter. O **§22** mostra que a ação
+injetada só falha por **sincronia de cifra** — e que o próprio cliente gera o keystream correto ao
+enviar. Portanto a rota robusta é o **caminho 1**: chamar a função de perícia/ação do próprio cliente
+(como o `--inject-call` já faz para `0437`/`0438`; estender para disparar a perícia on-target de forma
+que o cliente monte+cifre+envie sozinho). Dispensa `f` inteiramente.
+
+### Infra deixada pronta
+
+- `--scramble-trace=<N>`: modo traço no BP do scramble. Snapshot de `ecx`/`ebx`/byte + janela de
+  ~1 KB (tabela+posições) por byte, **restrito ao `--scramble-range`** e com **teto `N`**
+  (auto-desarma). Leitura fixa barata (não é varredura) — seguro. Emite `SCRAMBLE hit='trace'`.
+  Scripts de análise offline em `scratchpad` da sessão (`findunit.py`, `scanunit.py`, `difftrace.py`,
+  `fitf.py`) — não versionados; o método está descrito aqui.

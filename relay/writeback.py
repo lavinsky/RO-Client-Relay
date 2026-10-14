@@ -67,7 +67,8 @@ class WriteBack:
             lo, hi = (int(x, 16) for x in opts.scramble_range.split('-'))
         cfg = {'off': int(sb, 16), 'reg': opts.scramble_reg, 'pid': int(opts.scramble_id, 16),
                'body': None, 'dry': dry, 'idoff': getattr(opts, 'scramble_idoff', 0), 'lo': lo,
-               'hi': hi, 'persist': bool(getattr(opts, 'inject_persist', False))}
+               'hi': hi, 'persist': bool(getattr(opts, 'inject_persist', False)),
+               'trace': int(getattr(opts, 'scramble_trace', 0) or 0)}
         rng = f" range 0x{lo:x}-0x{hi:x}" if lo is not None else ''
         mode = 'DRY (log only)' if dry else 'LIVE --inject merge (bodies from the consumer)'
         print(f"[*] --scramble-bp: exec breakpoint at gepard+0x{cfg['off']:x} reg {cfg['reg']} "
@@ -165,7 +166,7 @@ class WriteBack:
                                    dry=c['dry'], idoff=c['idoff'], lo=c['lo'], hi=c['hi'],
                                    persist=c['persist'], probe=c.get('probe', False),
                                    entry=c.get('entry', False), pc=c.get('pc'), ids=c.get('ids'),
-                                   anyid=c.get('anyid', False)))
+                                   anyid=c.get('anyid', False), trace=c.get('trace', 0)))
 
     def arm_sendcall(self):
         """Diz ao agente onde está a SendPacket para ele capturar `this` (DR1)."""

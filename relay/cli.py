@@ -132,6 +132,9 @@ def parse_args(argv=None):
     ap.add_argument('--scramble-idoff', type=int, default=0,
                     help='--scramble-bp: signed byte offset from the pointer to the packet id. 0 = pointer at '
                          'packet start; -2 = pointer at body[0] (id just before it). Body is written at id+2.')
+    ap.add_argument('--scramble-trace', type=int, default=0,
+                    help='--scramble-bp: captura passo-a-passo (snapshot da tabela/posicoes por byte, '
+                         'so no fluxo de envio em --scramble-range); valor = teto de disparos (auto-desarma)')
     ap.add_argument('--scramble-range', default='',
                     help='--scramble-bp: hex LO-HI; only act when the pointer is in this range (e.g. the stack '
                          'region for 035f, to skip the shared primitive\'s recv-decrypt hits)')

@@ -447,6 +447,18 @@ function scrTrap(d) {
     if (scr === null || !ctx.pc.equals(scr.pc)) return false;
     if (scr.entry) return scrProbeEntry(ctx);                        // --probe-entry: capture args + disarm
     if (scr.probe) return scrProbe(ctx);                             // --send-probe: capture + disarm, no write
+    if (scr.trace) {                                                 // TRACE: snapshot por byte, so no fluxo de envio
+        var ex = ctx.ecx, bx = ctx.ebx;
+        if (!(ex instanceof NativePointer) || scr.lo === null ||
+            ex.compare(scr.lo) < 0 || ex.compare(scr.hi) >= 0) return true;   // so envio (ecx no range)
+        if (scr.traceN >= scr.traceMax) { scr.trace = false; scrDisarm(); send({tag: 'SCRAMBLE', hit: 'trace-done', n: scr.traceN}); return true; }
+        scr.traceN++;
+        var wb = bx.sub(bx.and(0x3ff)), tbl = null, db = null;       // janela 1KB-alinhada ao ebx
+        try { tbl = toHex(wb, 0x600); } catch (e) {}
+        try { db = toHex(ex, 1); } catch (e) {}
+        send({tag: 'SCRAMBLE', hit: 'trace', n: scr.traceN, ecx: ex.toString(), ebx: bx.toString(), win: wb.toString(), db: db, tbl: tbl});
+        return true;
+    }
     if (scr.dry) {                                                   // DRY: report everything, write nothing
         var regs = {}, stk = [], i;
         GP.forEach(function (r) { try { regs[r] = ctx[r].toString(); } catch (e) {} });
@@ -519,6 +531,8 @@ function onScramble(m) {
                probe: !!m.probe,       // --send-probe: one-shot read-only stack walk of a real send
                entry: !!m.entry,       // --probe-entry: one-shot capture of a function's args at entry
                anyid: !!m.anyid,       // --probe-anyid: capture the first in-range hit regardless of id
+               trace: !!m.trace,       // --scramble-trace: snapshot da tabela/posicoes por byte (so envio)
+               traceMax: m.traceMax || 400, traceN: 0,
                nprobe: 0,              // in-range misses seen (hard cap -> disarm, never flood)
                ids: (function () { var o = {}; (m.ids || [0x0437, 0x0438]).forEach(function (x) { o[x] = 1; }); return o; })(),
                bodies: {}};        // --inject merge: id -> plaintext body to substitute (pre-XOR)

@@ -239,14 +239,21 @@ Process.setExceptionHandler(function (d) {
         // no primeiro campo e/ou nos primeiros 64 words. Read-only, delimitado.
         var d0 = null, refsRecvAt = null;
         try { d0 = c.ecx.readPointer(); } catch (e) {}
-        for (var o2 = 0; o2 < 0x100; o2 += 4) {
+        for (var o2 = 0; o2 < 0x400; o2 += 4) {   // 1024 B: cobre o caveat 'offset > 0x100'
           var w2 = tryU32(c.ecx.add(o2));
           if (w2 !== null && receiverObject.equals(ptr(w2))) { refsRecvAt = o2; break; }
+        }
+        // elo INDIRETO: o registro global do manager (0x1213338) liga dispatcher<->manager?
+        var rootRefsDisp = null, MR = ptr('0x1213338');
+        for (var o3 = 0; o3 < 0x80; o3 += 4) {
+          var w3 = tryU32(MR.add(o3));
+          if (w3 !== null && c.ecx.equals(ptr(w3))) { rootRefsDisp = o3; break; }
         }
         emit({site: 'dispatcher_0x11', coord: (x <= 1023 && y <= 1023 && xh === 0 && yh === 0) ? [x, y] : null,
               return_addr: ret.toString(), return_region: region(ret),
               this_ecx: c.ecx.toString(), this_region: region(c.ecx),
               deref0_is_receiver: (d0 !== null && d0.equals(receiverObject)), refs_receiver_at: refsRecvAt,
+              root_refs_dispatcher_at: rootRefsDisp,
               gate70: tryU32(c.ecx.add(0x70)), counter520: tryU32(c.ecx.add(0x520)),
               flag_1602a8f: tryU8(GFLAG),   // global zerado por 0x5B antes do 0x8A; pode ser focus-dependente
               // snapshot read-only dos campos candidatos (produtor). O valor aqui é o estado NO
@@ -264,7 +271,7 @@ Process.setExceptionHandler(function (d) {
         // alcançar o estado do dispatcher' de 'objetos sem ligação direta'. NÃO prova leitura
         // efetiva do campo — só a existência de um ponteiro; o consumidor real exige Fase E.
         var refOff = null;
-        for (var off = 0; off < 0x100; off += 4) {
+        for (var off = 0; off < 0x400; off += 4) {   // 1024 B: cobre o caveat 'offset > 0x100'
           var w = tryU32(c.ecx.add(off));
           if (w !== null && w >= 0x10000 && dispSeen[ptr(w).toString()]) { refOff = off; break; }
         }

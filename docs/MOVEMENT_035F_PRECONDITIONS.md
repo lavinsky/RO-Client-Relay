@@ -355,13 +355,19 @@ Nos cinco campos candidatos, a varredura do disasm mostra **apenas escritas** de
 são lidos, e **dentro** da própria lógica de despacho (gates).
 
 **Achados vivos (2/2 passos, estáveis):**
-- **Sem ligação direta em NENHUMA direção (256 B).** `refs_dispatcher_at = None` (receptor
-  `0x248caf88` não aponta para o dispatcher `0x28c0a2f8`) **e** `deref0_is_receiver = False` +
-  `refs_receiver_at = None` (o dispatcher também não aponta para o manager — nem em `[0]` nem nos
-  primeiros 64 words). O `[dispatcher+0]` é um objeto de despacho/handler, **não** o manager; o
-  `this` do receptor é o manager resolvido pelo global `[0x1213338]`. (Cobertura: 256 B em ambas
-  as direções, 7 eventos em 2 sessões de passos; **não** exclui ligação via global, offset >0x100,
-  cadeia de indireção ou TLS.)
+- **Sem ligação de ponteiro em NENHUMA direção (1024 B) nem via registro global.**
+  `refs_dispatcher_at = None` (receptor `0x248caf88` → dispatcher `0x28c0a2f8`), `deref0_is_receiver
+  = False` + `refs_receiver_at = None` (dispatcher → manager), e `root_refs_dispatcher_at = None`
+  (o registro global do manager `[0x1213338]` → dispatcher). Varreduras **ampliadas a 1024 B** em
+  ambas as direções + 128 B do registro global, confirmadas em `walk3` e `walk4`. O
+  `[dispatcher+0]` é um objeto de despacho/handler, **não** o manager; o `this` do receptor é o
+  manager resolvido por `[0x1213338]`. (Cobertura: 1024 B bidirecional + registro global, 8+
+  eventos em 3 sessões de passos. **Resta** apenas a via H2-por-**valor global** — ex.
+  `byte[0x1602a8f]` lido dentro da VM — que varredura de **ponteiros** não cobre, e offsets
+  >0x400/indireção profunda/TLS.)
+- **Contexto de retorno (sinal p/ H3):** `return_region = uaRO` no receptor natural (retorno em
+  `0xd477bf`, dentro do despacho) **vs.** retorno em **trampolim** (`0xf69b8758`) na tentativa
+  nativa 6.4 — mesma forma de objeto/args, **contexto de execução diferente**.
 - **Campos `+0x5xx` constantes**: `{f500:0, f50c:0, f510:0, f534:0xffffffff, f538:0xffffffff}`
   idênticos nos dois passos → **sentinelas/flags**, não dado de destino que varie por passo
   (o destino varia — `[160,223]`→`[166,219]` — mas esses campos não).
@@ -376,25 +382,29 @@ são lidos, e **dentro** da própria lógica de despacho (gates).
 |---|---|---|---|---|---|---|---|---|---|
 | Args do `0x8A` natural = `(0x8A,x,y,0,0)` | H2 | disasm `0xd477a4–0xd477bc` | VM/`0x5B` | receptor | natural (estático) | call-site completo | **REFUTA H2-via-argumento** | — | — |
 | `+0x500/50c/510/534/538` só escritos | H2 | disasm cases | `0x11`/`0x0D` | **nenhum no código capturado** | natural (estático) | só janela do dispatcher | OBSERVADO; consumidor ausente | leitura fora da janela capturada | disasm do corpo do receptor (VM) |
-| linkage dispatcher↔manager = None (ambas direções) | H2 | vivo `walk2`+`walk3` | — | — | natural | 256 B bidirecional, 7 eventos | INFERIDO: objetos mutuamente desligados no header | ligação via global/offset >0x100/indireção/TLS | ler o global `[0x1213338]`/registro que ligue os dois |
+| linkage dispatcher↔manager = None + registro global = None | H2 | vivo `walk2/3/4` | — | — | natural | 1024 B bidirecional + 128 B registro, 8+ eventos | INFERIDO: sem ligação de ponteiro | H2-por-valor global (ex. `byte[0x1602a8f]`); offset >0x400/TLS | ler o global dentro da VM (Fase E) ou comparar contexto nativo×natural |
+| `return_region=uaRO` natural vs trampolim nativo | H3 | vivo `walk4` + §5 | — | — | natural×nativo | 1 nativo, naturais | OBSERVADO: contexto de retorno difere | diferença irrelevante p/ o store | teste comparativo de contexto (proposta própria) |
 | `+0x5xx` constantes entre passos | H2 | vivo `walk2` | `0x11`/`0x0D` | — | natural | 2 passos | INFERIDO: não são estado por-passo | campo de destino noutro objeto | snapshot do objeto do receptor/manager |
 | `byte[0x1602a8f]=0` natural | H2/H4 | disasm + vivo | `0x5B` | não verificado | natural | valor no ponto, não a leitura | OBSERVADO (produtor); consumo NÃO VERIFICADO | flag não lido pelo receptor | ler o global dentro do receptor (Fase E) |
 | receptor entra idêntico (obj+args) e só natural produz store | H3 | §5 (6.4) + §12 | — | — | natural×nativo | 1 nativo, 2 naturais | consistente com H3 (contexto/VM/callsite) | H2 por caminho não coberto | entrar pelo dispatcher `0x11` (contexto da VM) |
 
 **Atualização de hipóteses (dentro da cobertura demonstrada):**
-- **H2 — substancialmente enfraquecida.** Estado não é passado como argumento (refutado offline);
-  campos `+0x5xx` são constantes/sentinela; **nenhuma ligação direta entre os objetos em 256 B,
-  em qualquer direção.** Logo não há canal demonstrado pelo qual o receptor leia o estado do
-  dispatcher. Não **refutada em absoluto** (globais, offset >0x100, indireção ou TLS fora da
-  cobertura).
+- **H2 — substancialmente enfraquecida; via-ponteiro excluída na cobertura.** Estado não é passado
+  como argumento (refutado offline); campos `+0x5xx` são constantes/sentinela; **nenhuma ligação
+  de ponteiro entre os objetos em 1024 B (ambas direções) nem via registro global `[0x1213338]`.**
+  Logo não há canal de **ponteiro** pelo qual o receptor leia o estado do dispatcher. **Resta vivo
+  apenas** H2-por-**valor global** (um global que `0x5B` prepara — ex. `byte[0x1602a8f]` — e a VM
+  do receptor lê); isso **não** é coberto por varredura de ponteiros e exige Fase E.
 - **H3 — relativamente reforçada**, não provada: receptor entra idêntico em forma e só o caminho
   natural (pela VM/call-site `0xd477bc`, com o despacho `0x11→0x0D→0x5B`) produz o store.
-- **Discriminador mínimo seguinte (read-only, nova janela):** como a ligação direta foi excluída
-  (256 B, ambas direções), o próximo passo é **testar H3**: observar o contexto de execução
-  entrando pela cadeia do **dispatcher `0x11`** (call-site `0xd477bc`, despacho `0x11→0x0D→0x5B`)
-  vs. a folha isolada — e, em paralelo, procurar um elo **indireto** (global `[0x1213338]`/registro
-  que ligue dispatcher e manager) antes de qualquer rastreio de leitura (Fase E, proposta própria).
-  Qualquer **nova chamada nativa** continua exigindo autorização separada (§11 do prompt).
+- **Discriminador mínimo seguinte:** a ligação por ponteiro (direta e via registro global) está
+  excluída na cobertura. Restam **dois** caminhos mutuamente exclusivos de discriminação, cada um
+  com proposta de custo própria: (a) **Fase E read-only** — observar se a VM do receptor **lê** o
+  global `byte[0x1602a8f]` (ou outro global preparado por `0x5B`) durante o passo natural
+  (watchpoint/rastreio de leitura; ARCHITECTURE.md §11 alerta que watchpoint de **dados** travou o
+  cliente — exige cuidado e proposta); (b) **teste comparativo de contexto** — reexecutar a folha
+  `0x8A` **no contexto do dispatcher** vs. isolada, o que implica **nova chamada nativa** e portanto
+  **autorização separada** (§11 do prompt). Nenhum dos dois foi executado.
 
 **Limites/cobertura:** varredura de 256 B numa direção; corpo do receptor (VM do Gepard) **não**
 desassemblado — o consumidor real não foi observado diretamente (exigiria watchpoint/rastreio de

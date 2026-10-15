@@ -238,6 +238,7 @@ with tempfile.TemporaryDirectory() as d:
 state_path = path_capture([
     {"site": "dispatcher_0x11", "order": 1, "coord": [160, 247], "this_ecx": "0x28c27dc8",
      "flag_1602a8f": 1, "deref0_is_receiver": True, "refs_receiver_at": 0,
+     "root_refs_dispatcher_at": None,
      "state": {"f500": 0, "f50c": 0, "f510": 0, "f534": 4294967295, "f538": 4294967295}},
     {"site": "receptor_0x8a", "order": 2, "coord": [160, 247], "this_is_manager": True,
      "this_ecx": "0x248ca3d0", "flag_1602a8f": 0, "refs_dispatcher_at": None},
@@ -255,8 +256,9 @@ with tempfile.TemporaryDirectory() as d:
     assert recep["refs_dispatcher_at"] is None
     # o global cleared-pre-dispatch passa como dado literal nos dois canais (1 no 0x11, 0 no receptor)
     assert disp["flag_1602a8f"] == 1 and recep["flag_1602a8f"] == 0
-    # linkage bidirecional passa como dado (dispatcher->receptor via deref0/refs_receiver_at)
+    # linkage bidirecional + elo indireto passam como dado (sem virar conclusao de consumo)
     assert disp["deref0_is_receiver"] is True and disp["refs_receiver_at"] == 0
+    assert disp["root_refs_dispatcher_at"] is None
     # o analisador NÃO adiciona nenhuma conclusão de consumo a partir do snapshot
     assert "consumer" not in rec and "consumidor" not in json.dumps(rec)
 

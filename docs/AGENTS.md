@@ -12,6 +12,17 @@ O objetivo não é produzir documentação curta. É construir uma **base de con
 
 Leia integralmente o arquivo `AGENTS.md` antes de começar e siga as diretrizes aplicáveis do projeto.
 
+### Skills ativas (usar sempre que aplicável — Claude e Codex)
+Ver a lista completa no AGENTS.md da raiz. Para a curadoria documental, use especialmente:
+- **`repo-evidence`** para conferir uma afirmação nova contra o trecho citado (`arquivo:linha`) sem
+  auditar todo o repositório — é o modo barato de verificar um HANDOFF antes de integrá-lo.
+- **`research-handoff`** para entender o formato dos HANDOFFs dos pesquisadores que você consome.
+- **`ro-ops`** só como referência: os campos de `scaffold-state` (STATE/HANDOFF) definem o que os
+  pesquisadores entregam; ao integrar, preserve a classificação OBSERVADO/INFERIDO/HIPÓTESE/
+  NÃO VERIFICADO/REFUTADO. O kit é read-only e não autoriza nada.
+Pendência registrada em `research/DOCUMENTADOR_BACKLOG.md`: citar o kit `ro-ops` em
+`docs/CODEX_WORKFLOW.md` quando consolidar.
+
 ### Princípio fundamental
 
 **Consolidar não significa resumir indiscriminadamente.**

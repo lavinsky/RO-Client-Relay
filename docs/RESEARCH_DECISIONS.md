@@ -1,5 +1,7 @@
 # Decisões e hipóteses de pesquisa (2026-10-15)
 
+> **Precedência da evidência:** a seção de coleta abaixo antecede a etapa 6.4 e §§12–13 de [MOVEMENT_035F_PRECONDITIONS.md](MOVEMENT_035F_PRECONDITIONS.md). H1 foi refutada no recorte 6.4; §12 enfraqueceu vias específicas de H2; §13 foi corrigido em `888764a`: buffer compatível no trap pré-store não prova escrita concluída; ABI inicial de 44/52 bytes é incompatível, mas §13.5 (`7a64581`) também travou com 52 bytes; H2/H3 continuam não isoladas. As decisões confirmadas continuam preservadas.
+
 ## Decisões confirmadas pelo responsável
 - **Final:** usar OpenKore (Perl, externo) em xKore 0, sem cliente oficial.
 - **Intermediário:** xKore 1 existente no OpenKore + RO-Client-Relay + cliente uaRO, para encaminhar texto claro e utilizar o cliente como executor do protocolo.
@@ -11,10 +13,10 @@
 
 | Hipótese | Base | Limitação / alternativa |
 |---|---|---|
-| A intenção de mover aciona uma cadeia de preparação antes do envio de `0x035F` | `ARCHITECTURE.md` §§9–10; analogia com roBrowserLegacy relatada pelo responsável | A analogia não prova equivalência entre implementações |
-| A falha de `0x0438` está relacionada à cobertura/estado da cifra | Código servidor Gepard 2016 descrito em `gepard_investigation.md` §3; comportamento descrito em `ARCHITECTURE.md` §5.1 | Diferentes pré-condições de ação, parser e estado interno também podem explicar falhas |
+| A intenção de mover aciona uma cadeia de preparação antes do envio de `0x035F` | `docs/HISTORY/ARCHITECTURE_LEGACY.md` §§9–10; analogia com roBrowserLegacy relatada pelo responsável | A analogia não prova equivalência entre implementações |
+| A falha de `0x0438` está relacionada à cobertura/estado da cifra | Código servidor Gepard 2016 descrito em `docs/HISTORY/GEPARD_LEGACY.md` §3; comportamento descrito em `docs/HISTORY/ARCHITECTURE_LEGACY.md` §5.1 | Diferentes pré-condições de ação, parser e estado interno também podem explicar falhas |
 | A sincronização do servidor é governada pelos estados de cifragem e mensagens de controle | Modelo do servidor 2016 | IDs, transições e algoritmos do build atual não estão completamente identificados |
-| `0x8280` serve como heartbeat uaRO | `gepard_investigation.md` §3.3; entrada 128 bytes na tabela | Papel/direção e equivalência com `0x8285` histórico pendem de evidência específica |
+| `0x8280` serve como heartbeat uaRO | `docs/HISTORY/GEPARD_LEGACY.md` §3.3; entrada 128 bytes na tabela | Papel/direção e equivalência com `0x8285` histórico pendem de evidência específica |
 
 ## Evidência nova de movimento — coleta autorizada em 2026-10-15
 

@@ -54,7 +54,7 @@ Preencher sem credenciais, identificação de conta ou endereços pessoais:
 | Candidatos históricos resolvidos na instância atual | Prólogos de entrada, chamadas e store conferidos nas duas instâncias; sem prova de função exclusiva de movimento |
 | Mapa/condições iniciais de teste | Repouso/cliques próximos; etapa posterior com uma única imagem da janela e pontos A/B. Sem identificação de mapa nem controle de câmera |
 
-Os offsets históricos de `ARCHITECTURE.md` §9 são pistas. A identidade do arquivo
+Os offsets históricos de `docs/HISTORY/ARCHITECTURE_LEGACY.md` §9 são pistas. A identidade do arquivo
 no disco, sozinha, não comprova a identidade/localização do código desempacotado.
 Resolver cada alvo na instância atual antes de armar uma sonda.
 
@@ -136,7 +136,7 @@ empacotada classifica o candidato como intermediário, não origem decisória.
 Chamadas funcionais ficam para ensaio separado, após contrato de argumentos,
 objetos, vida útil, thread e estado. Não repetir envio de `035F` pela fila como
 atalho. Não usar watchpoint de dados na pilha nem varredura extensa no agente.
-Encerrar instrumentação pelo caminho de limpeza, conforme `ARCHITECTURE.md` §11 (cuidados operacionais).
+Encerrar instrumentação pelo caminho de limpeza, conforme `docs/HISTORY/ARCHITECTURE_LEGACY.md` §11 (cuidados operacionais).
 
 ## Verificações desta preparação
 

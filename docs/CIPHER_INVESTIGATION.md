@@ -133,7 +133,7 @@ python3 research/cipher/analyze.py \
 
 Para auditar fontes reais existentes, indicar cada caminho por `--input`; usar outro
 diretório privado de saída a cada rodada. Formatos, limites, semântica dos campos e
-diagnósticos estão em `research/cipher/README.md`. Os únicos bytes/estados colocados
+diagnósticos estão em [CIPHER_TOOLS.md](CIPHER_TOOLS.md). Os únicos bytes/estados colocados
 no repositório nesta tarefa são sintéticos e explicitamente rotulados como tal.
 
 Resultados: `inventory.json` e `missing-data.json`, ambos privados. O inventário inclui

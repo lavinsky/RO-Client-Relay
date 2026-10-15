@@ -4,10 +4,10 @@
 
 ## Evidências disponíveis
 
-- **Build servidor 2016 (referência histórica, não verificada no uaRO atual):** a investigação documenta unidades independentes `recv_crypt`, `send_crypt`, `sync_crypt`; inicialização `SC_GEPARD_INIT`; resposta `CS_GEPARD_INIT_ACK`; sincronização periódica `CS_GEPARD_SYNC`. Origem relatada: `gepard_investigation.md` §3 e `ARCHITECTURE.md` §5.1. O código histórico não está versionado (`relay/resources/` é ignorado).
+- **Build servidor 2016 (referência histórica, não verificada no uaRO atual):** a investigação documenta unidades independentes `recv_crypt`, `send_crypt`, `sync_crypt`; inicialização `SC_GEPARD_INIT`; resposta `CS_GEPARD_INIT_ACK`; sincronização periódica `CS_GEPARD_SYNC`. Origem relatada: `docs/HISTORY/GEPARD_LEGACY.md` §3 e `docs/HISTORY/ARCHITECTURE_LEGACY.md` §5.1. O código histórico não está versionado (`relay/resources/` é ignorado).
 - **uaRO, tabela de tamanhos:** `data/uaro_recvpackets.txt` contém `8280 128`, `4754 -1`, `5395 -1` e `C392 -1`. A presença na tabela **não demonstra** direção, papel no handshake ou associação exclusiva ao Gepard.
-- **uaRO, hipótese de heartbeat:** `gepard_investigation.md` §3.3 associa `0x8280` ao heartbeat de 128 bytes; no histórico 2016 a nota associa `0x8285` ao nome `CS_GEPARD_SYNC`. A equiparação entre builds é uma **inferência**, ainda não uma especificação validada.
-- **Login:** `gepard_investigation.md` §1 documenta login uaRO via HTTP/token e char server sem camada Gepard. Isso **não identifica o ID ou a sequência exata** do pacote de inicialização/sincronização da cifra na sessão de mapa.
+- **uaRO, hipótese de heartbeat:** `docs/HISTORY/GEPARD_LEGACY.md` §3.3 associa `0x8280` ao heartbeat de 128 bytes; no histórico 2016 a nota associa `0x8285` ao nome `CS_GEPARD_SYNC`. A equiparação entre builds é uma **inferência**, ainda não uma especificação validada.
+- **Login:** `docs/HISTORY/GEPARD_LEGACY.md` §1 documenta login uaRO via HTTP/token e char server sem camada Gepard. Isso **não identifica o ID ou a sequência exata** do pacote de inicialização/sincronização da cifra na sessão de mapa.
 
 ## Inventário com níveis de evidência
 
@@ -18,7 +18,7 @@
 | `0x8280` | cliente → servidor (hipótese) | 128 na tabela uaRO | heartbeat/sincronização | **TAMANHO OBSERVADO NA TABELA**; papel **INFERIDO**: investigação §3.3 | confirmação de direção e cadência, comparação de sessões, comportamento de timeout |
 | `0x8285` (build 2016) | cliente → servidor | não estabelecido aqui | heartbeat histórico | **DOCUMENTADO PARA 2016**: investigação §3.3 | não assumir correspondência binária com `0x8280` |
 | `0x4754`, `0x5395`, `0xC392` | não estabelecida | variável (`-1` na tabela) | desconhecido | **LISTADOS** em `data/uaro_recvpackets.txt` | verificar origem e se são realmente pacotes de controle |
-| `0x035F`, `0x0437`, `0x0438`, `0x0AF4` | cliente → servidor | consultar fonte do protocolo | pacotes de ação, **não confundir com heartbeat** | **DOCUMENTADOS** em `ARCHITECTURE.md` §§5–6 | comportamento no build atual e requisitos do OpenKore |
+| `0x035F`, `0x0437`, `0x0438`, `0x0AF4` | cliente → servidor | consultar fonte do protocolo | pacotes de ação, **não confundir com heartbeat** | **DOCUMENTADOS** em `docs/HISTORY/ARCHITECTURE_LEGACY.md` §§5–6 | comportamento no build atual e requisitos do OpenKore |
 
 ## Hipótese separada da evidência
 

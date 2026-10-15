@@ -1,5 +1,9 @@
 # Pré-condições de preparação do movimento 0x035F
 
+> **Leitura atual (87245d6):** §§1–9 registram etapas anteriores; §12 contém o resultado posterior. H1 foi refutada no recorte 6.4; H2 por argumento e por ponteiro foi excluída somente nas coberturas descritas. H2 por valor global continua aberta; H3 é relativamente reforçada, não provada.
+
+> **Procedência histórica:** PIDs, FDs, portas de instrumentação em loopback e caminhos externos abaixo identificam os ensaios originais; não descrevem processos vivos agora nem garantem disponibilidade dos artefatos. Nenhuma captura privada foi aberta nesta consolidação.
+
 Investigação da preparação/contexto que antecede o store do `0x035F`, focada em
 **explicar por que a tentativa de chamada nativa de `0x8A` ficou inconclusiva**.
 Registra apenas conclusões e referências sanitizadas; não copia capturas cruas,
@@ -99,7 +103,7 @@ confirmam a decodificação dos 3 bytes.
 | Hipótese | Evidência a favor | Evidência contra / ausente | Menor observação que distingue |
 |---|---|---|---|
 | **H1 — Observador store-gated** | associação dependia do store | **ELIMINADA pela 6.4** (ver §6): transporte independente + store sem gate ficaram silenciosos para a chamada | — (resolvida) |
-| **H2 — Bypass da preparação de estado** (agora prioritária) | `0x11/0x0D/0x5B` escrevem 5+ campos no objeto do dispatcher antes do `0x8A`; leaf sozinho não armazena/envia (6.4) | nenhum consumidor dessas escritas ainda identificado no receptor | leitura delimitada desses campos dentro do receptor na execução natural |
+| **H2 — Bypass da preparação de estado** (prioritária nessa etapa; atualizada em §12) | `0x11/0x0D/0x5B` escrevem 5+ campos no objeto do dispatcher antes do `0x8A`; leaf sozinho não armazena/envia (6.4) | nenhum consumidor dessas escritas ainda identificado no receptor | leitura delimitada desses campos dentro do receptor na execução natural |
 | **H3 — Contexto/callsite/reentrância** (viável) | chamada fora da VM entrou e retornou **sem** store/envio (6.4); receptor começa com `jmp` p/ VM | — | entrar pelo **dispatcher `0x11`** (contrato próprio) vs. folha |
 | **H4 — Destino redundante/condição** | — | destino (160,247) era diferente da posição (~156,247) e ainda assim nada ocorreu (6.4) | destino bloqueado/distante com ground-truth |
 
@@ -177,7 +181,7 @@ objeto **distinto** do receptor) que executa `0x11→0x0D→0x5B` e escreve o es
 delimitada na execução natural, qual desses campos o receptor **consome** (distingue H2 de
 H3). Não aprofundar além disso sem um consumidor concreto apontado pelo resultado.
 
-> **Arquitetura (ARCHITECTURE.md §10; `relay/writeback.py:1-8`):** o relay já injeta `035f`
+> **Arquitetura (docs/HISTORY/ARCHITECTURE_LEGACY.md §10; `relay/writeback.py:1-8`):** o relay já injeta `035f`
 > de forma **reativa** (merge no store, pré-XOR), porque enviá-lo pela `SendPacket`
 > **dessincroniza a cifra**. O objetivo desta linha nativa (§10/§13) é **disparar um `035f`
 > espontâneo pelo caminho de pilha correto** (andar autônomo). Logo o teste precisa também
@@ -224,7 +228,7 @@ H3). Não aprofundar além disso sem um consumidor concreto apontado pelo result
   suficiente para xKore 0.
 - **Depende do responsável:** janela de uso exclusivo (ou revezamento confirmado) para a fase
   viva; confirmação de que a sonda da cifra está desarmada antes de cada run (colisão de
-  registradores de depuração pode travar o cliente — ARCHITECTURE.md §11); escolha de destino
+  registradores de depuração pode travar o cliente — docs/HISTORY/ARCHITECTURE_LEGACY.md §11); escolha de destino
   com ground-truth (posição conhecida) para H4.
 
 ## 9. Estado de limpeza e liberação do cliente
@@ -243,7 +247,7 @@ foram lidas nem alteradas. Sem commit/push/PR. Artefatos privados em
 ## 10. Auditoria offline (Fase A) — matriz objeto/campo/produtor/consumidor
 
 Auditoria **somente de fontes já existentes** (sem nova coleta): docs de preconditions e
-investigação, `observe_path.py`/`native_trial.py`/`analyze.py`, `ARCHITECTURE.md` §§9–11.
+investigação, `observe_path.py`/`native_trial.py`/`analyze.py`, `docs/HISTORY/ARCHITECTURE_LEGACY.md` §§9–11.
 Objetivo: separar o que já está demonstrado do que falta para distinguir **H2** (estado
 preparado é consumido) de **H3** (contexto/callsite/VM/reentrância).
 
@@ -308,7 +312,7 @@ pacote/cifra lido; `timeout` 1000–10000 ms; teto de eventos 4000; artefatos sa
 proteção de página); cancelamento por SIGTERM com espera de limpeza idempotente.
 
 **Risco e recuperação:** idêntico ao run read-only já validado (mesmos BPs, só mais leituras
-pequenas) — ARCHITECTURE.md §11 admite "leituras fixas pequenas no agente". Sem escrita, sem
+pequenas) — docs/HISTORY/ARCHITECTURE_LEGACY.md §11 admite "leituras fixas pequenas no agente". Sem escrita, sem
 chamada, sem watchpoint de dados. Limpeza confirmada por `cleared=true`; cliente conferido vivo
 e responsivo ao final; ausência de dessincronização **não** inferida só por processo vivo.
 
@@ -346,7 +350,7 @@ os cliques são entrada natural do próprio cliente. `ydotoold` foi encerrado e 
 
 **Achado offline (disasm salvo, `/tmp/ro035f-dispatch-cases-getter-full.json`, build conferido):**
 a chamada natural do receptor em `0xd477bc` é `call [eax+0x18]` com `this=esi` e pilha
-`push 0x8a; push edi(x); push [ebp-0x24](y); push 0; push 0` — **exatamente** `(0x8A,x,y,0,0)`,
+`push 0x8a; push edi(x); push [ebp-0x24] /* y */; push 0; push 0` — **exatamente** `(0x8A,x,y,0,0)`,
 forma **idêntica** à da tentativa nativa 6.4. **REFUTADO (offline): nenhum campo de estado do
 dispatcher é passado como argumento ao receptor.** Imediatamente antes, `0x5B` faz
 `mov byte [0x1602a8f], 0` (zera um **global**) e aplica o gate `getter() > [ebx+0x520]+0x15E`.
@@ -401,13 +405,60 @@ são lidos, e **dentro** da própria lógica de despacho (gates).
   excluída na cobertura. Restam **dois** caminhos mutuamente exclusivos de discriminação, cada um
   com proposta de custo própria: (a) **Fase E read-only** — observar se a VM do receptor **lê** o
   global `byte[0x1602a8f]` (ou outro global preparado por `0x5B`) durante o passo natural
-  (watchpoint/rastreio de leitura; ARCHITECTURE.md §11 alerta que watchpoint de **dados** travou o
+  (watchpoint/rastreio de leitura; docs/HISTORY/ARCHITECTURE_LEGACY.md §11 alerta que watchpoint de **dados** travou o
   cliente — exige cuidado e proposta); (b) **teste comparativo de contexto** — reexecutar a folha
   `0x8A` **no contexto do dispatcher** vs. isolada, o que implica **nova chamada nativa** e portanto
   **autorização separada** (§11 do prompt). Nenhum dos dois foi executado.
 
-**Limites/cobertura:** varredura de 256 B numa direção; corpo do receptor (VM do Gepard) **não**
+**Limites/cobertura:** o primeiro ensaio cobriu 256 B numa direção; a extensão `walk3/4` cobriu 1024 B em ambas as direções e 128 B do registro global, conforme acima. O corpo do receptor (VM do Gepard) **não**
 desassemblado — o consumidor real não foi observado diretamente (exigiria watchpoint/rastreio de
-leitura = Fase E, com proposta de custo própria; ARCHITECTURE.md §11 alerta que watchpoint de
-dados travou o cliente). Sessão única; sem controle focado×não-focado. Nenhuma conclusão de
+leitura = Fase E, com proposta de custo própria; docs/HISTORY/ARCHITECTURE_LEGACY.md §11 alerta que watchpoint de
+dados travou o cliente). Resultados restritos às janelas/sessão reportadas; sem controle focado×não-focado. Nenhuma conclusão de
 sincronia de cifra inferida só por processo vivo.
+
+## 13. Ensaio nativo do DISPATCHER 0x11 — H2/H3 resolvidas; 035F espontâneo porém sem retorno
+
+Experimento autorizado (chamadas nativas + tolerância a queda do cliente). Ferramenta:
+`research/movement_035f/dispatcher_trial.py`. Em vez da folha `0x8A` (insuficiente, §5/6.4),
+chama o **dispatcher `0xd473b0`** com a ABI observada ao vivo (dump read-only):
+`this`=ecx (objeto do dispatcher capturado de um passo natural), pilha
+`(u32 0, u64 0x11, u64 x, u64 y, u64 0, u64 0)`. O `this` é de heap (sem âncora global): é
+**capturado de um passo natural** e reusado na mesma sessão; a chamada dispara UMA vez no dreno
+main-thread, ~após a captura, para `coord_capturada + (4,0)`. Sessões: PIDs 3240424/3266070/3267651
+(relogados), build re-conferido (hashes iguais).
+
+- **OBSERVADO (disp2):** durante a chamada (`during_call=true`) a cadeia executou
+  `receptor_0x8a[288,320] → store_035f body [288,320] dir1` — ou seja, **a chamada ao dispatcher
+  MONTOU e ARMAZENOU um `0x035f` ESPONTÂNEO no destino pedido** (`[288,320]` = capturado `[284,320]`
+  + 4). A ABI estava correta: nossos `x,y` viraram o corpo empacotado `[288,320]`. **A folha `0x8A`
+  sozinha nunca fez isso (6.4).**
+- **OBSERVADO (disp2 + disp5):** a chamada **não retorna** (`emit_return` ausente), **nenhum
+  `sendmsg` nem `recv_0087` do destino** antes do congelamento, e o cliente **congela e morre**
+  (zumbi). Em **disp5 todos os HW breakpoints foram desarmados antes da chamada** e o travamento
+  **persistiu** → **não é artefato de instrumentação**: é intrínseco. Consistente com o "retorno"
+  natural do dispatcher ser para a VM (`gepard+0xb2c251`); chamado plano, `0xd473b0` não volta ao
+  chamador externo (tail-transfer/àespera de continuação da VM).
+
+**Resolução de hipóteses (critério A/B):** a folha `0x8A` não produz `035f`, mas **entrar no
+dispatcher `0x11` (que roda a preparação `0x11→0x0D→0x5B`) PRODUZ o `035f`**. Logo a pré-condição
+que faltava à chamada nativa da folha é **a preparação/contexto de nível dispatcher** — H2
+(preparação) e H3 (contexto de execução) **confirmadas como necessárias e, juntas, suficientes
+para a MONTAGEM/STORE**. (Isto supera o impasse do §12: o canal não era um ponteiro lido pelo
+receptor, mas a **execução da cadeia** a montante.)
+
+**Objetivo de andar autônomo (§13 de `docs/HISTORY/ARCHITECTURE_LEGACY.md`):** parcialmente
+atingido e delimitado — um `035f` espontâneo é **disparável** pelo dispatcher, mas **não de forma
+limpa**: a chamada trava (sem retorno) e a **transmissão não foi alcançada**; não há prova de envio
+nem de sincronia de cifra. Portanto `0xd473b0` **não é**, como está, uma primitiva chamável de
+movimento autônomo.
+
+**Próximo passo realista (proposta, não executado):** para um `035f` autônomo que **retorne e
+envie**, o alvo não é chamar `0xd473b0` plano, e sim (a) identificar o chamador na VM
+(`gepard+0xb2c251`) e um ponto de entrada que faça `ret` normal, ou (b) satisfazer a continuação da
+VM, ou (c) manter a abordagem **reativa** existente (merge no store, §10 do legacy) para andar — a
+limitação de "só reage a um clique" permanece. Cada tentativa de chamada derruba o cliente (relogin).
+
+**Verificações/limpeza:** eventos em streaming (sobrevivem ao freeze) + escrita incremental;
+limpeza de HW breakpoints idempotente e **limitada** (cliente pode travar); artefatos externos
+sanitizados (`/tmp/claude-035f-*-disp*/`, não versionados). `ydotoold` (uinput) encerrado a cada
+run. Cliente derrubado nos ensaios de chamada (autorizado; relogin trivial).

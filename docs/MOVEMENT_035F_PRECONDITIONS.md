@@ -239,3 +239,165 @@ responsivo; janela exclusiva pode ser devolvida. Áreas de outra instância (`re
 `tests/test_cipher_research.py`, `docs/CIPHER_INVESTIGATION.md`, `/tmp/ro-cipher-*`) não
 foram lidas nem alteradas. Sem commit/push/PR. Artefatos privados em
 `/tmp/claude-035f-20261015-091419/` (0700).
+
+## 10. Auditoria offline (Fase A) — matriz objeto/campo/produtor/consumidor
+
+Auditoria **somente de fontes já existentes** (sem nova coleta): docs de preconditions e
+investigação, `observe_path.py`/`native_trial.py`/`analyze.py`, `ARCHITECTURE.md` §§9–11.
+Objetivo: separar o que já está demonstrado do que falta para distinguir **H2** (estado
+preparado é consumido) de **H3** (contexto/callsite/VM/reentrância).
+
+| Objeto / campo | Produtor OBSERVADO | Consumidor | Natureza | Classificação |
+|---|---|---|---|---|
+| Dispatcher `[ebx+0x70]` | lido como gate no caso `0x11` (`0xd476e5`) | o próprio caso `0x11` (desvia se 2/5/6) | gate de despacho | OBSERVADO (produtor/consumidor no mesmo caso) |
+| Dispatcher `[ebx+0x510]=0`; `[ebx+0x534]=[ebx+0x538]=0xffffffff` | escrito no caso `0x11` | **nenhum identificado** | estado preparado | OBSERVADO (escrita) / consumidor **NÃO VERIFICADO** |
+| Dispatcher `[ebx+0x50c]=0`; `[ebx+0x500]=0` | escrito no caso `0x0D` (`0xd47ac4`) | **nenhum identificado** | estado preparado | OBSERVADO (escrita) / consumidor **NÃO VERIFICADO** |
+| Dispatcher `[ebx+0x520]` | consultado e atualizado no caso `0x5B` (`0xd4777d`) | o próprio `0x5B` (gate `getter()≤[+0x520]+0x15E`) | gate decide **SE** chama `0x8A` | OBSERVADO; decide a chamada, **não** prova pré-condição p/ o receptor produzir o pacote |
+| `byte[0x1602a8f]=0` | escrito no caso `0x5B` | **nenhum identificado** | flag global | OBSERVADO (escrita) / consumidor **NÃO VERIFICADO** |
+| Objeto do dispatcher (`ebx`; sessão: `0x28c27dc8`) | VM do Gepard | — | objeto de estado de despacho | OBSERVADO; **distinto** do objeto do receptor |
+| Objeto do receptor/manager (`esi`/`ecx`; sessão: `0x248ca3d0`) | manager `[0x1213338]` → vtable slot `0x18` | receptor `0x8A` (`gepard+0x10a90`) | objeto do receptor | OBSERVADO; **nenhuma ligação direta** a `ebx` demonstrada |
+| Store `gepard+0x18eff2` (`mov [ecx],bl`) | caminho natural (muitos ids) | fila/cifra compartilhada | store **compartilhado** | OBSERVADO (18/2038 hits foram `035f`); não classificado como laço de cifra aqui |
+| Transporte `sendmsg` (fd 197, porta 5121) | caminho natural + heartbeat/outros | socket do servidor | transporte **geral** | OBSERVADO; envio **correlacionado** ao passo, não identidade de pacote |
+
+**Lacunas que a Fase A não fecha (precisam de coleta viva):**
+1. **Consumidor ausente.** Nenhuma evidência existente mostra qualquer campo `+0x5xx`/`+0x70`
+   do dispatcher sendo **lido** pelo receptor ou por código a jusante que decida produzir o
+   store. Só há **produtores** (escritas) e dois gates (`+0x70`, `+0x520`) que agem **dentro
+   do dispatcher** — ou seja, decidem **se** `0x8A` é chamado, não **se** `0x8A`, uma vez
+   chamado, monta o pacote. A tentativa nativa 6.4 chamou `0x8A` já "depois" desses gates e
+   mesmo assim nada ocorreu — logo os gates `+0x70`/`+0x520` **não explicam** a falha nativa.
+2. **Sem ligação objeto↔objeto.** Dispatcher (`ebx`) e receptor (`esi`) são objetos distintos;
+   não se demonstrou que o receptor alcance `[ebx+…]`. Se não houver ponteiro do receptor para
+   o dispatcher, os campos `+0x5xx` são **irrelevantes** para o receptor e a divergência pende
+   para **H3** (ou para um campo do **próprio** objeto do receptor, ainda não mapeado).
+3. **Snapshot ≠ consumo.** Mesmo observando os campos mudarem de `0xffffffff`/stale para um
+   valor "preparado" antes do `0x8A`, isso é **produtor**; provar consumo exige ver a **leitura**
+   numa condição de controle (Fase E), que tem proposta de custo própria.
+
+**Conclusão da Fase A (OBSERVADO/INFERIDO):** a base de evidências sustenta **produtores** de
+estado e **gates de despacho**, mas **não** um **consumidor** que ligue estado preparado à
+produção do pacote. Portanto H2 e H3 permanecem ambas abertas; o menor passo que as separa é
+primeiro estabelecer **se o objeto do receptor sequer referencia o objeto do dispatcher**
+(mapa funcional, critério D) — barato e read-only — antes de qualquer rastreio de leitura.
+
+## 11. Próximo experimento (um só) e pedido de autorização consolidado
+
+**Estado do cliente nesta sessão:** PID 3124344 **não existe mais** (relog ocorrido — bases do
+Gepard mudam por relog, como já documentado). Logo **nenhuma instrumentação viva foi executada
+nesta sessão**; o que segue é **proposta**, com a ferramenta já preparada e validada offline.
+
+**Experimento escolhido (Fase C/D, read-only, delimitado — 2ª prioridade do §10 do prompt,
+pois ainda não há consumidor identificado):** uma janela de **movimento natural** com o
+`observe_path.py` estendido, que nos mesmos 3 breakpoints de execução já validados acrescenta,
+**sem chamada nativa e sem watchpoint**:
+- `state` no `dispatcher_0x11`: leitura read-only dos campos candidatos
+  (`+0x500/+0x50c/+0x510/+0x534/+0x538`) — linha do tempo do **produtor**;
+- `refs_dispatcher_at` no `receptor_0x8a`: varredura **delimitada a 64 words (256 bytes)** do
+  objeto do receptor procurando um ponteiro para o objeto do dispatcher visto na mesma janela.
+
+**O que discrimina:** se `refs_dispatcher_at` for um offset estável em vários passos → o receptor
+**pode** alcançar o estado do dispatcher (abre H2 com um alvo concreto de leitura para a Fase E);
+se for sempre `null` com os campos `+0x5xx` preparados mesmo assim → fortalece **H3** (ou desloca
+a busca para campos do próprio objeto do receptor). Qualquer resultado reduz o espaço de hipóteses
+(critério D) ou aponta um consumidor candidato (critério A).
+
+**Limites de custo (Fase 8):** ≤ 1 processo; 3 BPs de execução (DR0–DR2) já usados antes; por hit
+do receptor no máximo 64 leituras de 4 bytes (256 B) + 5 campos no dispatcher; nenhum buffer de
+pacote/cifra lido; `timeout` 1000–10000 ms; teto de eventos 4000; artefatos sanitizados em
+`/tmp/claude-035f-<data>/` (0700), **não versionados**; falha de leitura → `null` (nunca troca
+proteção de página); cancelamento por SIGTERM com espera de limpeza idempotente.
+
+**Risco e recuperação:** idêntico ao run read-only já validado (mesmos BPs, só mais leituras
+pequenas) — ARCHITECTURE.md §11 admite "leituras fixas pequenas no agente". Sem escrita, sem
+chamada, sem watchpoint de dados. Limpeza confirmada por `cleared=true`; cliente conferido vivo
+e responsivo ao final; ausência de dessincronização **não** inferida só por processo vivo.
+
+**Pré-condições humanas antes de rodar (protocolo §11 do prompt):** (1) cliente no ar e **novo
+PID** confirmado + build re-conferido (hashes) + bases re-resolvidas em runtime; (2) **janela
+exclusiva** confirmada; (3) **sonda da cifra (Codex) desarmada** — colisão de registradores de
+depuração pode travar o cliente; (4) sem CEServer e Frida instrumentando ao mesmo tempo.
+**Não** executarei sem essa autorização consolidada.
+
+> **DiE / proteções (prompt §4):** o relatório `docs/PROTECTION_FINGERPRINT_DIE.md` (commit
+> `77954b2`, branch `docs/detect-it-easy-uaro-protection-20261015`) **não está** nesta working
+> tree nem no banco de objetos local. Não foi mesclado e **não farei merge automático**; é
+> pendência humana decidir sua integração. A identificação Themida/VMProtect não demonstra, por
+> si, que `0x8A`/dispatcher estejam virtualizados — permanece hipótese sobre cada função.
+
+## 12. Coleta viva read-only (Fase C/D) — resultado e matriz de evidências
+
+**Sessão:** `uaRO.exe` **PID 3240424** (após novo relog; o 3124344 da §11 não existe mais).
+Build re-conferido em disco via `/proc/<pid>/root`: `uaRO.exe` `f2f25a89…` e `gepard.dll`
+`34188e60…` **iguais** ao build documentado → offsets válidos. Janela **exclusiva** (nenhum
+driver/sonda concorrente ativo; `/tmp/ro-cipher-*` recentes eram runs `-tests-` offline).
+Limpeza: `cleared=true` em todos os runs; observador destacado; cliente **vivo e responsivo**
+ao final. Artefatos externos **não versionados** em `/tmp/claude-035f-20261015-131054-walk2/`.
+
+**Observação crítica de foco (responsável):** valores de memória do cliente podem mudar conforme
+a janela esteja **em foco ou não**, e o movimento natural só ocorre com a janela focada. Logo um
+campo que difira entre focado/não-focado **não é**, por isso, pré-condição de movimento.
+
+**Geração do movimento natural (read-only no cliente):** cliques sintéticos XTEST (xdotool puro)
+**não** produziram movimento (0 `035f`; só tráfego de fundo) — consistente com o Gepard filtrar
+entrada sintética do X. O método que funcionou foi **híbrido**: `xdotool` posiciona o cursor
+global e **uinput/ydotool** entrega o botão (BTN_LEFT) — entrada ao nível de evdev. O observador
+permaneceu **somente leitura** (não chama função nativa, não escreve, não lê corpo de pacote);
+os cliques são entrada natural do próprio cliente. `ydotoold` foi encerrado e o socket removido.
+
+**Achado offline (disasm salvo, `/tmp/ro035f-dispatch-cases-getter-full.json`, build conferido):**
+a chamada natural do receptor em `0xd477bc` é `call [eax+0x18]` com `this=esi` e pilha
+`push 0x8a; push edi(x); push [ebp-0x24](y); push 0; push 0` — **exatamente** `(0x8A,x,y,0,0)`,
+forma **idêntica** à da tentativa nativa 6.4. **REFUTADO (offline): nenhum campo de estado do
+dispatcher é passado como argumento ao receptor.** Imediatamente antes, `0x5B` faz
+`mov byte [0x1602a8f], 0` (zera um **global**) e aplica o gate `getter() > [ebx+0x520]+0x15E`.
+Nos cinco campos candidatos, a varredura do disasm mostra **apenas escritas** de
+`+0x500/+0x50c/+0x510/+0x534/+0x538` (nenhuma leitura no código capturado); só `+0x70` e `+0x520`
+são lidos, e **dentro** da própria lógica de despacho (gates).
+
+**Achados vivos (2/2 passos, estáveis):**
+- **Sem ligação direta em NENHUMA direção (256 B).** `refs_dispatcher_at = None` (receptor
+  `0x248caf88` não aponta para o dispatcher `0x28c0a2f8`) **e** `deref0_is_receiver = False` +
+  `refs_receiver_at = None` (o dispatcher também não aponta para o manager — nem em `[0]` nem nos
+  primeiros 64 words). O `[dispatcher+0]` é um objeto de despacho/handler, **não** o manager; o
+  `this` do receptor é o manager resolvido pelo global `[0x1213338]`. (Cobertura: 256 B em ambas
+  as direções, 7 eventos em 2 sessões de passos; **não** exclui ligação via global, offset >0x100,
+  cadeia de indireção ou TLS.)
+- **Campos `+0x5xx` constantes**: `{f500:0, f50c:0, f510:0, f534:0xffffffff, f538:0xffffffff}`
+  idênticos nos dois passos → **sentinelas/flags**, não dado de destino que varie por passo
+  (o destino varia — `[160,223]`→`[166,219]` — mas esses campos não).
+- **`flag_1602a8f = 0`** na entrada do dispatcher e do receptor no caminho natural que funciona.
+- **`counter520`** muda entre passos (gate do `0x5B`), como esperado; objetos dispatcher/receptor
+  estáveis entre passos. Estrutura (disasm): o `this` do receptor é o **manager** resolvido
+  independentemente (`is_manager=true`), objeto **distinto** do dispatcher.
+
+### Matriz de evidências
+
+| Campo/evidência | Hipótese | Origem | Produtor | Consumidor | Contexto | Cobertura | Classificação | Rival | Próximo discriminador |
+|---|---|---|---|---|---|---|---|---|---|
+| Args do `0x8A` natural = `(0x8A,x,y,0,0)` | H2 | disasm `0xd477a4–0xd477bc` | VM/`0x5B` | receptor | natural (estático) | call-site completo | **REFUTA H2-via-argumento** | — | — |
+| `+0x500/50c/510/534/538` só escritos | H2 | disasm cases | `0x11`/`0x0D` | **nenhum no código capturado** | natural (estático) | só janela do dispatcher | OBSERVADO; consumidor ausente | leitura fora da janela capturada | disasm do corpo do receptor (VM) |
+| linkage dispatcher↔manager = None (ambas direções) | H2 | vivo `walk2`+`walk3` | — | — | natural | 256 B bidirecional, 7 eventos | INFERIDO: objetos mutuamente desligados no header | ligação via global/offset >0x100/indireção/TLS | ler o global `[0x1213338]`/registro que ligue os dois |
+| `+0x5xx` constantes entre passos | H2 | vivo `walk2` | `0x11`/`0x0D` | — | natural | 2 passos | INFERIDO: não são estado por-passo | campo de destino noutro objeto | snapshot do objeto do receptor/manager |
+| `byte[0x1602a8f]=0` natural | H2/H4 | disasm + vivo | `0x5B` | não verificado | natural | valor no ponto, não a leitura | OBSERVADO (produtor); consumo NÃO VERIFICADO | flag não lido pelo receptor | ler o global dentro do receptor (Fase E) |
+| receptor entra idêntico (obj+args) e só natural produz store | H3 | §5 (6.4) + §12 | — | — | natural×nativo | 1 nativo, 2 naturais | consistente com H3 (contexto/VM/callsite) | H2 por caminho não coberto | entrar pelo dispatcher `0x11` (contexto da VM) |
+
+**Atualização de hipóteses (dentro da cobertura demonstrada):**
+- **H2 — substancialmente enfraquecida.** Estado não é passado como argumento (refutado offline);
+  campos `+0x5xx` são constantes/sentinela; **nenhuma ligação direta entre os objetos em 256 B,
+  em qualquer direção.** Logo não há canal demonstrado pelo qual o receptor leia o estado do
+  dispatcher. Não **refutada em absoluto** (globais, offset >0x100, indireção ou TLS fora da
+  cobertura).
+- **H3 — relativamente reforçada**, não provada: receptor entra idêntico em forma e só o caminho
+  natural (pela VM/call-site `0xd477bc`, com o despacho `0x11→0x0D→0x5B`) produz o store.
+- **Discriminador mínimo seguinte (read-only, nova janela):** como a ligação direta foi excluída
+  (256 B, ambas direções), o próximo passo é **testar H3**: observar o contexto de execução
+  entrando pela cadeia do **dispatcher `0x11`** (call-site `0xd477bc`, despacho `0x11→0x0D→0x5B`)
+  vs. a folha isolada — e, em paralelo, procurar um elo **indireto** (global `[0x1213338]`/registro
+  que ligue dispatcher e manager) antes de qualquer rastreio de leitura (Fase E, proposta própria).
+  Qualquer **nova chamada nativa** continua exigindo autorização separada (§11 do prompt).
+
+**Limites/cobertura:** varredura de 256 B numa direção; corpo do receptor (VM do Gepard) **não**
+desassemblado — o consumidor real não foi observado diretamente (exigiria watchpoint/rastreio de
+leitura = Fase E, com proposta de custo própria; ARCHITECTURE.md §11 alerta que watchpoint de
+dados travou o cliente). Sessão única; sem controle focado×não-focado. Nenhuma conclusão de
+sincronia de cifra inferida só por processo vivo.

@@ -4,8 +4,12 @@
 NÃO chama função nativa, NÃO escreve memória, NÃO lê corpos de pacote/cifra.
 Objetivo: confirmar que os observadores funcionam num MOVIMENTO NATURAL e coletar,
 em eventos ordenados, quatro pontos distintos e independentes:
-  - dispatcher  (0xd473b0, código interno 0x11, slots de 64 bits) — entrada observada;
-  - receptor    (gepard+0x10a90, código 0x8a) — entrada observada;
+  - dispatcher  (0xd473b0, código interno 0x11, slots de 64 bits) — entrada observada, com
+                 snapshot read-only dos campos candidatos escritos por 0x11/0x0D/0x5B
+                 (+0x500/+0x50c/+0x510/+0x534/+0x538); é o PRODUTOR, não prova consumo;
+  - receptor    (gepard+0x10a90, código 0x8a) — entrada observada + checagem DELIMITADA
+                 (64 words do objeto do receptor) de referência ao objeto do dispatcher visto
+                 nesta janela (refs_dispatcher_at): distingue 'pode ler estado' de 'sem ligação';
   - store       (gepard+0x18eff2, `mov [ecx],bl`) — SEM gate de janela de pilha, para
                  distinguir 'store executou' de 'store ausente' (só id [ecx-2] e 3 bytes);
   - transporte  (DESCOBERTO): hooka um conjunto de candidatos de envio e filtra pela
@@ -90,6 +94,8 @@ function region(p) {
   return mod ? mod.name : 'other';
 }
 function tryU32(p) { try { return p.readU32(); } catch (e) { return null; } }
+function tryU8(p) { try { return p.readU8(); } catch (e) { return null; } }
+var GFLAG = ptr('0x1602a8f');   // global zerado em 0xd4777d logo antes do dispatch natural do 0x8A
 function sendmsgRequested(msg) {   // soma iov_len do msghdr (32-bit), SEM ler o buffer
   try {
     var iov = msg.add(8).readPointer(), n = msg.add(12).readU32(), tot = 0;
@@ -119,6 +125,7 @@ function isServerFd(fd) {
   serverFd[fd] = ok; return ok;
 }
 var transportApisSeen = {};
+var dispSeen = {};   // objetos 'this' de dispatcher 0x11 vistos nesta janela (ref cruzada offline)
 var candidates = ['send', 'sendto', 'sendmsg', 'sendmmsg', 'write', 'writev', '__send', '__libc_send'];
 var lenArgIndex = {send: 2, sendto: 2, write: 2};   // tamanho solicitado facilmente legível
 var hookedT = {};
@@ -226,20 +233,48 @@ Process.setExceptionHandler(function (d) {
         var x = c.esp.add(16).readU32(), xh = c.esp.add(20).readU32(),
             y = c.esp.add(24).readU32(), yh = c.esp.add(28).readU32();
         var ret = c.esp.readPointer();
+        dispSeen[c.ecx.toString()] = true;   // p/ a checagem de referência cruzada no receptor
+        // Direção inversa (dispatcher -> receptor/manager): o disasm faz `mov esi,[ebx]`; aqui
+        // verificamos se o objeto do dispatcher aponta para o objeto do receptor (receiverObject)
+        // no primeiro campo e/ou nos primeiros 64 words. Read-only, delimitado.
+        var d0 = null, refsRecvAt = null;
+        try { d0 = c.ecx.readPointer(); } catch (e) {}
+        for (var o2 = 0; o2 < 0x100; o2 += 4) {
+          var w2 = tryU32(c.ecx.add(o2));
+          if (w2 !== null && receiverObject.equals(ptr(w2))) { refsRecvAt = o2; break; }
+        }
         emit({site: 'dispatcher_0x11', coord: (x <= 1023 && y <= 1023 && xh === 0 && yh === 0) ? [x, y] : null,
               return_addr: ret.toString(), return_region: region(ret),
               this_ecx: c.ecx.toString(), this_region: region(c.ecx),
-              gate70: tryU32(c.ecx.add(0x70)), counter520: tryU32(c.ecx.add(0x520))});
+              deref0_is_receiver: (d0 !== null && d0.equals(receiverObject)), refs_receiver_at: refsRecvAt,
+              gate70: tryU32(c.ecx.add(0x70)), counter520: tryU32(c.ecx.add(0x520)),
+              flag_1602a8f: tryU8(GFLAG),   // global zerado por 0x5B antes do 0x8A; pode ser focus-dependente
+              // snapshot read-only dos campos candidatos (produtor). O valor aqui é o estado NO
+              // momento do 0x11; não demonstra que o receptor os lê (consumo exige leitura efetiva).
+              state: {f500: tryU32(c.ecx.add(0x500)), f50c: tryU32(c.ecx.add(0x50c)),
+                      f510: tryU32(c.ecx.add(0x510)), f534: tryU32(c.ecx.add(0x534)),
+                      f538: tryU32(c.ecx.add(0x538))}});
       }
     } else if (n === 1) {                            // receptor: só o código 0x8a
       if (c.esp.add(4).readU32() === 0x8a) {
         var rx = c.esp.add(8).readU32(), ry = c.esp.add(12).readU32();
         var rret = c.esp.readPointer();
+        // Referência cruzada DELIMITADA (64 words = 256 bytes, read-only) do objeto do receptor
+        // para QUALQUER objeto de dispatcher 0x11 visto nesta janela. Distingue 'o receptor PODE
+        // alcançar o estado do dispatcher' de 'objetos sem ligação direta'. NÃO prova leitura
+        // efetiva do campo — só a existência de um ponteiro; o consumidor real exige Fase E.
+        var refOff = null;
+        for (var off = 0; off < 0x100; off += 4) {
+          var w = tryU32(c.ecx.add(off));
+          if (w !== null && w >= 0x10000 && dispSeen[ptr(w).toString()]) { refOff = off; break; }
+        }
         emit({site: 'receptor_0x8a', coord: (rx <= 1023 && ry <= 1023) ? [rx, ry] : null,
               this_is_manager: c.ecx.equals(receiverObject),
               this_ecx: c.ecx.toString(),
               tail_args_zero: c.esp.add(16).readU32() === 0 && c.esp.add(20).readU32() === 0,
-              return_addr: rret.toString(), return_region: region(rret)});
+              return_addr: rret.toString(), return_region: region(rret),
+              flag_1602a8f: tryU8(GFLAG),   // valor do global no momento da entrada do receptor
+              refs_dispatcher_at: refOff});
       }
     } else if (n === 2) {                            // store: SEM gate de janela de pilha
       var q = c.ecx, inStack = (q.compare(c.esp) >= 0 && q.compare(c.esp.add(0x10000)) < 0);

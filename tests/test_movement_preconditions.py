@@ -232,4 +232,46 @@ with tempfile.TemporaryDirectory() as d:
     assert len(rec["channels"]["transport"]) == 1           # transporte observado independentemente
     assert any("observadores incompletos" in n for n in rec["notes"])
 
+# ---- 10. observe_path.py estendido: snapshot de estado do dispatcher + referência cruzada -----
+# Campos aditivos (state no dispatcher, refs_dispatcher_at no receptor) passam intactos pelos
+# canais, sem o analisador promovê-los a prova de consumo nem fundir os canais.
+state_path = path_capture([
+    {"site": "dispatcher_0x11", "order": 1, "coord": [160, 247], "this_ecx": "0x28c27dc8",
+     "flag_1602a8f": 1, "deref0_is_receiver": True, "refs_receiver_at": 0,
+     "state": {"f500": 0, "f50c": 0, "f510": 0, "f534": 4294967295, "f538": 4294967295}},
+    {"site": "receptor_0x8a", "order": 2, "coord": [160, 247], "this_is_manager": True,
+     "this_ecx": "0x248ca3d0", "flag_1602a8f": 0, "refs_dispatcher_at": None},
+    {"site": "store_035f", "order": 3, "id_at_ecx_minus2": 863, "in_current_stack": True,
+     "body": {"coord": [160, 247], "dir": 0}},
+])
+with tempfile.TemporaryDirectory() as d:
+    rec = analyze.classify(analyze.load_capture(write_json(d, state_path)))
+    assert rec["shape"] == "path-observation" and rec["observers_ok"] is True
+    disp = rec["channels"]["dispatcher_0x11"][0]
+    recep = rec["channels"]["receptor_0x8a"][0]
+    # snapshot preservado literalmente (0xffffffff == 4294967295 não vira True/False)
+    assert disp["state"]["f534"] == 4294967295 and disp["state"]["f500"] == 0
+    # ausência de ligação direta é representada como None, nunca inventada como offset
+    assert recep["refs_dispatcher_at"] is None
+    # o global cleared-pre-dispatch passa como dado literal nos dois canais (1 no 0x11, 0 no receptor)
+    assert disp["flag_1602a8f"] == 1 and recep["flag_1602a8f"] == 0
+    # linkage bidirecional passa como dado (dispatcher->receptor via deref0/refs_receiver_at)
+    assert disp["deref0_is_receiver"] is True and disp["refs_receiver_at"] == 0
+    # o analisador NÃO adiciona nenhuma conclusão de consumo a partir do snapshot
+    assert "consumer" not in rec and "consumidor" not in json.dumps(rec)
+
+# referência cruzada POSITIVA (offset encontrado) também só passa como dado, sem virar causa
+state_path_ref = path_capture([
+    {"site": "dispatcher_0x11", "order": 1, "coord": [1, 2], "this_ecx": "0xaaaa0000",
+     "state": {"f500": 1, "f50c": 0, "f510": 0, "f534": 0, "f538": 0}},
+    {"site": "receptor_0x8a", "order": 2, "coord": [1, 2], "this_is_manager": True,
+     "this_ecx": "0xbbbb0000", "refs_dispatcher_at": 76},
+    {"site": "store_035f", "order": 3, "id_at_ecx_minus2": 863, "in_current_stack": True,
+     "body": {"coord": [1, 2], "dir": 0}},
+])
+with tempfile.TemporaryDirectory() as d:
+    rec = analyze.classify(analyze.load_capture(write_json(d, state_path_ref)))
+    assert rec["channels"]["receptor_0x8a"][0]["refs_dispatcher_at"] == 76
+    assert rec["observers_ok"] is True
+
 print("test_movement_preconditions PASS")

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "rea-agents": {
+      "command": "/home/linuxbrew/.linuxbrew/bin/rea",
+      "args": ["mcp"]
+    },
+    "repomapper": {
+      "command": "/var/home/bazzite/.local/share/RepoMapper/.venv/bin/python",
+      "args": ["/var/home/bazzite/.local/share/RepoMapper/repomap_server.py"]
+    }
+  }
+}

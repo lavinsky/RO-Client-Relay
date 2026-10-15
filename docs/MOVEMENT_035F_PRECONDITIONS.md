@@ -1,6 +1,14 @@
 # Pré-condições de preparação do movimento 0x035F
 
-> **Leitura atual (87245d6):** §§1–9 registram etapas anteriores; §12 contém o resultado posterior. H1 foi refutada no recorte 6.4; H2 por argumento e por ponteiro foi excluída somente nas coberturas descritas. H2 por valor global continua aberta; H3 é relativamente reforçada, não provada.
+> **Leitura atual (pós-524b0f0):** §§1–12 registram etapas anteriores. §13 foi **corrigida**: o
+> disasm estático de `uaRO.exe` mostra que o dispatcher `0xd473b0` é uma função `__thiscall` comum
+> que termina em `ret 0x34` (callee limpa 13 dwords); a chamada nativa anterior empilhou só 11
+> dwords → **desequilíbrio de pilha**. A leitura "VM que não retorna" está **REFUTADA quanto ao
+> mecanismo**; o que se observou foi apenas conteúdo de buffer compatível com um corpo `035f` no
+> trap do store, sem envio/retorno confirmados. H1 foi refutada no recorte 6.4; as exclusões de
+> argumento/ponteiro de §12 permanecem restritas à cobertura. O ensaio altera preparação e contexto
+> juntos: **não** isola H2 de H3. Próxima chamada nativa só com ABI de 13 dwords e **janela
+> exclusiva confirmada**.
 
 > **Procedência histórica:** PIDs, FDs, portas de instrumentação em loopback e caminhos externos abaixo identificam os ensaios originais; não descrevem processos vivos agora nem garantem disponibilidade dos artefatos. Nenhuma captura privada foi aberta nesta consolidação.
 
@@ -416,49 +424,124 @@ leitura = Fase E, com proposta de custo própria; docs/HISTORY/ARCHITECTURE_LEGA
 dados travou o cliente). Resultados restritos às janelas/sessão reportadas; sem controle focado×não-focado. Nenhuma conclusão de
 sincronia de cifra inferida só por processo vivo.
 
-## 13. Ensaio nativo do DISPATCHER 0x11 — H2/H3 resolvidas; 035F espontâneo porém sem retorno
+## 13. Ensaio nativo do dispatcher 0x11 — leitura corrigida: ABI incompleta, não "VM sem retorno"
 
 Experimento autorizado (chamadas nativas + tolerância a queda do cliente). Ferramenta:
 `research/movement_035f/dispatcher_trial.py`. Em vez da folha `0x8A` (insuficiente, §5/6.4),
-chama o **dispatcher `0xd473b0`** com a ABI observada ao vivo (dump read-only):
-`this`=ecx (objeto do dispatcher capturado de um passo natural), pilha
+chama o **dispatcher `0xd473b0`** (em `uaRO.exe`, ImageBase 0x400000, base fixa — não ASLR)
+com a ABI que então se supunha: `this`=ecx (objeto capturado de um passo natural), pilha
 `(u32 0, u64 0x11, u64 x, u64 y, u64 0, u64 0)`. O `this` é de heap (sem âncora global): é
 **capturado de um passo natural** e reusado na mesma sessão; a chamada dispara UMA vez no dreno
 main-thread, ~após a captura, para `coord_capturada + (4,0)`. Sessões: PIDs 3240424/3266070/3267651
-(relogados), build re-conferido (hashes iguais).
+(relogados), build re-conferido (hashes iguais; `sha256(uaRO.exe)=f2f2…9569`).
 
-- **OBSERVADO (disp2):** durante a chamada (`during_call=true`) a cadeia executou
-  `receptor_0x8a[288,320] → store_035f body [288,320] dir1` — ou seja, **a chamada ao dispatcher
-  MONTOU e ARMAZENOU um `0x035f` ESPONTÂNEO no destino pedido** (`[288,320]` = capturado `[284,320]`
-  + 4). A ABI estava correta: nossos `x,y` viraram o corpo empacotado `[288,320]`. **A folha `0x8A`
-  sozinha nunca fez isso (6.4).**
-- **OBSERVADO (disp2 + disp5):** a chamada **não retorna** (`emit_return` ausente), **nenhum
-  `sendmsg` nem `recv_0087` do destino** antes do congelamento, e o cliente **congela e morre**
-  (zumbi). Em **disp5 todos os HW breakpoints foram desarmados antes da chamada** e o travamento
-  **persistiu** → **não é artefato de instrumentação**: é intrínseco. Consistente com o "retorno"
-  natural do dispatcher ser para a VM (`gepard+0xb2c251`); chamado plano, `0xd473b0` não volta ao
-  chamador externo (tail-transfer/àespera de continuação da VM).
+### 13.1 ABI real do dispatcher (OBSERVADO — disasm estático de `uaRO.exe`, build f2f2…9569)
 
-**Resolução de hipóteses (critério A/B):** a folha `0x8A` não produz `035f`, mas **entrar no
-dispatcher `0x11` (que roda a preparação `0x11→0x0D→0x5B`) PRODUZ o `035f`**. Logo a pré-condição
-que faltava à chamada nativa da folha é **a preparação/contexto de nível dispatcher** — H2
-(preparação) e H3 (contexto de execução) **confirmadas como necessárias e, juntas, suficientes
-para a MONTAGEM/STORE**. (Isto supera o impasse do §12: o canal não era um ponteiro lido pelo
-receptor, mas a **execução da cadeia** a montante.)
+Desassemblagem estática offline de `uaRO.exe` (seção 0, VA 0x401000, raw 0x800; `objdump -b binary
+-mi386`), confrontada com os dumps ao vivo. O dispatcher `0xd473b0` é uma **função nativa comum
+`__thiscall`**, não uma VM/threaded-code:
 
-**Objetivo de andar autônomo (§13 de `docs/HISTORY/ARCHITECTURE_LEGACY.md`):** parcialmente
-atingido e delimitado — um `035f` espontâneo é **disparável** pelo dispatcher, mas **não de forma
-limpa**: a chamada trava (sem retorno) e a **transmissão não foi alcançada**; não há prova de envio
-nem de sincronia de cifra. Portanto `0xd473b0` **não é**, como está, uma primitiva chamável de
-movimento autônomo.
+- Prólogo MSVC com SEH e stack cookie: `push ebp; mov ebp,esp; push -1; push 0xf312d5;
+  mov eax,fs:0; … ; mov eax,ds:0x122b924; xor eax,ebp; mov [ebp-0x10],eax` (`0xd473b0`–`0xd473d5`).
+- `mov ebx,ecx` (`0xd473db`): **`ebx = this`** (thiscall confirmado).
+- Lê args em `[ebp+0x8]`, `[ebp+0xc/0x10]` (code 64-bit — `test eax,eax` exige high=0),
+  `[ebp+0x14]`=x (edi), `[ebp+0x1c]`=y, e demais dwords até `[ebp+0x38]`.
+- Switch por tabela: `cmp edx,0x95; ja default; movzx eax,[edx+0xd47ebc]; jmp [eax*4+0xd47e64]`
+  (`0xd47439`–`0xd47440`). **code `0x11` → índice 7 → caso `0xd476e5`.**
+- Todos os casos convergem para `jmp 0xd47e46` (epílogo único). Epílogo (`0xd47e46`–`0xd47e61`):
+  restaura SEH/`fs:0`, `pop ecx/edi/esi/ebx`, checa cookie (`call 0xdbbbd4`), `mov esp,ebp; pop ebp;`
+  **`ret 0x34`**.
 
-**Próximo passo realista (proposta, não executado):** para um `035f` autônomo que **retorne e
-envie**, o alvo não é chamar `0xd473b0` plano, e sim (a) identificar o chamador na VM
-(`gepard+0xb2c251`) e um ponto de entrada que faça `ret` normal, ou (b) satisfazer a continuação da
-VM, ou (c) manter a abordagem **reativa** existente (merge no store, §10 do legacy) para andar — a
-limitação de "só reage a um clique" permanece. Cada tentativa de chamada derruba o cliente (relogin).
+> **`ret 0x34` = 52 bytes = 13 dwords de argumentos de pilha, limpos pelo callee (thiscall).**
+> A `NativeFunction` usada (`['pointer', u32, u64, u64, u64, u64, u64]`) empilha apenas
+> **44 bytes (11 dwords)** de args. **Faltam 8 bytes (2 dwords: `[ebp+0x34]`/`[ebp+0x38]`).**
+> Logo, ao executar `ret 0x34`, `esp` retorna **8 bytes acima** do esperado pelo trampolim Frida:
+> **desequilíbrio de pilha na volta** — violação de disciplina de pilha, não "VM que não retorna".
+
+**Caso `0x11` (`0xd476e5`):** `push 0×11; push 0xd; push 0; call [eax+0x8]` (sub-rotina `0x0D`);
+depois ramifica por `[ebx+0x70]` (∈{2,5,6} → grava `[ebx+0x510]=1`, `[ebx+0x534]=edi(x)`,
+`[ebx+0x538]=y`; senão grava `[ebx+0x510]=0`, `[ebx+0x534]=[ebx+0x538]=0xffffffff` e
+`push 0×5b; … call [esi+0x8]`). O caso `0x5B` separado (`0xd4777d`) faz
+`mov byte ds:0x1602a8f,0; call [0xfc17b0]; cmp eax,[ebx+0x520]+0x15e; jbe epílogo` (porta de taxa)
+e só então `push 0x8a; … call [eax+0x18]` (`0xd477bc`) — a folha `0x8A`. Campos
+`+0x510/+0x514/+0x520/+0x524/+0x528/+0x52c/+0x530/+0x534/+0x538` são lidos/gravados aqui dentro
+(consistente com §12: escritos pelo dispatcher, não passados ao receptor).
+
+### 13.2 Correções à leitura anterior
+
+1. **"Store espontâneo montado/armazenado" → superdimensionado.** O BP do store
+   (`gepard+0x18eff2`, `mov [ecx],bl`) é **HW de execução**, dispara **antes** da instrução; o
+   handler lê `[ecx..ecx+2]` = **conteúdo do buffer no trap**, incluindo o byte `b0` que esta
+   própria store ainda vai sobrescrever (`dispatcher_trial.py:198`). Em disp2 houve UMA leitura
+   com `id@[ecx-2]=0x035f` e corpo decodificado `[288,320]` (order 13), **cercada por leituras com
+   `id` lixo** (534, 44398, 769, …) — o `mov [ecx],bl` é genérico e é atingido em muitos buffers.
+   Portanto: **OBSERVADO** = "conteúdo de buffer compatível com um corpo `035f` para o destino
+   pedido, presente no trap do store, durante a chamada"; **NÃO demonstrado** que a escrita se
+   concluiu, que o pacote de 5 bytes foi finalizado, nem que seguiu adiante. A prova decisiva
+   (sendmsg 5 B no fd do servidor + `recv_0087 dst`) **não ocorreu `during_call`** — ao contrário
+   do fluxo natural (order 4→5→6), onde o mesmo trap pré-store traz corpo que o `recv_0087`
+   posterior confirma. `destino = capturado+(4,0)` **não é** automaticamente um tile válido/andável.
+2. **"Travamento intrínseco da VM / não retorna" → REFUTADO quanto ao mecanismo alegado.** Pela
+   §13.1, `0xd473b0` termina em `ret 0x34` normal; `gepard+0xb2c251` é apenas **o endereço do
+   chamador** (um thunk Gepard), um alvo de retorno comum — não uma "continuação de VM não
+   chamável". Uma chamada com a ABI correta **retornaria**. A causa mais provável do travamento é
+   o **desequilíbrio de pilha de 8 bytes** (§13.1), que corrompe o frame na volta e é coerente com
+   a "rajada de stores com id lixo seguida de silêncio e morte" de disp2.
+3. **Desarmar HW breakpoints (disp5) exclui só essa fonte.** A chamada seguia dentro de um
+   callback `poll/select` via `NativeFunction`, com hooks `Interceptor` (sendmsg/recv) ainda ativos
+   (`dispatcher_trial.py:218`). **REFUTADA** apenas a explicação "exclusivamente pelos HW BPs".
+   **Reentrância** (chamar de dentro do dreno main-thread) permanece **hipótese aberta**, não
+   excluída, e distinta do desequilíbrio de pilha.
+4. **Coordenadas corretas validam só o encaminhamento de args, não a ABI inteira.** Preservação de
+   registradores (o callee salva/restaura ebx/esi/edi), disciplina de pilha e retorno continuam
+   relevantes justamente porque a chamada não concluiu.
+
+**H2 vs H3:** trocar folha→dispatcher muda **preparação e contexto juntos**; o resultado **não
+isola H2 de H3** nem comprova necessidade individual de cada uma. O consumo de estado/global pelo
+receptor segue **NÃO VERIFICADO**; a cobertura de ponteiros de §12 não é ampliada.
+
+### 13.3 Classificação da falha capturada (disp2 × disp5 — condições DISTINTAS, não combinar)
+
+- **disp2** (`/tmp/claude-035f-…-134442-disp2/`, HW BPs armados durante a chamada): após `emit_call`
+  → `receptor_0x8a[288,320]` + rajada de `store_035f` (order 9–16, ~1 ms), **sem `emit_return`,
+  sem sendmsg/recv `during_call`**, depois silêncio até TIMEOUT; `cleanup_error: script destroyed`.
+- **disp5** (`/tmp/claude-035f-…-135147-disp5/`, TODOS os HW BPs desarmados antes da chamada): após
+  `emit_call` **nenhum evento** (observação dos 3 BPs desligada); o hook `sendmsg` seguia armado e
+  **não** registrou envio `during_call`; TIMEOUT; `cleanup_error: script destroyed`.
+
+Sem `emit_error` (o `try/catch` com `exceptions:'propagate'` emitiria em exceção JS capturável) e
+sem `emit_return`. **Não atribuível a exceção capturada nem a retorno normal.** Distinguir
+exceção nativa × loop × bloqueio × término externo **exige coleta adicional** (abaixo); a ausência
+de `emit_return` isolada **não** prova "VM". Consistência atual: **desequilíbrio de pilha na volta**
+(mecanismo nomeado e verificável), com **reentrância** como alternativa aberta.
+
+### 13.4 Próximo passo — intervenção única fundamentada (PROPOSTA; exige confirmar janela exclusiva)
+
+Antes de qualquer nova chamada nativa, **confirmar comigo a janela exclusiva** (cliente relogado +
+foco). Intervenção proposta, com a ABI corrigida:
+
+1. Num passo natural de `0x11`, capturar o **frame completo de 13 dwords** (`[esp+4 .. esp+0x34]`)
+   além de `this`(ecx) — não só code/x/y.
+2. Replicar a chamada como **`__thiscall` com exatamente 13 args u32** (casando `ret 0x34`),
+   reusando os 13 dwords naturais e **alterando apenas x (`[ebp+0x14]`) e y (`[ebp+0x1c]`)** para um
+   tile comprovadamente adjacente/andável; `this` = objeto natural capturado.
+3. **Discriminadores de falha** a instrumentar na mesma rodada: BP no endereço de retorno do
+   trampolim (detecta retorno vs. não-retorno), handler de exceção registrando tipo+endereço de
+   falha, e um contador para distinguir loop de bloqueio.
+
+**Critério de sucesso (todos):** `emit_return` (retorno normal) · `store_035f` com corpo correto
+`during_call` · `sendmsg` de 5 B no fd do servidor `during_call` · `recv_0087` com `dst` = destino ·
+**cliente permanece responsivo**. Falha de qualquer item mantém a hipótese de reentrância como
+próximo discriminador. **Não repetir a chamada idêntica sem um discriminador novo.**
+
+**Objetivo de andar autônomo (§ legacy):** ainda **não** alcançado de forma limpa. A leitura de
+"primitiva impossível" está **superada**: `0xd473b0` retorna normalmente; o que faltou foi uma
+chamada com ABI/pilha corretas. Alternativa conservadora permanece o merge **reativo** no store
+(§10 do legacy), com a limitação "só reage a um clique".
 
 **Verificações/limpeza:** eventos em streaming (sobrevivem ao freeze) + escrita incremental;
 limpeza de HW breakpoints idempotente e **limitada** (cliente pode travar); artefatos externos
-sanitizados (`/tmp/claude-035f-*-disp*/`, não versionados). `ydotoold` (uinput) encerrado a cada
-run. Cliente derrubado nos ensaios de chamada (autorizado; relogin trivial).
+sanitizados (`/tmp/claude-035f-*-disp*/` e disasm em `…-abi2/`, não versionados). `ydotoold`
+(uinput) encerrado a cada run. Cliente derrubado nos ensaios de chamada (autorizado; relogin
+trivial). **Watchpoint do flag `0x1602a8f` (Fase E) NÃO executado** — não discriminante agora;
+hipótese do global permanece aberta, retomável se a evidência apontar para ela.

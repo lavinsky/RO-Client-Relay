@@ -1,14 +1,15 @@
 # Pré-condições de preparação do movimento 0x035F
 
-> **Leitura atual (pós-524b0f0):** §§1–12 registram etapas anteriores. §13 foi **corrigida**: o
-> disasm estático de `uaRO.exe` mostra que o dispatcher `0xd473b0` é uma função `__thiscall` comum
-> que termina em `ret 0x34` (callee limpa 13 dwords); a chamada nativa anterior empilhou só 11
-> dwords → **desequilíbrio de pilha**. A leitura "VM que não retorna" está **REFUTADA quanto ao
-> mecanismo**; o que se observou foi apenas conteúdo de buffer compatível com um corpo `035f` no
-> trap do store, sem envio/retorno confirmados. H1 foi refutada no recorte 6.4; as exclusões de
-> argumento/ponteiro de §12 permanecem restritas à cobertura. O ensaio altera preparação e contexto
-> juntos: **não** isola H2 de H3. Próxima chamada nativa só com ABI de 13 dwords e **janela
-> exclusiva confirmada**.
+> **Leitura atual (pós-524b0f0):** §§1–12 registram etapas anteriores. §13 foi **corrigida** e
+> **testada ao vivo** (§13.5). O disasm de `uaRO.exe` mostra `0xd473b0` como `__thiscall` comum que
+> termina em `ret 0x34` (13 dwords) — logo "VM que não retorna" está **REFUTADA quanto ao
+> mecanismo**. Mas a chamada com a **ABI correta de 13 dwords também trava** (sem retorno, sem
+> exceção capturável, sem envio), então o **desequilíbrio de pilha está REFUTADO como causa**. O
+> `035f` para o destino pedido **é montado** entrando pelo dispatcher; o que falha é **retornar e
+> transmitir**. Resta bloqueio/loop, com **reentrância** (chamada dentro do `poll/select`) como
+> hipótese principal. H1 refutada no recorte 6.4; exclusões de §12 restritas à cobertura; o ensaio
+> **não** isola H2 de H3. Próximo passo: disparar fora do contexto de poll (§13.5), nova janela
+> exclusiva.
 
 > **Procedência histórica:** PIDs, FDs, portas de instrumentação em loopback e caminhos externos abaixo identificam os ensaios originais; não descrevem processos vivos agora nem garantem disponibilidade dos artefatos. Nenhuma captura privada foi aberta nesta consolidação.
 
@@ -492,9 +493,10 @@ e só então `push 0x8a; … call [eax+0x18]` (`0xd477bc`) — a folha `0x8A`. C
 2. **"Travamento intrínseco da VM / não retorna" → REFUTADO quanto ao mecanismo alegado.** Pela
    §13.1, `0xd473b0` termina em `ret 0x34` normal; `gepard+0xb2c251` é apenas **o endereço do
    chamador** (um thunk Gepard), um alvo de retorno comum — não uma "continuação de VM não
-   chamável". Uma chamada com a ABI correta **retornaria**. A causa mais provável do travamento é
-   o **desequilíbrio de pilha de 8 bytes** (§13.1), que corrompe o frame na volta e é coerente com
-   a "rajada de stores com id lixo seguida de silêncio e morte" de disp2.
+   chamável". A hipótese então levantada — travamento causado pelo **desequilíbrio de pilha de 8
+   bytes** — foi **testada e REFUTADA** ao vivo em §13.5 (a chamada com ABI de 13 dwords casando
+   `ret 0x34` trava igual). A rajada de stores com id lixo é **artefato de logging** (`inCall`
+   emite todo hit do `mov [ecx],bl` genérico), não runaway.
 3. **Desarmar HW breakpoints (disp5) exclui só essa fonte.** A chamada seguia dentro de um
    callback `poll/select` via `NativeFunction`, com hooks `Interceptor` (sendmsg/recv) ainda ativos
    (`dispatcher_trial.py:218`). **REFUTADA** apenas a explicação "exclusivamente pelos HW BPs".
@@ -520,10 +522,10 @@ receptor segue **NÃO VERIFICADO**; a cobertura de ponteiros de §12 não é amp
 Sem `emit_error` (o `try/catch` com `exceptions:'propagate'` emitiria em exceção JS capturável) e
 sem `emit_return`. **Não atribuível a exceção capturada nem a retorno normal.** Distinguir
 exceção nativa × loop × bloqueio × término externo **exige coleta adicional** (abaixo); a ausência
-de `emit_return` isolada **não** prova "VM". Consistência atual: **desequilíbrio de pilha na volta**
-(mecanismo nomeado e verificável), com **reentrância** como alternativa aberta.
+de `emit_return` isolada **não** prova "VM". O teste de §13.5 **excluiu** o desequilíbrio de pilha;
+sem exceção capturável, resta **bloqueio ou loop**, com **reentrância** como hipótese principal.
 
-### 13.4 Próximo passo — intervenção única fundamentada (PROPOSTA; exige confirmar janela exclusiva)
+### 13.4 Intervenção fundamentada (EXECUTADA em §13.5 — proposta original mantida para registro)
 
 Antes de qualquer nova chamada nativa, **confirmar comigo a janela exclusiva** (cliente relogado +
 foco). Intervenção proposta, com a ABI corrigida:
@@ -553,3 +555,39 @@ sanitizados (`/tmp/claude-035f-*-disp*/` e disasm em `…-abi2/`, não versionad
 (uinput) encerrado a cada run. Cliente derrubado nos ensaios de chamada (autorizado; relogin
 trivial). **Watchpoint do flag `0x1602a8f` (Fase E) NÃO executado** — não discriminante agora;
 hipótese do global permanece aberta, retomável se a evidência apontar para ela.
+
+### 13.5 EXECUTADO (vivo, janela exclusiva confirmada) — ABI de 13 dwords: hang persiste, imbalance REFUTADO
+
+Ferramenta: `research/movement_035f/dispatcher_trial13.py` (nova; `dispatcher_trial.py` preservado).
+`NativeFunction` `__thiscall` com **13 args u32** (= `ret 0x34`), captura do **frame natural
+completo de 13 dwords** + `this`, replay alterando só x/y. PID 3284268 (relog), build re-conferido
+MATCH; checagem em runtime de `ret 0x34` em `0xd47e61`. Artefato: `/tmp/claude-035f-…-abi13/`.
+
+- **OBSERVADO:** o frame natural de `0x11` é **`[0, 0x11, 0, x, 0, y, 0,0,0,0,0,0,0]`** — os 7
+  dwords finais são **zero**. Logo o ensaio anterior (11 dwords) tinha os **valores corretos**; só
+  faltavam 8 bytes de pilha. O ensaio atual empilha os 13 (casando `ret 0x34`).
+- **OBSERVADO:** a chamada **entrou** no dispatcher (`dispatcher_0x11[278,318]`,
+  `return_addr=0xf69ed758` = trampolim Frida, região `other`, `during_call=true`), executou
+  `receptor_0x8a[278,318]` e **montou um `store_035f` com corpo `[278,318]` no destino pedido**
+  (`during_call=true`) — cercado por hits do `mov [ecx],bl` genérico (artefato de `inCall`).
+- **OBSERVADO:** **nenhum `emit_return`, nenhum `native_exception`, nenhum `sendmsg`/`recv_0087`
+  `during_call`**; o cliente **congelou** (relogin). Mesma assinatura de disp2/disp5.
+
+**Conclusões:**
+1. **REFUTADO:** o desequilíbrio de pilha (ABI de 11 vs 13 dwords) **não** é a causa do travamento —
+   a ABI correta trava igual. (Correção à hipótese de §13.2/§13.3.)
+2. **REFUTADO (reforço):** não é exceção nativa capturável (o handler de não-breakpoint não
+   disparou `during_call`). Resta **bloqueio ou loop** — não um fault de memória.
+3. **OBSERVADO (reforço):** o `035f` para o destino arbitrário **é montado** entrando pelo
+   dispatcher; o que falha é **retornar e transmitir**.
+4. **HIPÓTESE principal agora: reentrância.** A chamada é feita de dentro do `onEnter` de
+   `poll/select` (main thread parada no poll). As sub-chamadas do caso `0x11` (`call [eax+0x8]`
+   =0x0D; `call [esi+0x8]` via 0x5B) podem bloquear/deadlock ao rodar lógica de jogo reentrante
+   enquanto o laço principal está suspenso no próprio poll que interrompemos.
+
+**Próximo discriminador (PROPOSTA, exige nova janela exclusiva):** disparar a mesma chamada de 13
+dwords **fora do contexto de `poll/select`** — p.ex. hook de um ponto do laço principal executado
+**depois** que o poll retorna (topo do handler de frame), mantendo execução na main thread mas sem
+reentrância no poll. Se retornar+enviar ali, confirma reentrância; se travar igual, aponta para
+dependência de estado/sequência mais profunda. Critérios de sucesso inalterados (§13.4). Alternativa
+conservadora: merge reativo (§10 legacy).

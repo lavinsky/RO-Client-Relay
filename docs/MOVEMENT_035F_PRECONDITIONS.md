@@ -600,6 +600,12 @@ MATCH; checagem em runtime de `ret 0x34` em `0xd47e61`. Artefato: `/tmp/claude-0
 
 ### 13.6 Próximo experimento, mais discriminante (PREPARADO; exige janela exclusiva + destino validado)
 
+> **Nota de instrumentação (§13.7, 2026-10-15).** `loop_map.py` (Stalker) e o disparo por
+> `Interceptor.attach` no `--fire-at` **continuam válidos**. A verificação de integridade do Gepard é
+> **byte a byte**: um hook inline só a dispara se um byte patcheado coincidir com um byte verificado
+> (azar pontual); `Stalker` e **hardware breakpoints** não são detectáveis. Para um único ponto
+> sensível, um HW BP de execução elimina esse risco pontual. Ver §13.7.
+
 Objetivo: **explicar a falha mesmo que não ande.** Uma tentativa por condição, **sem retry
 automático**. Ferramentas preparadas (não executadas): `research/movement_035f/loop_map.py`
 (read-only) e `research/movement_035f/dispatcher_trial_ctx.py` (chamada parametrizada por ponto).
@@ -649,3 +655,44 @@ execução**; **reentrância específica no poll ainda exigirá evidência** (p.
 
 **Condições de parada:** uma só chamada; aborta se identidade do objeto mudar antes do disparo;
 timeout curto; limpeza idempotente de BPs/hooks; `ydotoold` encerrado; relogin aceito se cair.
+
+### 13.7 Evento de integridade do Gepard (azar pontual de um hook inline) — natureza byte a byte
+
+**OBSERVADO (2026-10-15).** Durante a 1ª etapa de §13.6 (eleição do ponto pós-poll), rodei um probe de
+census NOVO, `elect_firesite.py`, que colocou **10 hooks `Interceptor.attach` inline em endereços de
+código do `uaRO.exe` de uma só vez**. Logo em seguida o responsável reportou **"Memory integrity test
+failed, gepard noted"** e o processo do cliente (PID 3286648) **encerrou**. Nenhuma chamada nativa
+chegou a ser disparada.
+
+**FATO (confirmado pelo responsável).** A verificação de integridade do Gepard é **byte a byte**: lê
+byte(s) específicos do próprio código do cliente e compara com o esperado. Um hook inline
+(`Interceptor.attach`, que reescreve bytes no alvo) só dispara a verificação **se um dos bytes
+patcheados coincidir com um byte verificado** — azar num site específico, **não** uma propriedade de
+hooks inline em geral. Com 10 hooks de uma vez, um caiu num byte verificado (INFERIDO).
+- **`Stalker` NÃO é detectável** e já foi usado amplamente aqui: executa uma **cópia relocada** do
+  código; os bytes originais permanecem intactos, então o checksum do original passa.
+- **Hardware breakpoints (DR0–DR3) NÃO são verificados** e não alteram byte algum (footprint zero).
+- O projeto **`gepardbypass`** (GitHub) trata exatamente dessas verificações.
+
+**Não detectado (contraste).** O ensaio estabelecido `dispatcher_trial13.py` (§13.5) rodou **sem**
+flag: observa por `th.setHardwareBreakpoint` (HW BP, sem patch) e só faz `Interceptor.attach` em
+**exports da libc** (send/recv/poll) — nunca em código do uaRO/gepard. (A nota
+[[no-hw-watch-on-stack-walk-slot]] — crash de um *data watchpoint* num slot de pilha reescrito a cada
+frame — é caso específico, NÃO evidência contra HW breakpoints de execução em geral.)
+
+**Correção de uma super-generalização minha.** Cheguei a tratar o evento como "hooks inline / Stalker
+em código do cliente são detectados" e a desaprovar o Stalker / forçar só-HW-BP — **errado**, corrigido
+pelo responsável. `Interceptor` e `Stalker` seguem utilizáveis em código do cliente; o único risco é um
+hook inline cujo byte patcheado seja justamente um verificado.
+
+**Implicação prática (o desenho de §13.6 fica como está):** para um **único ponto sensível/de alto
+valor** (p.ex. o `--fire-at` do `dispatcher_trial_ctx.py`), um **HW BP de execução** elimina o risco
+pontual sem custo. Para census amplo (`loop_map.py`), `Stalker` é seguro. Não repetir o padrão de
+muitos hooks inline simultâneos em código do cliente sem necessidade (maximiza a chance de azar).
+
+**Consequência para §13.5:** o resultado anterior (ABI de 13 dwords ainda trava, disparo no `onEnter`
+de poll via export da libc) **mantém-se válido como OBSERVADO** — aquele método não foi detectado.
+
+**Pendências humanas antes do próximo vivo:** relogin do cliente (novo PID); confirmação de que o
+evento "noted" não penalizou a conta/servidor do responsável; janela exclusiva; destino validado na
+nova posição (o `(278,316)` combinado antes vale só se o personagem ainda estiver em `(274,316)`).

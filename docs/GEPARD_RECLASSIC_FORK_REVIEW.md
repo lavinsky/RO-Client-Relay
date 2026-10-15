@@ -1,0 +1,48 @@
+# Referência comparativa: fork ReClassic / “FAKE GEPARD” (2026)
+
+**Fonte:** [`brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/tree/main), inspecionado em **2026-10-15**. **Tipo de evidência:** código-fonte público + inspeção estática parcial de dois binários distribuídos. **Nenhuma execução de arquivos externos, cliente vivo, hook, sessão de rede ou teste de cifra.** Não tratar nome do repositório como validação de compatibilidade Gepard 3.0.
+
+## Resultado
+
+**OBSERVADO no código:** fork volumoso (árvore de 5.010 entradas, majoritariamente OpenKore comum) configurado para servidor **ReClassic - BR (privado)**; modo atual `XKore 1`; histórico documenta implementação de `XKore 0` focada em login e formatos de pacotes do ReClassic. **NÃO VERIFICADO:** execução end-to-end na build uaRO, compatibilidade com Gepard 3.0 ou reprodução autônoma da cifra atual.
+
+**A evidência disponível não resolve a cifra uaRO, seu estado inicial ou a cadeia de preparação `0x11→0x0D→0x5B→0x8A`.** Pode oferecer referências de modularização para futuro plugin **no OpenKore** e considerações gerais sobre inicialização de DLL. Não implementar backend de bot no relay.
+
+## Achados com proveniência e limitações
+
+| Origem | OBSERVADO na fonte | Interpretação e limite para uaRO |
+|---|---|---|
+| [`tables/servers.txt:9-22`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/tables/servers.txt#L9-L22) | Servidor ReClassic privado, `version 55`, `serverType ROla`, `gameGuard 0`, referência a RagexeRE de 2020-03-04. | `gameGuard 0` é configuração **do OpenKore**, não medição universal da ausência de Gepard. Backend/build/proteção atual **NÃO VERIFICADOS**. |
+| [`control/config.txt:6-32`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/control/config.txt#L6-L32) | Configuração distribuída usa `XKore 1`, `XKore_injectDLL 0` e executável específico ReClassic_KORE1. | **OBSERVADO** como configuração, não prova de funcionamento autônomo nem de hooks na build uaRO. Configurações podem conter informações privadas; não reutilizar credenciais. |
+| [Commit `5f518abb` (2026-06-26)](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/commit/5f518abb0fdc8482b97819faa3cadc420c4b15b0) e [`d7769742` (2026-07-15)](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/commit/d776974279eb396818e726266549837f030bdf3b) | Primeiro habilita `XKore 0`, revisa `Send/ROla.pm` e tabelas; segundo retorna configuração para `XKore 1` com correções na DLL e conexão. | Histórico de duas abordagens. Títulos “XKORE 0 IMPLEMENTADO” **não** substituem testes documentados da cifra nem provam que a modalidade permaneceu operacional. |
+| [`src/Network/Send/ROla.pm:9-23,91-137`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/src/Network/Send/ROla.pm#L9-L23) | Login ReClassic descrito como `0x0ACF → 0x0AE3 → 0x0064`, senha Rijndael no primeiro passo e credencial sem cifragem no segundo; `0x0436` mapa tem layout especial. | Dados **atribuídos a capturas pelo autor**, não revalidados aqui; **não são** inicialização, seed ou stream cipher Gepard/uaRO. Risco em copiar formatos ou tratamento de credenciais para servidores diferentes. |
+| [`src/Network/Send/ROla.pm:28-62`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/src/Network/Send/ROla.pm#L28-L62) | Tabela `character_move=035F`, `actor_action=0437`, `skill_use=0438`, `sync=0360`. | IDs coincidem com pacotes usuais, mas **não demonstram** cobertura/estado da cifra, aceitação no uaRO nem semântica idêntica. |
+| [`src/Network/DirectConnection.pm:614-617`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/src/Network/DirectConnection.pm#L614-L617) | Retirada de `sendPing` antes de `map_login` para ReClassic, descrita como correção de ordem de sessão. | **Princípio útil:** ordem do protocolo importa; **não importar** a remoção do ping para uaRO sem capturas autorizadas e independentes. |
+| [`src/Network/Receive/ROla.pm`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/src/Network/Receive/ROla.pm) e [`ROla2.pm`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/src/Network/Receive/ROla2.pm) | Parser de respostas e arquivo adicional `ROla2.pm` que declara também o pacote Perl `Network::Receive::ROla`. | Potencial ambiguidade de arquivos com mesmo `package`; usar somente o módulo efetivamente carregado. Não são decrypt de Gepard. |
+| [`src/auto/XSTools/win32/netredirect.cpp:454-492`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/src/auto/XSTools/win32/netredirect.cpp#L454-L492) | Hooks WinSock/IAT para `send`, `recv`, variantes WSA, `connect`, `GetProcAddress`. | Referência arquitetural de redirecionamento da **XKore 1**, não função de envio cifrado Gepard; a investigação uaRO observou `sendmsg` no transporte Wine, outra camada. |
+| [`netredirect.cpp:529-634`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/src/auto/XSTools/win32/netredirect.cpp#L529-L634) e [`utils-netredirect.cpp:188-245`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/src/auto/XSTools/win32/utils-netredirect.cpp#L188-L245) | Inicialização única `InterlockedExchange`, adiamento de inicialização pesada para fora de `DllMain`; varredura *brute force* desligada. | Boas práticas genéricas de estabilidade e redução de mutações; não copiar técnica automaticamente para Wine/Frida. |
+| [`plugins/LatamChecksum/LatamChecksum.pl.disabled`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/plugins/LatamChecksum/LatamChecksum.pl.disabled) | Plugin de checksum CRC-8 explícita e **desabilitado**, relativo a outro protocolo/servidor. | **Não** é a cifra de corpo Gepard nem evidência de proteção ativa nesta configuração. |
+| [`recvpackets.txt`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/recvpackets.txt) e [`sync.txt`](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/sync.txt) | Arquivos de raiz contêm somente cabeçalho de geração, sem tabelas preenchidas. | Sem fixtures novas suficientes para provar implementação independente. |
+
+## Binários distribuídos — inspeção estática limitada, sem execução
+
+A árvore contém `NetRedirect.dll` na raiz (647.978 bytes), `Pasta rag - RO/NetRedirect.dll` (103.365 bytes) e `Pasta rag - RO/ReClassic_KORE1.exe` (10.115.584 bytes). Foram lidos somente os **dois binários DLL** pela conexão GitHub em representação base64 e inspecionadas assinatura PE, nomes de seções e cadeias ASCII; nenhum binário foi executado ou persistido no repositório uaRO.
+
+Ambas as DLLs contêm cadeias referentes a `netredirect.cpp`, WinSock, `Connecting to X-Kore server` e símbolos de encaminhamento. Não apareceram cadeias inequívocas de uma rotina Gepard. **Inspeção de strings não exclui lógica não identificada, ofuscada ou sem símbolos.** O EXE fornecido **não foi analisado**; comportamento e integridade não verificados. Não substituir executáveis/DLL do uaRO por artefatos de terceiros.
+
+## Correspondência com nossos objetivos
+
+- **xKore 1 / relay:** vale observar a modularidade do OpenKore e a separação `Send/Receive`, não portar o `NetRedirect` WinSock como substituto do nosso Frida sem provar equivalência funcional.
+- **Movimento `0x035F`:** o fork apenas declara o pacote e formato convencional; **não** contém evidência sobre preparação de estado do dispatcher `0x11→0x0D→0x5B→0x8A`, diferenças H2/H3, sync de cifra ou receptor Gepard do uaRO.
+- **Cifra:** não se identificou função de keystream/estado, snapshots, vetor P/C completo ou inicialização de sessão; a senha Rijndael do login ReClassic e a ofuscação convencional de ID OpenKore não substituem a cifra de corpo Gepard.
+- **xKore 0:** principal ideia portável é manter implementação de protocolo específico **no projeto OpenKore**, quando houver evidência própria para uaRO: login, char, map, ordem, heartbeat, reinício de sessão e crypt state.
+
+## Hipóteses e prova que faltaria
+
+**H-EXT-RECLASSIC-01 (NÃO VERIFICADA):** o fork consegue `XKore 0` no ReClassic por aceitar um fluxo próprio sem a mesma cifra Gepard de corpo exigida pelo uaRO. **Rival:** a integração necessária reside no executável ou DLL distribuídos, não no Perl inspecionado. **Distinção:** auditoria estática/relato reproduzível da versão de servidor efetivamente testada, com trajetória do pacote antes e depois da proteção; não inferir funcionamento de títulos de commits ou parâmetros `gameGuard`.
+
+**H-EXT-RECLASSIC-02 (NÃO VERIFICADA):** correções da NetRedirect refletem problemas genéricos de inicialização de DLL. **Rival:** comportamento específico de Windows e ReClassic. **Distinção:** testes offline de invariantes no nosso código e avaliação de ambiente antes de qualquer portabilidade.
+
+**Decisão:** classificar como **referência de arquitetura e compatibilidade ReClassic**, não como devirtualização/cifra Gepard 3.0 resolvida. Preservar investigações prioritárias existentes de `CL` (`CIPHER_INVESTIGATION.md`) e preparação antes de `0x8A` (`MOVEMENT_035F_PRECONDITIONS.md`).
+
+**Verificações desta revisão:** leitura GitHub e inspeção estática descrita — **PASS**; equivalência uaRO, testes offline do relay, testes dinâmicos, reprodução de cifra e validação binária do EXE — **NOT RUN**. Sem cópia de arquivos, DLLs ou credenciais externas para o repositório.

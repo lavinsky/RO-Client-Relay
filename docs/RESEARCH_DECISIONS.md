@@ -60,3 +60,15 @@ não foi alterado.
 - Determinar quais pacotes marcam estabelecimento e reinicialização de sessão no **build atual**.
 - Decidir em qual repositório/estrutura manter um futuro plugin OpenKore e sua interface.
 - Definir um protocolo de medição de economia de tokens: tarefas equivalentes, correção, retrabalho, duração e uso de franquia.
+
+## Fonte externa ReClassic/OpenKore — não equivale à cifra Gepard 3.0 uaRO
+
+[Revisão estática do fork “FAKE GEPARD” de 2026](GEPARD_RECLASSIC_FORK_REVIEW.md):
+**OBSERVADO** modo `XKore 0` específico ReClassic em histórico, configuração atual
+`XKore 1`, `gameGuard 0`, sender/receiver customizados, fontes NetRedirect e
+duas DLLs pré-compiladas. **NÃO VERIFICADO** algoritmo de cifra Gepard, estados
+criptográficos, mesma proteção no uaRO, execução end-to-end ou origem de `0x035F`.
+**Rivais:** servidor privado aceita outro protocolo; integração poderia residir nos
+binários não auditados completamente. **Decisão:** aproveitar modularidade de
+`Network::Send/Receive` e lições de estabilidade apenas como referências; não
+copiar pacotes de login, constantes, DLLs nem alterar prioridades de movimento/cifra.

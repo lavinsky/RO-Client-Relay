@@ -342,3 +342,15 @@ não associa as ocorrências desta pesquisa a `0x035F` nem fornece fronteira da 
 Os arquivos de movimento foram preservados. Em uma coleta futura de vetores, essa
 descoberta pode orientar observação independente de bytes tentados/aceitos pelo transporte,
 após nova coordenação de exclusividade; não foi usada para preencher campos ausentes.
+
+## Referência externa — fork ReClassic “FAKE GEPARD” (2026)
+
+**OBSERVADO em fonte externa / NÃO VERIFICADO no uaRO:** o fork
+[ReClassic/OpenKore](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/tree/main)
+implementa uma sequência específica de login (Rijndael da senha e token-login)
+e configura `gameGuard 0`, mas **não foi identificada** na fonte Perl uma
+implementação da transformação de corpo da cifra Gepard ou estados de sessão.
+O histórico de `XKore 0` não substitui prova de compatibilidade criptográfica.
+Não confundir criptografia de login e obfuscação convencional de ID com a cifra
+investigada; sem avanço demonstrado sobre a origem de `CL`.
+Revisão estática, rivais e limites: [GEPARD_RECLASSIC_FORK_REVIEW.md](GEPARD_RECLASSIC_FORK_REVIEW.md).

@@ -39,3 +39,14 @@
 ## Limite de arquitetura do futuro plugin
 
 Quando houver protocolo demonstrado, a responsabilidade por inicialização de sessão, mensagens de controle periódicas e estado do protocolo deverá ser especificada como extensão **do OpenKore**. Este repositório permanece responsável pelo relay de texto claro na fase xKore 1. Nenhuma implementação de controle deve preceder evidência suficiente de direção, transições de estado e testes reproduzíveis.
+
+## Fonte comparativa: configuração ReClassic/OpenKore (2026)
+
+**OBSERVADO em código de terceiro / NÃO VERIFICADO para uaRO:** um fork
+[ReClassic/OpenKore](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/tree/main)
+reproduz etapas de login de seu servidor privado e usa `gameGuard 0` no perfil
+OpenKore. Isso não identifica `SC_GEPARD_INIT`, `CS_GEPARD_INIT_ACK`,
+`CS_GEPARD_SYNC`, o papel de `0x8280` nem qualquer estado de sessão na build uaRO.
+**Decisão:** não importar IDs de login, desabilitar heartbeat ou promover fluxos
+ReClassic a protocolo uaRO. Limites em
+[GEPARD_RECLASSIC_FORK_REVIEW.md](GEPARD_RECLASSIC_FORK_REVIEW.md).

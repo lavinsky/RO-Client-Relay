@@ -239,3 +239,14 @@ responsivo; janela exclusiva pode ser devolvida. Áreas de outra instância (`re
 `tests/test_cipher_research.py`, `docs/CIPHER_INVESTIGATION.md`, `/tmp/ro-cipher-*`) não
 foram lidas nem alteradas. Sem commit/push/PR. Artefatos privados em
 `/tmp/claude-035f-20261015-091419/` (0700).
+
+## 11. Fork ReClassic/OpenKore como comparação, não prova de `0x035F` uaRO
+
+**OBSERVADO na fonte externa / NÃO VERIFICADO no uaRO:**
+[ReClassic/Send/ROla.pm](https://github.com/brunostigmata-coder/Openkore-Bypass-Gepard-3.0-FAKE-GEPARD/blob/main/src/Network/Send/ROla.pm)
+registra `character_move=035F`, mas não há demonstração da cadeia interna
+`0x11→0x0D→0x5B→0x8A`, pré-condições H2/H3, estado de cifra ou emissão autônoma
+na nossa build. O `XKore 0` relatado pertence a um servidor privado e foi
+seguido por configuração `XKore 1`. Não transportar sua ABI ou assumir que
+aceitação de `035F` em outra build refuta nossos ensaios.
+[Revisão completa](GEPARD_RECLASSIC_FORK_REVIEW.md). Sem experimentos vivos.

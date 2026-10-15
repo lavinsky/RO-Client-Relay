@@ -3,13 +3,16 @@
 > **Leitura atual (pós-524b0f0):** §§1–12 registram etapas anteriores. §13 foi **corrigida** e
 > **testada ao vivo** (§13.5). O disasm de `uaRO.exe` mostra `0xd473b0` como `__thiscall` comum que
 > termina em `ret 0x34` (13 dwords) — logo "VM que não retorna" está **REFUTADA quanto ao
-> mecanismo**. Mas a chamada com a **ABI correta de 13 dwords também trava** (sem retorno, sem
-> exceção capturável, sem envio), então o **desequilíbrio de pilha está REFUTADO como causa**. O
-> `035f` para o destino pedido **é montado** entrando pelo dispatcher; o que falha é **retornar e
-> transmitir**. Resta bloqueio/loop, com **reentrância** (chamada dentro do `poll/select`) como
-> hipótese principal. H1 refutada no recorte 6.4; exclusões de §12 restritas à cobertura; o ensaio
-> **não** isola H2 de H3. Próximo passo: disparar fora do contexto de poll (§13.5), nova janela
-> exclusiva.
+> mecanismo estático**. Mas a chamada com a **ABI correta de 13 dwords também trava** (sem retorno
+> observado, **sem exceção registrada**, sem envio), então **a correção de ABI não bastou** e o
+> desequilíbrio de 8 bytes **não explica sozinho** o resultado — sem refutar que a pilha importe.
+> Exceção nativa **não está refutada** (o handler pode não ter rodado). Um corpo `035f` para o
+> destino pedido aparece no **trap pré-store**; montagem completa e transmissão **continuam não
+> demonstradas**. A chamada sai no **`onEnter` de `poll/select` (antes do poll)**, então a hipótese
+> é **dependência de contexto/fase de execução do laço** (reentrância é só um caso, sem evidência
+> direta). H1 refutada no recorte 6.4; exclusões de §12 restritas à cobertura; o ensaio **não** isola
+> H2 de H3. Próximo passo preparado em §13.6 (ponto pós-poll + diagnóstico de falha independente),
+> nova janela exclusiva a combinar.
 
 > **Procedência histórica:** PIDs, FDs, portas de instrumentação em loopback e caminhos externos abaixo identificam os ensaios originais; não descrevem processos vivos agora nem garantem disponibilidade dos artefatos. Nenhuma captura privada foi aberta nesta consolidação.
 
@@ -544,10 +547,11 @@ foco). Intervenção proposta, com a ABI corrigida:
 **cliente permanece responsivo**. Falha de qualquer item mantém a hipótese de reentrância como
 próximo discriminador. **Não repetir a chamada idêntica sem um discriminador novo.**
 
-**Objetivo de andar autônomo (§ legacy):** ainda **não** alcançado de forma limpa. A leitura de
-"primitiva impossível" está **superada**: `0xd473b0` retorna normalmente; o que faltou foi uma
-chamada com ABI/pilha corretas. Alternativa conservadora permanece o merge **reativo** no store
-(§10 do legacy), com a limitação "só reage a um clique".
+**Objetivo de andar autônomo (§ legacy):** ainda **não** alcançado de forma limpa. O disasm estático
+mostra que `0xd473b0` **tem** um `ret 0x34` normal (§13.1), mas **ao ser chamado o retorno não foi
+observado** (§13.5) — não afirmar que "retorna normalmente" nem que "faltava só a ABI correta".
+Alternativa conservadora permanece o merge **reativo** no store (§10 do legacy), com a limitação "só
+reage a um clique".
 
 **Verificações/limpeza:** eventos em streaming (sobrevivem ao freeze) + escrita incremental;
 limpeza de HW breakpoints idempotente e **limitada** (cliente pode travar); artefatos externos
@@ -556,7 +560,7 @@ sanitizados (`/tmp/claude-035f-*-disp*/` e disasm em `…-abi2/`, não versionad
 trivial). **Watchpoint do flag `0x1602a8f` (Fase E) NÃO executado** — não discriminante agora;
 hipótese do global permanece aberta, retomável se a evidência apontar para ela.
 
-### 13.5 EXECUTADO (vivo, janela exclusiva confirmada) — ABI de 13 dwords: hang persiste, imbalance REFUTADO
+### 13.5 EXECUTADO (vivo, janela exclusiva confirmada) — ABI de 13 dwords: hang persiste; imbalance não explica sozinho
 
 Ferramenta: `research/movement_035f/dispatcher_trial13.py` (nova; `dispatcher_trial.py` preservado).
 `NativeFunction` `__thiscall` com **13 args u32** (= `ret 0x34`), captura do **frame natural
@@ -568,26 +572,80 @@ MATCH; checagem em runtime de `ret 0x34` em `0xd47e61`. Artefato: `/tmp/claude-0
   faltavam 8 bytes de pilha. O ensaio atual empilha os 13 (casando `ret 0x34`).
 - **OBSERVADO:** a chamada **entrou** no dispatcher (`dispatcher_0x11[278,318]`,
   `return_addr=0xf69ed758` = trampolim Frida, região `other`, `during_call=true`), executou
-  `receptor_0x8a[278,318]` e **montou um `store_035f` com corpo `[278,318]` no destino pedido**
-  (`during_call=true`) — cercado por hits do `mov [ecx],bl` genérico (artefato de `inCall`).
-- **OBSERVADO:** **nenhum `emit_return`, nenhum `native_exception`, nenhum `sendmsg`/`recv_0087`
-  `during_call`**; o cliente **congelou** (relogin). Mesma assinatura de disp2/disp5.
+  `receptor_0x8a[278,318]` e, **no trap pré-store**, o buffer já tinha um corpo `035f` decodificando
+  para `[278,318]` — cercado por hits do `mov [ecx],bl` genérico (artefato de `inCall`). **A
+  montagem completa do pacote e a transmissão continuam NÃO demonstradas.**
+- **OBSERVADO:** **nenhum `emit_return`, nenhum `native_exception` registrado, nenhum
+  `sendmsg`/`recv_0087` `during_call`**; o cliente **congelou** (relogin). Assinatura igual a
+  disp2/disp5.
 
-**Conclusões:**
-1. **REFUTADO:** o desequilíbrio de pilha (ABI de 11 vs 13 dwords) **não** é a causa do travamento —
-   a ABI correta trava igual. (Correção à hipótese de §13.2/§13.3.)
-2. **REFUTADO (reforço):** não é exceção nativa capturável (o handler de não-breakpoint não
-   disparou `during_call`). Resta **bloqueio ou loop** — não um fault de memória.
-3. **OBSERVADO (reforço):** o `035f` para o destino arbitrário **é montado** entrando pelo
-   dispatcher; o que falha é **retornar e transmitir**.
-4. **HIPÓTESE principal agora: reentrância.** A chamada é feita de dentro do `onEnter` de
-   `poll/select` (main thread parada no poll). As sub-chamadas do caso `0x11` (`call [eax+0x8]`
-   =0x0D; `call [esi+0x8]` via 0x5B) podem bloquear/deadlock ao rodar lógica de jogo reentrante
-   enquanto o laço principal está suspenso no próprio poll que interrompemos.
+**Conclusões (cuidado epistêmico):**
+1. A correção de **11→13 dwords não resolveu** o travamento: a falta de 8 bytes **não explica
+   sozinha** o resultado. O desequilíbrio de pilha deixa de ser a explicação suficiente; não é uma
+   prova de que a pilha é irrelevante, apenas de que corrigi-la não bastou.
+2. **Nenhuma exceção foi registrada** pelo nosso handler durante a chamada. Isso **não refuta**
+   exceção nativa em geral: o handler pode não ter rodado, ou a falha pode ocorrer fora do seu
+   alcance. Fica **NÃO VERIFICADO** se há exceção; o diagnóstico atual não distingue exceção de
+   bloqueio/loop (ver §13.6).
+3. **OBSERVADO:** um corpo `035f` para o destino pedido aparece no trap pré-store ao entrar pelo
+   dispatcher. **NÃO demonstrado:** conclusão da escrita, montagem do pacote de 5 bytes, retorno e
+   transmissão.
+4. **Correção factual:** a chamada é feita no **`onEnter` de `poll/select`**, ou seja **antes** de
+   `poll` executar — a main thread **não** está "parada dentro do poll", está no **limiar** do poll.
+   A hipótese correta é **dependência do contexto/fase de execução do laço** (chamar a lógica de
+   movimento numa fase do laço onde ela não é esperada); "reentrância no poll" é apenas um caso
+   particular ainda **sem evidência direta**.
 
-**Próximo discriminador (PROPOSTA, exige nova janela exclusiva):** disparar a mesma chamada de 13
-dwords **fora do contexto de `poll/select`** — p.ex. hook de um ponto do laço principal executado
-**depois** que o poll retorna (topo do handler de frame), mantendo execução na main thread mas sem
-reentrância no poll. Se retornar+enviar ali, confirma reentrância; se travar igual, aponta para
-dependência de estado/sequência mais profunda. Critérios de sucesso inalterados (§13.4). Alternativa
-conservadora: merge reativo (§10 legacy).
+**Próximo passo:** ver §13.6 (ponto escolhido + diagnóstico de falha) — preparado, não executado.
+
+### 13.6 Próximo experimento, mais discriminante (PREPARADO; exige janela exclusiva + destino validado)
+
+Objetivo: **explicar a falha mesmo que não ande.** Uma tentativa por condição, **sem retry
+automático**. Ferramentas preparadas (não executadas): `research/movement_035f/loop_map.py`
+(read-only) e `research/movement_035f/dispatcher_trial_ctx.py` (chamada parametrizada por ponto).
+
+**(a) Seleção do ponto de disparo — por observação natural (read-only), 1ª etapa da janela.**
+Não basta trocar `onEnter`→`onLeave` do poll. `loop_map.py` faz um censo com **Stalker** na main
+thread (id == `Process.id`) por uma janela curta entre dois limiares de `poll/select`, e elege um
+**call-site estável em `uaRO.exe` (base fixa)** que satisfaça TODOS:
+- **thread:** é a main thread (mesmo TID que executa o dispatcher natural);
+- **frequência:** recorre ~1×/frame (ordem do laço), medida;
+- **contexto:** ocorre **depois** do retorno do poll e **antes** do próximo poll;
+- **fora de movimento:** a pilha no momento **não** contém `0xd473b0`/receptor/`0x0D`/`0x5B`;
+- **estável:** endereço fixo (uaRO não-ASLR), reusável na mesma sessão.
+O endereço eleito é relatado com as evidências acima **antes** de qualquer chamada.
+
+**(b) Chamada — comparável à de §13.5.** Mesma ABI (13 dwords u32, `ret 0x34`), **mesma identidade
+de objeto validada** (`m.add(0x58)==1`, receiver == `gb+0x10a90`, `this` natural capturado), mesmos
+args (frame natural, trocando só x/y), mesma instrumentação de observação. Disparo via
+`Interceptor.attach` **one-shot** no ponto eleito (não no boundary do poll). **Destino = tile
+validado com o responsável** (não `capturado+4`).
+
+**(c) Diagnóstico de falha independente do callback JS que faz a chamada.** Como a chamada bloqueia
+a própria engine JS na main thread, a amostragem é feita **pelo driver Python** (processo separado),
+lendo `/proc/<pid>/task/<main_tid>/{stat,wchan,syscall}` a cada ~30 ms, antes/durante/depois.
+Classifica:
+- **progredindo:** `state=R`, `syscall`/`wchan` variando no tempo;
+- **repetição de PC / loop apertado:** `state=R`, `syscall=running` (userspace) persistente, sem
+  `wchan` — opcional: poucas amostras de `$pc` via `gdb -p` para confirmar faixa estreita;
+- **espera/bloqueio:** `state=S/D`, `wchan` = `futex`/`poll`/`read`… (espera identificável);
+- **exceção/término:** thread/processo `Z` ou ausente;
+- **perda do próprio observador:** sessão Frida caiu mas processo vivo e main thread normal.
+**Não** concluir deadlock só pelo silêncio dos logs.
+
+**(d) Janela de observação após o retorno (não exigir envio during_call).** O dispatcher pode
+**enfileirar** trabalho e retornar antes do transporte. `dispatcher_trial_ctx.py` mantém os hooks de
+transporte/`recv` armados por `--post-ms` após `emit_return`, marcando `sync` (during_call) vs
+`post_return` (após), com associação independente do `dst` observado ao destino pedido.
+
+**(e) Condições que mudam inevitavelmente entre sessões (registrar sempre):** PID, base do Gepard,
+endereço de heap do `this`, fd do socket do servidor, posição/zona do personagem e da janela. Build
+re-conferido por hash a cada run.
+
+**Critério de sucesso (todos):** retorno normal observado · transmissão associada ao destino (sync
+ou post-return) · resposta correspondente (`recv_0087 dst`) · **cliente responsivo** depois.
+**Classificação:** se funcionar no ponto pós-poll → inicialmente **dependência do contexto/fase de
+execução**; **reentrância específica no poll ainda exigirá evidência** (p.ex. variar a fase e medir).
+
+**Condições de parada:** uma só chamada; aborta se identidade do objeto mudar antes do disparo;
+timeout curto; limpeza idempotente de BPs/hooks; `ydotoold` encerrado; relogin aceito se cair.

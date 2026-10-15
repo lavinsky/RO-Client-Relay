@@ -153,3 +153,69 @@ repetidas podem transformar flag temporária em permanente. Contornar a flag em 
 - A cifra do build atual é ramp-fixo + posições lineares, mas `f` fica sem solução barata (§4).
 - **Rota robusta: caminho 1** — chamar a função de perícia on-target do próprio cliente (estende o
   `--inject-call`), que gera o keystream correto sozinho. Passo e riscos em `HANDOFF.md`.
+  
+  9# Novas descobertas (NÃO CONFIAVEL, VERIFICAR)
+  
+    ### Cadeia Mapeada da Perícia no uaRO
+
+  A desmontagem do binário cruzada com o traço revelou 3 camadas bem delimitadas:
+
+  ┌────────────────────────────────────────────────────┐
+  │                                                    │
+  │              1. Evento de Clique / UI              │
+  │                                                    │
+  │           uaRO+0x9b7100 (MainWindowProc)           │
+  │                                                    │
+  │                         ↓                          │
+  │                                                    │
+  │       uaRO+0x66f5b0 (CGameMode::ProcessMsg)        │
+  │                                                    │
+  └──────────────────────────┬─────────────────────────┘
+                             │
+                             ▼
+  ┌────────────────────────────────────────────────────┐
+  │                                                    │
+  │               2. Despachador de Ação               │
+  │                                                    │
+  │              uaRO+0x873dc6..0x873fd6               │
+  │                                                    │
+  │         Dispara mensagem 0x14b (USE_SKILL)         │
+  │                                                    │
+  │        Chama uaRO+0x865ab0 / uaRO+0x875400         │
+  │                                                    │
+  └──────────────────────────┬─────────────────────────┘
+                             │
+                             ▼
+  ┌────────────────────────────────────────────────────┐
+  │                                                    │
+  │ 3. Camada de Execução da Perícia (Candidatos Topo) │
+  │                                                    │
+  │       Cluster uaRO+0x930xxx .. uaRO+0x932xxx       │
+  │                                                    │
+  │          • uaRO+0x9309a8 -> uaRO+0x932020          │
+  │                                                    │
+  │          • uaRO+0x931930 -> uaRO+0x848d20          │
+  │                                                    │
+  │          • uaRO+0x847d2d -> uaRO+0x841450          │
+  │                                                    │
+  └──────────────────────────┬─────────────────────────┘
+                             │
+                             ▼
+  ┌────────────────────────────────────────────────────┐
+  │                                                    │
+  │                  4. Envio de Rede                  │
+  │                                                    │
+  │     uaRO+0x8148e0 (CRagConnection::SendPacket)     │
+  │                                                    │
+  │                         ↓                          │
+  │                                                    │
+  │         uaRO+0x816640 (SendPacket da fila)         │
+  │                                                    │
+  └────────────────────────────────────────────────────┘
+
+  #### Endereços Candidatos Identificados:
+
+  1. uaRO+0x873fe1 (RVA 0xc73fe1): ponto exato no despachador de ação onde a mensagem 0x14b (Uso de Perícia) é empurrada para a pilha (push $0x14b; call *0x18(%eax)).
+  2. uaRO+0x932020 / uaRO+0x931930 (RVA 0xd32020 / 0xd31930): rotinas chamadas no momento da seleção de alvo e preparo dos dados da perícia.
+  3. uaRO+0x8148e0 (RVA 0xc148e0): a rotina de alto nível da conexão (CRagConnection::SendPacket(len, buf)), que roteia para o SendPacket (0xc16640) da fila.
+

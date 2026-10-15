@@ -235,12 +235,15 @@ Interceptor.attach(fireAt, {onEnter: function () {
   if (m.add(0x58).readU32() !== 1 || !m.add(4).readPointer().equals(receiverObject)) {
     emit({site: 'emit_abort', reason: 'manager changed before call'}); return;
   }
-  var dx = capCoord[0] + DELTA_X, dy = capCoord[1] + DELTA_Y;
+  var dx, dy;
+  if (DEST_ABS) { dx = DEST_X; dy = DEST_Y; }            // destino absoluto validado
+  else { dx = capCoord[0] + DELTA_X; dy = capCoord[1] + DELTA_Y; }
   if (dx < 0) dx = 0; if (dx > 1023) dx = 1023; if (dy < 0) dy = 0; if (dy > 1023) dy = 1023;
+  if (dx === capCoord[0] && dy === capCoord[1]) { emit({site: 'emit_abort', reason: 'dest == captured (no displacement)', captured: capCoord}); return; }
   var f = capFrame.slice(); f[3] = dx >>> 0; f[5] = dy >>> 0;
   if (f[1] !== 0x11) { emit({site: 'emit_abort', reason: 'frame code != 0x11', frame: f}); return; }
   try { emitState.attempted = true;
-    emit({site: 'emit_call', dest: [dx, dy], from_captured: capCoord, fire_at: fireAt.toString(),
+    emit({site: 'emit_call', dest: [dx, dy], dest_abs: !!DEST_ABS, from_captured: capCoord, fire_at: fireAt.toString(),
           this_ecx: dispThis.toString(), frame: f.map(function (v) { return v >>> 0; })});
     phase = 'sync';
     var rv = dispFn.apply(null, [dispThis].concat(f.map(function (v) { return v >>> 0; })));
@@ -260,8 +263,10 @@ def main(argv=None):
     ap.add_argument('--pid', type=int, required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--fire-at', required=True, help='endereço (0x..) de call-site em uaRO.exe eleito por loop_map.py')
-    ap.add_argument('--emit-dx', type=int, default=0, help='delta X sobre a coord natural (destino validado)')
-    ap.add_argument('--emit-dy', type=int, default=0, help='delta Y sobre a coord natural (destino validado)')
+    ap.add_argument('--emit-dx', type=int, default=0, help='delta X sobre a coord natural (modo delta)')
+    ap.add_argument('--emit-dy', type=int, default=0, help='delta Y sobre a coord natural (modo delta)')
+    ap.add_argument('--dest-x', type=int, default=None, help='destino ABSOLUTO x (validado); ativa modo absoluto')
+    ap.add_argument('--dest-y', type=int, default=None, help='destino ABSOLUTO y (validado); ativa modo absoluto')
     ap.add_argument('--port', type=int, default=27053)
     ap.add_argument('--timeout-ms', type=int, default=10000)
     ap.add_argument('--delay-ms', type=int, default=700)
@@ -272,8 +277,12 @@ def main(argv=None):
     a = ap.parse_args(argv)
     assert 1000 <= a.timeout_ms <= 10000
     assert 100 <= a.delay_ms <= 9000
-    assert -64 <= a.emit_dx <= 64 and -64 <= a.emit_dy <= 64, 'delta pequeno (tile vizinho andável)'
-    assert (a.emit_dx, a.emit_dy) != (0, 0), 'delta nao-nulo para forcar deslocamento'
+    dest_abs = a.dest_x is not None and a.dest_y is not None
+    if dest_abs:
+        assert 0 <= a.dest_x <= 1023 and 0 <= a.dest_y <= 1023, 'destino absoluto fora do mapa'
+    else:
+        assert -64 <= a.emit_dx <= 64 and -64 <= a.emit_dy <= 64, 'delta pequeno (tile vizinho andável)'
+        assert (a.emit_dx, a.emit_dy) != (0, 0), 'delta nao-nulo para forcar deslocamento'
     int(a.fire_at, 16)
     assert Path('/proc', str(a.pid), 'comm').read_text().strip().lower() == 'uaro.exe'
     source = (JS.replace('TIMEOUT_MS', str(a.timeout_ms)).replace('DELAY_MS', str(a.delay_ms))
@@ -281,6 +290,9 @@ def main(argv=None):
               .replace('DISPATCHER_PTR', json.dumps(a.dispatcher))
               .replace('FIRE_AT', json.dumps(a.fire_at))
               .replace('PACKET_LENGTHS', json.dumps(load_lengths(a.table)))
+              .replace('DEST_ABS', '1' if dest_abs else '0')
+              .replace('DEST_X', str(a.dest_x if dest_abs else 0))
+              .replace('DEST_Y', str(a.dest_y if dest_abs else 0))
               .replace('DELTA_X', str(a.emit_dx)).replace('DELTA_Y', str(a.emit_dy)))
 
     result = {'events': []}

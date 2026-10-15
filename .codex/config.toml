@@ -1,0 +1,18 @@
+# Configuração local por projeto (exige confiança no repositório).
+# Confirmar modelos disponíveis usando /model no Codex CLI.
+model = "gpt-6.1-sol"
+model_reasoning_effort = "low"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = false
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 2
+default_subagent_model = "gpt-6-luna"
+default_subagent_reasoning_effort = "medium"
+
+[skills]
+max_context_tokens = 650

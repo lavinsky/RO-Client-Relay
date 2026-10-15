@@ -125,7 +125,8 @@ pendências.
 `relay/resources/Gepard-SRC-LGP-master` é o fonte de um build **antigo** do gepard (lado servidor),
 usado como referência da cifra e do protocolo (ver `ARCHITECTURE.md` §5.1 e `gepard_investigation.md`
 §22). `--scramble-trace N` é a sonda de traço passo-a-passo da cifragem (§8 do ARCHITECTURE).
-O estado atual da investigação e o próximo passo concreto estão em `HANDOFF.md`.
+O estado atual da investigação e o próximo passo concreto estão em `gepard_investigation.md` §8 e
+`ARCHITECTURE.md` §13; cuidados operacionais em `ARCHITECTURE.md` §11.
 
 ## Testes
 

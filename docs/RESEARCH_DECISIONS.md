@@ -12,7 +12,7 @@
 | Hipótese | Base | Limitação / alternativa |
 |---|---|---|
 | A intenção de mover aciona uma cadeia de preparação antes do envio de `0x035F` | `ARCHITECTURE.md` §§9–10; analogia com roBrowserLegacy relatada pelo responsável | A analogia não prova equivalência entre implementações |
-| A falha de `0x0438` está relacionada à cobertura/estado da cifra | Código servidor Gepard 2016 descrito em `gepard_investigation.md` §3; comportamento descrito em `HANDOFF.md` | Diferentes pré-condições de ação, parser e estado interno também podem explicar falhas |
+| A falha de `0x0438` está relacionada à cobertura/estado da cifra | Código servidor Gepard 2016 descrito em `gepard_investigation.md` §3; comportamento descrito em `ARCHITECTURE.md` §5.1 | Diferentes pré-condições de ação, parser e estado interno também podem explicar falhas |
 | A sincronização do servidor é governada pelos estados de cifragem e mensagens de controle | Modelo do servidor 2016 | IDs, transições e algoritmos do build atual não estão completamente identificados |
 | `0x8280` serve como heartbeat uaRO | `gepard_investigation.md` §3.3; entrada 128 bytes na tabela | Papel/direção e equivalência com `0x8285` histórico pendem de evidência específica |
 

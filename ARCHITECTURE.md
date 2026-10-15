@@ -343,6 +343,19 @@ Precedência das opções: padrões embutidos < arquivo de config < linha de com
 aponta outro arquivo. Carregar o gadget: opção de inicialização do Steam
 `LD_PRELOAD=.../frida-gadget-32.so %command%`.
 
+Cuidados operacionais (lições de sessões anteriores):
+
+- **Nunca** varrer muita memória de dentro do agente (Frida) — travou o cliente. Varredura de memória
+  só **externa** (`/proc/<pid>/mem`, não pausa o jogo). Leituras fixas pequenas no agente são ok.
+- **Não** pôr watchpoint de dados no slot de pilha do `035f` (travou o cliente). O BP de **execução**
+  em `gepard+0x18eff2` é seguro (é o merge).
+- Parar o driver com **SIGTERM** e **esperar ~6 s** (o `dispose` do agente libera os registradores de
+  depuração; matar à força deixa registrador armado sem manipulador e derruba o cliente).
+- `pgrep -f relay_capture` dá falso-positivo (casa o wrapper do shell); conferir com
+  `ps -eo args | grep relay_capture_linux | grep -v grep | grep -v zsh`.
+- Somente leitura: `./run.sh --no-inject ...`. Combinado: `./run.sh` (lê `relay_capture.conf`).
+  Python com `-u` ao rodar em segundo plano.
+
 ---
 
 ## 12. Testes (offline, sem o cliente)
@@ -394,4 +407,4 @@ dados gravados ficam em `tests/fixtures/`.
   e as unidades são localizáveis em memória, mas `gepard+0x18eff2` fica **depois** do keystream e não
   expõe `f`; obtê-la exige RE profundo. Como o diagnóstico (§5.1) mostra que a ação injetada só falha
   por **sincronia de cifra** — que o próprio cliente resolve ao enviar — a rota robusta é o **caminho 1**
-  (chamar a função do cliente). Ver o `HANDOFF.md` para o estado e o próximo passo concreto.
+  (chamar a função do cliente). Ver `gepard_investigation.md` §8 para o estado e o próximo passo.

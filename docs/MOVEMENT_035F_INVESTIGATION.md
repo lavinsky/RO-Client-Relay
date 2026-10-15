@@ -136,7 +136,7 @@ empacotada classifica o candidato como intermediário, não origem decisória.
 Chamadas funcionais ficam para ensaio separado, após contrato de argumentos,
 objetos, vida útil, thread e estado. Não repetir envio de `035F` pela fila como
 atalho. Não usar watchpoint de dados na pilha nem varredura extensa no agente.
-Encerrar instrumentação pelo caminho de limpeza, conforme `HANDOFF.md:52–59`.
+Encerrar instrumentação pelo caminho de limpeza, conforme `ARCHITECTURE.md` §11 (cuidados operacionais).
 
 ## Verificações desta preparação
 

@@ -2,7 +2,7 @@
 
 Notas de RE do cliente uaRO (próprio) e do seu Gepard Shield, para o debug via Frida descrito em
 `ARCHITECTURE.md`. Só o que foi **confirmado** e é **útil**; teorias refutadas foram removidas.
-Contexto operacional e próximo passo ficam em `HANDOFF.md`; endereços e caminhos de escrita, em
+Próximo passo em §8; cuidados operacionais em `ARCHITECTURE.md` §11; endereços e caminhos de escrita, em
 `ARCHITECTURE.md` (§5, §6, §9).
 
 ---
@@ -107,7 +107,7 @@ busca por elas não casou. Mas o estado vivo é observável em memória, e difer
 
 **Veredito:** "cifrar nós mesmos" (reproduzir a cifra offline) depende de `f` e **não vale o custo
 agora**. Como a ação injetada só falha por sincronia (§3.3), a rota robusta é o **caminho 1**: chamar
-a função do próprio cliente, que cifra+envia em sincronia (ver `HANDOFF.md`).
+a função do próprio cliente, que cifra+envia em sincronia (ver §8).
 
 ### Unidades em memória (sessão de referência; mudam a cada relog)
 
@@ -152,7 +152,8 @@ repetidas podem transformar flag temporária em permanente. Contornar a flag em 
 - `8280` é heartbeat; não há validação por-ação; a falha da injeção é **sincronia de cifra** (§3.3).
 - A cifra do build atual é ramp-fixo + posições lineares, mas `f` fica sem solução barata (§4).
 - **Rota robusta: caminho 1** — chamar a função de perícia on-target do próprio cliente (estende o
-  `--inject-call`), que gera o keystream correto sozinho. Passo e riscos em `HANDOFF.md`.
+  `--inject-call`), que gera o keystream correto sozinho. Risco NÃO VERIFICADO: o gepard pode validar
+  a cadeia de retorno da chamada. Pendências em `ARCHITECTURE.md` §13.
   
   9# Novas descobertas (NÃO CONFIAVEL, VERIFICAR)
   

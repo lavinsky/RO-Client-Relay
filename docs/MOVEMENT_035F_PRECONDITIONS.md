@@ -239,3 +239,20 @@ responsivo; janela exclusiva pode ser devolvida. Áreas de outra instância (`re
 `tests/test_cipher_research.py`, `docs/CIPHER_INVESTIGATION.md`, `/tmp/ro-cipher-*`) não
 foram lidas nem alteradas. Sem commit/push/PR. Artefatos privados em
 `/tmp/claude-035f-20261015-091419/` (0700).
+
+## 10. Fonte histórica comparativa — GepardByPass de 2022
+
+**OBSERVADO no fonte de 2022, NÃO VERIFICADO na build uaRO:** o projeto
+[99hertz/GepardByPass, commit `4956445`](https://github.com/99hertz/GepardByPass/commit/49564450d94b3a6ff66e8da6488eafd2e56aace6)
+calcula um ponto de **recepção** `base(Jogar.exe)+0x4C59CF` a partir de
+`0x4C5860+0x16F`. O hook registra endereço e comprimento, sem provar
+conteúdo decifrado. Não há no código evidência da preparação `0x11→0x0D→0x5B`,
+do receptor `0x8A`, do envio `0x035F` ou de consumidores dos campos do dispatcher.
+A comparação não altera H1 eliminada no ensaio 6.4 nem distingue H2 de H3.
+
+**Impacto:** possibilidade genérica de uma fronteira interna de recepção em outro
+build, de baixa prioridade para a investigação do **envio** `0x035F`.
+**Rival:** função/ABI específica de `Jogar.exe`, ausente em `uaRO.exe`.
+Não reusar BP, offsets ou formas de tratamento de exceções de 2022
+sem identidade funcional comprovada; não houve teste ao vivo desta fonte.
+Inventário e referências: [`GEPARD_2022_COMPARATIVE_REVIEW.md`](GEPARD_2022_COMPARATIVE_REVIEW.md).

@@ -342,3 +342,19 @@ não associa as ocorrências desta pesquisa a `0x035F` nem fornece fronteira da 
 Os arquivos de movimento foram preservados. Em uma coleta futura de vetores, essa
 descoberta pode orientar observação independente de bytes tentados/aceitos pelo transporte,
 após nova coordenação de exclusividade; não foi usada para preencher campos ausentes.
+
+## Comparação histórica adicional — GepardByPass de 2022 (fonte externa)
+
+**OBSERVADO em código histórico / NÃO VERIFICADO no uaRO:** a revisão do
+[commit `4956445` (2022)](https://github.com/99hertz/GepardByPass/commit/49564450d94b3a6ff66e8da6488eafd2e56aace6)
+identificou apenas uma alegação de cifragem com chave dinâmica, um hook de **recepção**
+que registra comprimento sem bytes e um rastreador heurístico de transições VMP.
+**Não** há função recuperada de geração de keystream, estado antes/depois,
+par P/C completo ou identificação da origem de `CL` na build atual.
+Endereços antigos (`Jogar.exe+0x4C59CF`, `gepard:0x65CCF`, `$79A30`) não
+são pontos de cifra comprovados e não devem ser armados no uaRO por analogia.
+Detalhes, origem e rivais: [`GEPARD_2022_COMPARATIVE_REVIEW.md`](GEPARD_2022_COMPARATIVE_REVIEW.md).
+
+**Impacto:** nenhuma promoção de H1/H2/H3 ou da cifra para estado validado.
+Permanece prioritário localizar a última definição executada de `CL` antes de
+`gepard+0x1C752B`; nenhuma observação ao vivo foi realizada nesta revisão.

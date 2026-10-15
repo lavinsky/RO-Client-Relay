@@ -49,6 +49,20 @@ não foi alterado.
 - **NÃO VERIFICADO:** transformação completa, requisitos autossuficientes da chamada,
   unidade do gate, cobertura entre builds e protocolo suficiente para xKore 0.
 
+
+## Fonte comparativa de 2022 — sem mudança de hipótese operacional
+
+A leitura do [`GepardByPass` (commit `4956445`, 2022)](https://github.com/99hertz/GepardByPass/commit/49564450d94b3a6ff66e8da6488eafd2e56aace6)
+está registrada em [`docs/GEPARD_2022_COMPARATIVE_REVIEW.md`](GEPARD_2022_COMPARATIVE_REVIEW.md).
+**OBSERVADO somente na fonte histórica:** ponto de recepção calculado no módulo
+`Jogar.exe`, uso de INT3/HWBP e rastreador heurístico VMP; menção não implementada
+a cifra com chave dinâmica. **NÃO VERIFICADO** no uaRO atual: equivalência de
+offsets, ABI, entradas/saídas criptográficas e relação com `0x035F`.
+**Rivais:** incompatibilidade de build, Windows vs. Wine/Proton e fronteira de
+recepção sem ligação com o envio. **Decisão:** arquivar como referência
+histórica; não executar BP/patches de 2022 como teste no build atual, não
+alterar prioridade da investigação do dispatcher nem da origem de `CL`.
+
 ## Método de atualização
 1. Para cada afirmação, classificar: **OBSERVADO**, **INFERIDO**, **HIPÓTESE**, **NÃO VERIFICADO** ou **REFUTADO**.
 2. Registrar prova/reprodução e versão. Uma análise histórica não demonstra o comportamento de builds posteriores.

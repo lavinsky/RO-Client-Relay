@@ -9,6 +9,14 @@ Investigação da preparação/contexto que antecede o store do `0x035F`, focada
 Registra apenas conclusões e referências sanitizadas; não copia capturas cruas,
 credenciais nem objetos completos.
 
+**Proteções da build em estudo (identificadas pelo responsável
+no Detect It Easy, 2026-10-15):** `uaRO.exe` contém
+**Themida/WinLicense 3.XX**; `gepard.dll` contém **VMProtect**.
+São os mesmos arquivos usados nas investigações atuais.
+A detecção não atribui a VM de nenhuma rotina específica,
+nem discrimina H2 (preparação) de H3 (contexto/callsite).
+[Registro completo](PROTECTION_FINGERPRINT_DIE.md).
+
 - **Repositório/commit:** `dbb08c7` (working tree; `research/`, `.mcp.json` e os
   arquivos de cifra estavam não rastreados — não interpretados como descartáveis).
 - **Build/sessão viva:** `uaRO.exe` PID 3124344, `comm=uaro.exe`, 37 threads.

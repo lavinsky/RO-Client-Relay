@@ -49,6 +49,22 @@ não foi alterado.
 - **NÃO VERIFICADO:** transformação completa, requisitos autossuficientes da chamada,
   unidade do gate, cobertura entre builds e protocolo suficiente para xKore 0.
 
+## Fingerprint das proteções (Detect It Easy, 2026-10-15)
+
+- **OBSERVADO E CONFIRMADO PELO RESPONSÁVEL NA BUILD ATUAL:** os
+  mesmos arquivos investigados foram submetidos ao DiE.
+  `uaRO.exe` usa **Themida/WinLicense 3.XX**; `gepard.dll`
+  usa **VMProtect**. O relatório textual completo fornecido
+  nesta conversa é do executável; a detecção da DLL foi
+  informada separadamente pelo responsável.
+- **Limite técnico:** a presença desses protetores não prova quais
+  rotinas específicas estão virtualizadas; os sinais heurísticos
+  sobre seções/certificado não equivalem à execução de código.
+- **Decisão:** manter a prioridade do `0x035F` e da origem de
+  `CL`; não classificar como VM Themida ou VMProtect um
+  callsite/região sem evidência de fluxo. H2/H3 continuam abertas.
+- **Proveniência e detalhes:** [`PROTECTION_FINGERPRINT_DIE.md`](PROTECTION_FINGERPRINT_DIE.md).
+
 ## Método de atualização
 1. Para cada afirmação, classificar: **OBSERVADO**, **INFERIDO**, **HIPÓTESE**, **NÃO VERIFICADO** ou **REFUTADO**.
 2. Registrar prova/reprodução e versão. Uma análise histórica não demonstra o comportamento de builds posteriores.

@@ -39,6 +39,14 @@ antes da inspeção de código:
 | uaRO.exe | 29726720 | `f2f25a89917563237bb6faf60058cc536b7f42469af32fba556842f9f0cb9569` |
 | gepard.dll | 30187512 | `34188e6046eb831f31c0843744c084b56704a765d9e758043a1a1dad6046b08b` |
 
+**Identificação estática confirmada pelo responsável, na mesma
+build desta pesquisa (DiE, 2026-10-15):** `uaRO.exe`
+protegido por **Themida/WinLicense 3.XX** e `gepard.dll`
+protegida por **VMProtect**. Os arquivos analisados são os
+atuais, não uma amostra histórica. Isso não revela a origem
+de `CL` nem determina se esse trecho é virtualizado.
+[Fingerprint e limites](PROTECTION_FINGERPRINT_DIE.md).
+
 Esses hashes também constam da investigação anterior S1/S2. Isso identifica arquivos;
 não prova identidade de sessões criptográficas nem inicialização atual. Artefatos sem
 build/sessão explícitos permanecem desconhecidos, inclusive quando têm endereços iguais.

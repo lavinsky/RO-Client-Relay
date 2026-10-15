@@ -10,6 +10,15 @@ Este documento deve bastar para retomar o trabalho noutra conversa: além da arq
 reúne as descobertas de engenharia reversa (endereços, caminhos de envio, o estado da
 cifragem) e as pendências.
 
+**Proteções identificadas na build atual (Detect It Easy, 2026-10-15;
+confirmado pelo responsável):** `uaRO.exe` é PE32/x86 e usa
+**Themida/WinLicense 3.XX**; `gepard.dll` usa **VMProtect**.
+O próprio responsável analisou no DiE os mesmos arquivos atualmente
+investigados. Isso identifica os protetores dos arquivos, mas **não
+atribui automaticamente** regiões anônimas ou funções individuais
+à virtualização de um deles. Ver
+[`docs/PROTECTION_FINGERPRINT_DIE.md`](docs/PROTECTION_FINGERPRINT_DIE.md).
+
 ---
 
 ## 1. Visão geral

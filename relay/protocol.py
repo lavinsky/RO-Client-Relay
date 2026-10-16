@@ -103,6 +103,24 @@ def sendcall_msg(rva=None, module='uaRO.exe', cast_ms=800):
     return {'type': 'sendcall', 'rva': rva, 'module': module, 'castMs': int(cast_ms)}
 
 
+def move_dispatch_msg(x=None, y=None, arm=False, disarm=False, dispatcher=None, site=None):
+    """Native-dispatch (PoC 035f): arm the passive capture of the movement dispatcher's `this`
+    (arm=True, optional dispatcher/site as hex strings), disarm, or request a walk to (x, y). The
+    client itself then builds, encrypts and sends its own 035f; the relay never forges a body."""
+    m = {'type': 'native-dispatch'}
+    if disarm:
+        m['disarm'] = True
+    elif arm:
+        m.update(arm=True, recipe='walk-035f')
+        if dispatcher:
+            m['dispatcher'] = int(dispatcher, 16)
+        if site:
+            m['site'] = int(site, 16)
+    else:
+        m.update(recipe='walk-035f', args={'x': int(x), 'y': int(y)})
+    return m
+
+
 def trace_msg(ms=200, ualo=None, uahi=None, interno=False):
     """Rastreio com Stalker. Sem ualo/uahi: so teste de sobrevivencia (segue a thread principal por
     `ms` e desliga). Com a faixa do codigo uaRO: registra as chamadas uaRO->gepard na janela, ou,

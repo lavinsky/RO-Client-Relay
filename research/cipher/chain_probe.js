@@ -150,6 +150,86 @@ function createClMachine(io, config) {
     return {observe, counts, current: () => record, stopped: () => done, stop: () => {done = true;}};
 }
 
+function decodeSwapCandidate(io,final) {
+    try {
+        const match=/^pop dword ptr \[(eax|ebx|ecx|edx|esi|edi)\]$/.exec(final.instruction);
+        if(!match)return null;
+        const destination=match[1],first=io.parse(final.rva-6);
+        const sourceMatch=/^push dword ptr \[(eax|ebx|ecx|edx|esi|edi)\]$/.exec(first.instruction);
+        if(!sourceMatch)return null;
+        const source=sourceMatch[1],texts=['push dword ptr ['+source+']','push dword ptr ['+destination+']',
+            'pop dword ptr ['+source+']'];
+        for(let index=0;index<3;index++){
+            const node=io.parse(final.rva-6+index*2);
+            if(node.instruction!==texts[index] || node.next_rva!==final.rva-4+index*2)return null;
+        }
+        return {source_register:source,destination_register:destination,source_address:io.register(source),
+            destination_address:io.register(destination),first_push_rva:final.rva-6,first_pop_rva:final.rva-2,
+            executed_path_proven:false};
+    }catch(_){return null;}
+}
+
+function createSwapDecoder(io) {
+    const cache=new Map();
+    function decode(final,context){
+        try{
+            const signature=io.fingerprint(final.rva);
+            let entry=cache.get(final.rva);
+            if(!entry || entry.signature!==signature || entry.instruction!==final.instruction){
+                const pattern=decodeSwapCandidate({parse:io.parse,register:()=>0},final);
+                if(io.fingerprint(final.rva)!==signature)return null;
+                entry={signature,instruction:final.instruction,pattern};
+                if(cache.size<128 || cache.has(final.rva))cache.set(final.rva,entry);
+            }
+            if(!entry.pattern)return null;
+            return {...entry.pattern,source_address:io.register(entry.pattern.source_register,context),
+                destination_address:io.register(entry.pattern.destination_register,context)};
+        }catch(_){return null;}
+    }
+    return {decode};
+}
+
+function createStackCopyMachine(io) {
+    let record=null,stopped=false;
+    const counts={visits:0,read_errors:0,discontinuities:0};
+    function observe(site,c) {
+        if(stopped)return;
+        counts.visits++;
+        try {
+            const source=c.source_pointer===undefined?c.esi:c.source_pointer;
+            const destination=c.destination_pointer===undefined?c.edx:c.destination_pointer;
+            if(site===0)record={context:{thread:c.thread,sp:c.sp,frame:c.frame},source_address:source,
+                destination_address:destination,source_mapping:io.mapping(source),destination_mapping:io.mapping(destination),
+                source_register:io.source_register||'esi',destination_register:io.destination_register||'edx',
+                code_path:io.code_path||null,
+                same_address:source===destination,overlap_bytes:Math.max(0,4-Math.abs(source-destination)),
+                observations:[],complete:false};
+            if(!record || site!==record.observations.length || c.thread!==record.context.thread ||
+                    c.frame!==record.context.frame || source!==record.source_address || destination!==record.destination_address ||
+                    c.sp!==((record.context.sp+[0,-4,-8,-4,0][site])>>>0)) {
+                counts.discontinuities++;stopped=true;io.stop('stack_prefix_discontinuity');return;
+            }
+            const row={site,order:c.order,thread:c.thread,frame:c.frame,sp:c.sp,source_pointer:source,destination_pointer:destination,
+                source_word:io.read32(source),destination_word:io.read32(destination)};
+            if(site>0 && site<4)row.stack_top=io.read32(c.sp);
+            if(site===2)row.older_stack_word=io.read32(c.sp+4);
+            record.observations.push(row);
+            if(site===4) {
+                const s=record.observations;
+                record.comparisons={first_push:s[1].stack_top===s[0].source_word,
+                    second_push:s[2].stack_top===s[1].destination_word,
+                    first_stack_slot_preserved:s[2].older_stack_word===s[1].stack_top,
+                    first_pop:s[3].source_word===s[2].stack_top,
+                    remaining_stack_slot_preserved:s[3].stack_top===s[2].older_stack_word,
+                    second_pop:s[4].destination_word===s[3].stack_top,
+                    original_source_reaches_destination:s[4].destination_word===s[0].source_word};
+                record.complete=true;stopped=true;
+            }
+        }catch(_){counts.read_errors++;stopped=true;io.stop('stack_prefix_read_error');}
+    }
+    return {observe,counts,current:()=>record,stop:()=>{stopped=true;}};
+}
+
 function runClOrigin(config) {
     if (Process.id !== config.pid || Process.arch !== 'ia32') throw new Error('target mismatch');
     const thread = Process.enumerateThreads().find(t => t.id === Process.id);
@@ -181,11 +261,30 @@ function runClOrigin(config) {
             throw new Error('CL read bound');
         return p;
     }
+    const swapDecoder=createSwapDecoder({
+        fingerprint:rva=>checked(base.add(rva-6).toUInt32(),8).readU64().toString(16),
+        parse:rva=>{const p=base.add(rva),r=Process.findRangeByAddress(p);
+            if(!r || !r.protection.includes('x'))throw new Error('swap code range');
+            const i=Instruction.parse(p);return {instruction:i.toString(),next_rva:parseInt(i.next.sub(base).toString(),16)};},
+        register:(name,c)=>c[name].toUInt32()});
     const transformMode = config.mechanism === 'cl-transform';
     const producerMode = config.mechanism === 'cl-producer';
     const operationMode = transformMode || producerMode;
     const operation = transformMode ? config.cl_transform : config.cl_producer;
+    const producerRegister = producerMode ? (operation.destination_register || 'edx') : null;
+    if (producerMode && (!['eax','ebx','ecx','edx','esi','edi'].includes(producerRegister) ||
+            operation.instruction !== 'pop dword ptr [' + producerRegister + ']'))
+        throw new Error('unsupported producer register');
+    const prefix=config.cl_stack_prefix;
+    const prefixSourceRegister=config.cl_stack_source_register||'esi';
+    const repeatProducer=producerMode && config.cl_producer_repeat===true;
     const watchMode = config.mechanism === 'cl-writer' || operationMode;
+    const relativeSource = producerMode && config.cl_source_relative;
+    if(relativeSource && (relativeSource.register!=='ebp' ||
+            (relativeSource.offset!==0x36 && !(config.cl_upstream_only && relativeSource.upstream_operand_reference===true &&
+                relativeSource.offset>=0 && relativeSource.offset<=1024)) ||
+            relativeSource.historical_reference_only!==true || relativeSource.source_session_reused!==false))
+        throw new Error('unsupported CL relative source');
     const stackRanges = [];
     let producerCode = null;
     if (operationMode) {
@@ -200,10 +299,20 @@ function runClOrigin(config) {
             throw new Error('CL XOR outside PE image');
         if (!range || !range.protection.includes('x') ||
                 (range.file && !/\/gepard\.dll$/i.test(range.file.path)) ||
-                ins.toString() !== (producerMode ? 'pop dword ptr [edx]' : 'xor dword ptr [ecx], edx') ||
+                ins.toString() !== (producerMode ? operation.instruction : 'xor dword ptr [ecx], edx') ||
                 !ins.next.equals(base.add(spec.next_rva)))
             throw new Error('CL XOR candidate changed');
         sites[pc.toString()] = -2; sites[ins.next.toString()] = -1;
+        if(prefix) {
+            if(!producerMode || prefix.length!==3)throw new Error('unsupported stack prefix');
+            prefix.forEach((node,index)=>{
+                const p=base.add(node.rva),r=Process.findRangeByAddress(p),i=Instruction.parse(p);
+                if(!r || !r.protection.includes('x') || i.toString()!==node.instruction ||
+                        !i.next.equals(base.add(node.next_rva)) || node.next_rva!==(index===2?spec.rva:prefix[index+1].rva))
+                    throw new Error('stack prefix code changed');
+                sites[p.toString()]=index-5;
+            });
+        }
         if (producerMode) producerCode=inspectPredecessorGraph({now:()=>Date.now(),parse:rva=>{
             const p=base.add(rva),r=Process.findRangeByAddress(p);
             if(!r || !r.protection.includes('x'))throw new Error('producer code not executable');
@@ -214,13 +323,15 @@ function runClOrigin(config) {
     if (watchMode) {
         if (typeof thread.setHardwareWatchpoint !== 'function' || typeof thread.unsetHardwareWatchpoint !== 'function')
             throw new Error('CL watchpoint API unavailable');
-        const r = Process.findRangeByAddress(ptr(config.cl_watch.address)), old = config.cl_watch.mapping;
-        if (!r || !r.protection.includes('w') || r.base.toString() !== old.base || r.size !== old.size ||
-                r.protection !== old.protection || !!r.file !== old.file_backed) throw new Error('CL source mapping changed');
+        if(!relativeSource) {
+            const r = Process.findRangeByAddress(ptr(config.cl_watch.address)), old = config.cl_watch.mapping;
+            if (!r || !r.protection.includes('w') || r.base.toString() !== old.base || r.size !== old.size ||
+                    r.protection !== old.protection || !!r.file !== old.file_backed) throw new Error('CL source mapping changed');
+        }
         Process.enumerateThreads().forEach(t => {
             if (!t.context || !t.context.esp) throw new Error('CL stack context unknown');
-            const stack = Process.findRangeByAddress(t.context.esp), a = ptr(config.cl_watch.address);
-            if (!stack || (a.compare(stack.base) >= 0 && a.compare(stack.base.add(stack.size)) < 0))
+            const stack = Process.findRangeByAddress(t.context.esp), a = relativeSource ? null : ptr(config.cl_watch.address);
+            if (!stack || (a && a.compare(stack.base) >= 0 && a.compare(stack.base.add(stack.size)) < 0))
                 throw new Error('CL source may intersect stack');
             stackRanges.push(stack);
         });
@@ -228,11 +339,36 @@ function runClOrigin(config) {
     let handler = false, done = false, closing = false, armedAt = null, firstHit = null, timer = null, windowTimer = null;
     let watchOwned = false, lastWrite = null, linkedWrite = null, unattributed = null, transformation = null;
     const writes = [], writerCounts = {traps: 0, writes: 0, ignored_loads: 0};
-    let unpairedReads = 0;
+    let unpairedReads = 0, matchingProducerHits=0, consumerOwned=false, insidePrefix=false;
+    const producerOccurrences=[];
+    let sourceWatchOwned=false,sourceWatch=null,sourceWriteCount=0;
+    const sourceWrites=[];
+    let extraWatchOwned=false,extraWatch=null,extraWriteCount=0;
+    const extraWrites=[];
+    function retainExtraWrite(row){
+        if(++extraWriteCount>=config.write_cap){requestFinish('extra_write_limit');return;}
+        extraWrites.push(row);
+    }
+    function retainSourceWrite(row){
+        if(++sourceWriteCount>=config.write_cap){requestFinish('source_write_limit');return;}
+        sourceWrites.push(row);
+    }
     const rotating = createRotatingBreakpoint({set: site => thread.setHardwareBreakpoint(0,
-        base.add(site === -2 ? operation.rva : site === -1 ? operation.next_rva : path[site].rva)),
+        base.add(site < -2 ? prefix[site+5].rva : site === -2 ? operation.rva : site === -1 ? operation.next_rva : path[site].rva)),
         unset: () => thread.unsetHardwareBreakpoint(0)});
     function stopOwned() {
+        if(extraWatchOwned){
+            try{thread.unsetHardwareWatchpoint(2);extraWatchOwned=false;}
+            catch(_){return {ok:false};}
+        }
+        if(sourceWatchOwned){
+            try{thread.unsetHardwareWatchpoint(3);sourceWatchOwned=false;}
+            catch(_){return {ok:false};}
+        }
+        if(consumerOwned) {
+            try {thread.unsetHardwareBreakpoint(2);consumerOwned=false;}
+            catch(_){return {ok:false};}
+        }
         if (watchOwned) {
             try {thread.unsetHardwareWatchpoint(1); watchOwned = false;}
             catch (_) {return {ok: false};}
@@ -245,27 +381,50 @@ function runClOrigin(config) {
         }
         return {ok: true};
     }
+    let requestedCleanup=null;
     function finish(reason) {
         if (done) return;
-        done = true; machine.stop();
+        done = true; machine.stop();if(stackMachine)stackMachine.stop();
         if (timer !== null) clearTimeout(timer);
         if (windowTimer !== null) clearTimeout(windowTimer);
-        const cleanup = stopOwned();
+        const cleanup = requestedCleanup || stopOwned();
         send({tag: 'DONE', reason, cleanup, counts: machine.counts, cl_origin: machine.current(),
             writer_counts: writerCounts, cl_preceding_write: linkedWrite, cl_writer_observations: writes,
             cl_reads_without_writer: unpairedReads, unattributed_exception: unattributed,
             cl_transformation: transformMode ? transformation : null, cl_producer: producerMode ? transformation : null,
+            exception_handler_cleanup:'null_then_unload',
+            matching_producer_hits:matchingProducerHits,
+            cl_producer_occurrences:producerOccurrences,
+            cl_source_watch:sourceWatch,cl_source_writer_observations:sourceWrites,cl_source_write_count:sourceWriteCount,
+            cl_extra_source_watch:extraWatch,cl_extra_source_writer_observations:extraWrites,cl_extra_source_write_count:extraWriteCount,
+            cl_consumer_selection:config.cl_extra_source?'after_prefix_reading_primary_source':'independent_breakpoint',
+            resolved_source:relativeSource && config.cl_watch ? {address:config.cl_watch.address,
+                mapping:config.cl_watch.mapping,observed_in_current_hit:true} : null,
+            cl_stack_source:stackMachine?stackMachine.current():null,
+            stack_prefix_counts:stackMachine?stackMachine.counts:null,
             other_thread_writes_observed: false,
             occurrence: null, thread_id: thread.id, path,
             elapsed_ms: armedAt === null ? null : Date.now() - armedAt,
             chain_elapsed_ms: firstHit === null ? null : Date.now() - firstHit,
             captured_state: false, transport_observed: false});
     }
-    function requestFinish(reason) {if (done || closing) return; closing = true; setImmediate(() => finish(reason));}
+    function requestFinish(reason) {
+        if (done || closing) return;
+        closing=true;
+        // Disarm while handling the owned trap; do not leave watchpoints active
+        // during the interval before the deferred completion notification.
+        requestedCleanup=stopOwned();
+        setImmediate(()=>finish(reason));
+    }
     const machine = createClMachine({read32: a => checked(a, 4).readU32(), read8: a => checked(a, 1).readU8(),
         mapping: a => {const r = Process.findRangeByAddress(ptr(a));
             return {base: r.base.toString(), size: r.size, protection: r.protection, file_backed: !!r.file};},
         stop: requestFinish}, config);
+    function newStackMachine(){return prefix?createStackCopyMachine({code_path:prefix.concat([operation]),
+        source_register:prefixSourceRegister,destination_register:producerRegister,read32:a=>checked(a,4).readU32(),
+        mapping:a=>{const r=Process.findRangeByAddress(ptr(a));return {base:r.base.toString(),size:r.size,
+            protection:r.protection,file_backed:!!r.file};},stop:requestFinish}):null;}
+    let stackMachine=newStackMachine();
     rpc.exports = {
         start: () => {
             if (armedAt !== null) throw new Error('already started');
@@ -274,7 +433,8 @@ function runClOrigin(config) {
                 Process.setExceptionHandler(details => {
                     const site = sites[details.context.pc.toString()];
                     if (Process.getCurrentThreadId() !== thread.id) return false;
-                    const execution = details.type === 'breakpoint' && site !== undefined && rotating.owns(site);
+                    const consumerHit=details.type==='breakpoint' && site===0 && consumerOwned;
+                    const execution = details.type === 'breakpoint' && site !== undefined && (consumerHit || rotating.owns(site));
                     if (!execution && (!watchMode || !watchOwned || !['breakpoint','single-step'].includes(details.type))) return false;
                     if (done || closing) return true;
                     try {
@@ -282,8 +442,105 @@ function runClOrigin(config) {
                         if (firstHit !== null && Date.now()-firstHit >= config.window_ms) {requestFinish('chain_timeout');return true;}
                         writerCounts.traps++;
                         if (writerCounts.traps >= config.event_cap) {requestFinish('event_limit'); return true;}
+                        if(consumerHit) {
+                            const c=details.context;
+                            if(!config.cl_watch || c.ecx.toUInt32()!==config.cl_watch.address){writerCounts.ignored_loads++;return true;}
+                            if(insidePrefix || !transformation || !transformation.complete){requestFinish('prefix_incomplete_at_load');return true;}
+                            thread.unsetHardwareBreakpoint(2);consumerOwned=false;
+                            if(!rotating.stop().ok){requestFinish('cleanup_error');return true;}
+                            rotating.arm(0);
+                        }
+                        if(execution && prefix && site>=-5 && site<=-1) {
+                            const c=details.context;
+                            if(site===-5) {
+                                const address=c[producerRegister].toUInt32();
+                                if(address!==((c.ebp.toUInt32()+relativeSource.offset)>>>0)) {writerCounts.ignored_loads++;return true;}
+                                if(++matchingProducerHits<(config.cl_producer_hit||1))return true;
+                                if(config.cl_watch && config.cl_watch.address!==address)throw new Error('prefix destination changed');
+                                const r=Process.findRangeByAddress(ptr(address));
+                                if(!r || !r.protection.includes('w'))throw new Error('prefix destination not writable');
+                                checked(address,4);
+                                stackRanges.forEach(stack=>{if(ptr(address).compare(stack.base.add(stack.size))<0 &&
+                                    ptr(address+4).compare(stack.base)>0)throw new Error('prefix destination intersects stack');});
+                                config.cl_watch={address,mapping:{base:r.base.toString(),size:r.size,protection:r.protection,file_backed:!!r.file}};
+                                if(!watchOwned){watchOwned=true;thread.setHardwareWatchpoint(1,ptr(address),1,'w');}
+                                if(config.cl_lineage_source && !sourceWatchOwned){
+                                    const spec=config.cl_lineage_source;
+                                    if(spec.register!=='ebp' || spec.runtime_reused!==false || spec.offset<0 || spec.offset>1024)
+                                        throw new Error('invalid lineage selector');
+                                    const a=(c.ebp.toUInt32()+spec.offset)>>>0,r=Process.findRangeByAddress(ptr(a));
+                                    if(!r || !r.protection.includes('w') || Math.abs(a-address)<4)throw new Error('invalid lineage target');
+                                    stackRanges.forEach(stack=>{if(ptr(a).compare(stack.base)>=0 && ptr(a).compare(stack.base.add(stack.size))<0)
+                                        throw new Error('lineage target intersects stack');});
+                                    sourceWatch={address:a,frame:c.ebp.toUInt32(),offset:spec.offset,thread:thread.id,
+                                        start_order:writerCounts.traps,initial_byte:checked(a,1).readU8(),
+                                        mapping:{base:r.base.toString(),size:r.size,protection:r.protection,file_backed:!!r.file}};
+                                    sourceWatchOwned=true;thread.setHardwareWatchpoint(3,ptr(a),1,'w');
+                                }
+                                if(config.cl_extra_source && !extraWatchOwned){
+                                    const spec=config.cl_extra_source;
+                                    if(spec.register!=='ebp' || spec.runtime_reused!==false || spec.offset<0 || spec.offset>1024)
+                                        throw new Error('invalid extra source selector');
+                                    const a=(c.ebp.toUInt32()+spec.offset)>>>0,r=Process.findRangeByAddress(ptr(a));
+                                    if(!r || !r.protection.includes('w') || Math.abs(a-address)<4 ||
+                                        !sourceWatch || Math.abs(a-sourceWatch.address)<4)throw new Error('invalid extra source target');
+                                    stackRanges.forEach(stack=>{if(ptr(a).compare(stack.base)>=0 && ptr(a).compare(stack.base.add(stack.size))<0)
+                                        throw new Error('extra source intersects stack');});
+                                    extraWatch={address:a,frame:c.ebp.toUInt32(),offset:spec.offset,thread:thread.id,
+                                        start_order:writerCounts.traps,initial_byte:checked(a,1).readU8(),
+                                        mapping:{base:r.base.toString(),size:r.size,protection:r.protection,file_backed:!!r.file}};
+                                    extraWatchOwned=true;thread.setHardwareWatchpoint(2,ptr(a),1,'w');
+                                }
+                                if(firstHit===null){firstHit=Date.now();windowTimer=setTimeout(()=>finish('chain_timeout'),config.window_ms);}
+                                if(repeatProducer)stackMachine=newStackMachine();
+                                insidePrefix=true;
+                            }
+                            stackMachine.observe(site+5,{order:writerCounts.traps,thread:thread.id,sp:c.esp.toUInt32(),frame:c.ebp.toUInt32(),
+                                source_pointer:c[prefixSourceRegister].toUInt32(),destination_pointer:c[producerRegister].toUInt32()});
+                            if(closing)return true;
+                            if(site===-5 && sourceWatch && stackMachine.current().source_address===sourceWatch.address){
+                                const record=stackMachine.current();
+                                record.source_lineage={consumer_order:writerCounts.traps,watch_start_order:sourceWatch.start_order,
+                                    address:sourceWatch.address,sampled_byte:record.observations[0].source_word&255,
+                                    preceding_write:sourceWrites.length?sourceWrites[sourceWrites.length-1]:null};
+                            }
+                            if(site===-2) {
+                                const s=stackMachine.current();
+                                if(extraWatch && extraWatch.address>=s.source_address && extraWatch.address<s.source_address+4){
+                                    retainExtraWrite({order:writerCounts.traps,byte_after:checked(extraWatch.address,1).readU8(),
+                                        thread:thread.id,frame:c.ebp.toUInt32(),pc_after:c.pc.toString(),
+                                        candidates:[{rva:prefix[2].rva,instruction:prefix[2].instruction,effective_address:s.source_address,write_width:4}],
+                                        predecessor_execution_proven:true});
+                                    if(closing)return true;
+                                }
+                                if(sourceWatch && sourceWatch.address>=s.source_address && sourceWatch.address<s.source_address+4){
+                                    retainSourceWrite({order:writerCounts.traps,byte_after:checked(sourceWatch.address,1).readU8(),
+                                        thread:thread.id,frame:c.ebp.toUInt32(),pc_after:c.pc.toString(),
+                                        candidates:[{rva:prefix[2].rva,instruction:prefix[2].instruction,effective_address:s.source_address,write_width:4}],
+                                        predecessor_execution_proven:true});
+                                    if(closing)return true;
+                                }
+                                if(config.cl_watch.address>=s.source_address && config.cl_watch.address<s.source_address+4) {
+                                    if(++writerCounts.writes>=config.write_cap){requestFinish('write_limit');return true;}
+                                    lastWrite={order:writerCounts.traps,byte_after:checked(config.cl_watch.address,1).readU8(),
+                                        thread:thread.id,frame:c.ebp.toUInt32(),pc_after:c.pc.toString(),
+                                        candidates:[{rva:prefix[2].rva,instruction:prefix[2].instruction,effective_address:s.source_address,write_width:4}],
+                                        predecessor_execution_proven:true};writes.push(lastWrite);
+                                }
+                            }
+                            if(site<-2){if(!rotating.stop().ok){requestFinish('cleanup_error');return true;}rotating.arm(site+1);return true;}
+                        }
                         if (execution && site === -2) {
-                            const c = details.context, address = (producerMode ? c.edx : c.ecx).toUInt32(), watched = config.cl_watch.address;
+                            const c = details.context, address = (producerMode ? c[producerRegister] : c.ecx).toUInt32();
+                            if(relativeSource && !watchOwned) {
+                                if(address!==((c.ebp.toUInt32()+relativeSource.offset)>>>0)) {writerCounts.ignored_loads++;return true;}
+                                if(++matchingProducerHits<(config.cl_producer_hit||1))return true;
+                                const r=Process.findRangeByAddress(ptr(address));
+                                if(!r)throw new Error('CL relative source unmapped');
+                                config.cl_watch={address,mapping:{base:r.base.toString(),size:r.size,
+                                    protection:r.protection,file_backed:!!r.file}};
+                            }
+                            const watched = config.cl_watch.address;
                             if (watched < address || watched >= address + 4) {writerCounts.ignored_loads++; return true;}
                             // Expand only to the four bytes of the instruction's proven operand.
                             const operandRange = Process.findRangeByAddress(ptr(address));
@@ -292,16 +549,21 @@ function runClOrigin(config) {
                                 if (ptr(address).compare(stack.base.add(stack.size)) < 0 &&
                                         ptr(address+4).compare(stack.base) > 0) throw new Error('XOR operand intersects stack');
                             });
+                            if(relativeSource && !watchOwned) {
+                                checked(address,4);
+                                watchOwned=true;thread.setHardwareWatchpoint(1,ptr(address),1,'w');
+                            }
                             transformation = {rva:operation.rva,next_rva:operation.next_rva,
                                 instruction:operation.instruction,address,watched_offset:watched-address,
                                 before:checked(address,4).readU32(),
                                 context:{thread:thread.id,sp:c.esp.toUInt32(),frame:c.ebp.toUInt32()},
                                 before_order:writerCounts.traps,complete:false};
                             if(producerMode) {
+                                transformation.destination_register=producerRegister;
                                 transformation.source_address=c.esp.toUInt32();
                                 transformation.source_sample=checked(c.esp.toUInt32(),4).readU32();
                             } else transformation.operand_edx=c.edx.toUInt32();
-                            firstHit = Date.now(); windowTimer = setTimeout(() => finish('chain_timeout'),config.window_ms);
+                            if(firstHit===null){firstHit = Date.now(); windowTimer = setTimeout(() => finish('chain_timeout'),config.window_ms);}
                             if (!rotating.stop().ok) {requestFinish('cleanup_error');return true;}
                             rotating.arm(-1); return true;
                         }
@@ -310,11 +572,13 @@ function runClOrigin(config) {
                             if (!t) throw new Error('XOR pre-observation absent');
                             t.after = checked(t.address,4).readU32();t.after_order=writerCounts.traps;
                             t.post_context={thread:thread.id,sp:c.esp.toUInt32(),frame:c.ebp.toUInt32()};
-                            t.post_context_matches=(producerMode ? c.edx.toUInt32()===t.address &&
+                            t.post_context_matches=(producerMode ? c[producerRegister].toUInt32()===t.address &&
                                 c.esp.toUInt32()===((t.context.sp+4)>>>0) : c.ecx.toUInt32()===t.address &&
                                 c.edx.toUInt32()===t.operand_edx && c.esp.toUInt32()===t.context.sp) &&
                                 c.ebp.toUInt32()===t.context.frame;
-                            if(producerMode){t.copy_matches=t.after===t.source_sample;t.edx_after=c.edx.toUInt32();}
+                            if(producerMode){t.copy_matches=t.after===t.source_sample;
+                                t.destination_register_after=c[producerRegister].toUInt32();
+                                if(producerRegister==='edx')t.edx_after=c.edx.toUInt32();}
                             else t.xor_matches=t.after===((t.before^t.operand_edx)>>>0);
                             t.complete=true;t.write_order=writerCounts.traps;
                             if (++writerCounts.writes>=config.write_cap) {requestFinish('write_limit');return true;}
@@ -322,31 +586,65 @@ function runClOrigin(config) {
                                 thread:thread.id,frame:c.ebp.toUInt32(),pc_after:c.pc.toString(),
                                 candidates:[{rva:t.rva,instruction:t.instruction,effective_address:t.address,write_width:4}],
                                 predecessor_execution_proven:true};
+                            if(prefix && stackMachine.current() && stackMachine.current().complete){
+                                const s=stackMachine.current();
+                                lastWrite.candidates[0].swap_candidate={source_register:prefixSourceRegister,
+                                    destination_register:producerRegister,source_address:s.source_address,
+                                    destination_address:s.destination_address,first_push_rva:prefix[0].rva,
+                                    first_pop_rva:prefix[2].rva,executed_path_proven:true};
+                            }
                             writes.push(lastWrite);t.write_order=lastWrite.order;
+                            insidePrefix=false;
+                            if(config.cl_upstream_only){requestFinish('upstream_pop_observed');return true;}
+                            if(repeatProducer){
+                                if(producerOccurrences.length>=32){requestFinish('producer_occurrence_limit');return true;}
+                                producerOccurrences.push({producer:t,stack_source:stackMachine?stackMachine.current():null});
+                            }
                             if (!rotating.stop().ok) {requestFinish('cleanup_error');return true;}
-                            rotating.arm(0);return true;
+                            const observeCl=config.cl_extra_source && stackMachine && sourceWatch &&
+                                stackMachine.current().source_address===sourceWatch.address;
+                            rotating.arm(repeatProducer && !observeCl?(prefix?-5:-2):0);return true;
                         }
                         if (!execution) {
-                            const c = details.context, decodes = [], candidates = [];
+                            const c = details.context, decodes = [], candidates = [], sourceCandidates=[],extraCandidates=[];
                             for (let size = 1; size <= 15; size++) {
                                 try {
                                     const ins = Instruction.parse(c.pc.sub(size));
                                     if (!ins.next.equals(c.pc)) continue;
                                     decodes.push({pc:ins.address.toString(),instruction:ins.toString()});
                                     // Only observed writer families; reverse decoding remains a candidate.
-                                    if (!['mov','pop','xor','add'].includes(ins.mnemonic) || !ins.operands ||
+                                    if (!['mov','pop','xor','add','and'].includes(ins.mnemonic) || !ins.operands ||
                                             ins.operands.length !== (ins.mnemonic === 'pop' ? 1 : 2) || ins.operands[0].type !== 'mem') continue;
                                     const op = ins.operands[0], mem = op.value;
                                     if (![1,2,4].includes(op.size) || (mem.segment && !['ds','ss'].includes(mem.segment)) ||
                                             (ins.mnemonic === 'pop' && mem.base === 'esp')) continue;
                                     const reg = name => !name || name === 'invalid' ? 0 : c[name].toUInt32();
                                     const address = (reg(mem.base) + reg(mem.index) * (mem.scale || 1) + (mem.disp || 0)) >>> 0;
-                                    if (config.cl_watch.address < address || config.cl_watch.address >= address + op.size) continue;
+                                    const destinationHit=config.cl_watch.address>=address && config.cl_watch.address<address+op.size;
+                                    const sourceHit=sourceWatch && sourceWatch.address>=address && sourceWatch.address<address+op.size;
+                                    const extraHit=extraWatch && extraWatch.address>=address && extraWatch.address<address+op.size;
+                                    if(!destinationHit && !sourceHit && !extraHit)continue;
                                     const r = Process.findRangeByAddress(ins.address);
                                     if (!r || !r.protection.includes('x')) continue;
-                                    candidates.push({pc:ins.address.toString(),instruction:ins.toString(),
-                                        rva:parseInt(ins.address.sub(base).toString(),16), effective_address:address,write_width:op.size});
+                                    const candidate={pc:ins.address.toString(),instruction:ins.toString(),
+                                        rva:parseInt(ins.address.sub(base).toString(),16), effective_address:address,write_width:op.size};
+                                    if(ins.mnemonic==='pop')candidate.swap_candidate=swapDecoder.decode(candidate,c);
+                                    if(destinationHit)candidates.push(candidate);
+                                    if(sourceHit)sourceCandidates.push(candidate);
+                                    if(extraHit)extraCandidates.push(candidate);
                                 } catch (_) {}
+                            }
+                            if(extraCandidates.length){
+                                if(candidates.length || sourceCandidates.length){requestFinish('ambiguous_watchpoint_target');return true;}
+                                retainExtraWrite({order:writerCounts.traps,byte_after:checked(extraWatch.address,1).readU8(),
+                                    thread:thread.id,frame:c.ebp.toUInt32(),pc_after:c.pc.toString(),
+                                    candidates:extraCandidates,predecessor_execution_proven:false});return true;
+                            }
+                            if(sourceCandidates.length){
+                                if(candidates.length){requestFinish('ambiguous_watchpoint_target');return true;}
+                                retainSourceWrite({order:writerCounts.traps,byte_after:checked(sourceWatch.address,1).readU8(),
+                                    thread:thread.id,frame:c.ebp.toUInt32(),pc_after:c.pc.toString(),
+                                    candidates:sourceCandidates,predecessor_execution_proven:false});return true;
                             }
                             if (!candidates.length) {
                                 unattributed = {pc_after:c.pc.toString(),exception_type:details.type,predecessor_decodes:decodes};
@@ -362,10 +660,15 @@ function runClOrigin(config) {
                             if (details.context.ecx.toUInt32() !== config.cl_watch.address) {writerCounts.ignored_loads++; return true;}
                             if (lastWrite === null) {unpairedReads++; return true;}
                             linkedWrite = lastWrite;
-                            if (operationMode && (!transformation || linkedWrite.order!==transformation.write_order)) {
+                            if (operationMode && (!transformation || (linkedWrite.order!==transformation.write_order &&
+                                    !config.cl_producer_track_intervening))) {
                                 requestFinish('transform_overwritten');return true;
                             }
-                            if (operationMode) transformation.load_order=writerCounts.traps;
+                            if (operationMode) {
+                                transformation.load_order=writerCounts.traps;
+                                transformation.intervening_write_count=writes.filter(w=>w.order>transformation.write_order).length;
+                                transformation.last_write_is_producer=linkedWrite.order===transformation.write_order;
+                            }
                         }
                         if (firstHit === null) {firstHit = Date.now(); windowTimer = setTimeout(() => finish('chain_timeout'), config.window_ms);}
                         if (Date.now() - firstHit >= config.window_ms) {requestFinish('chain_timeout'); return true;}
@@ -378,8 +681,9 @@ function runClOrigin(config) {
                     return true;
                 });
                 handler = true;
-                if (watchMode) {watchOwned = true;thread.setHardwareWatchpoint(1,ptr(config.cl_watch.address),1,'w');}
-                rotating.arm(operationMode ? -2 : 0);
+                if(repeatProducer && !config.cl_extra_source){consumerOwned=true;thread.setHardwareBreakpoint(2,base.add(path[0].rva));}
+                if (watchMode && !relativeSource) {watchOwned = true;thread.setHardwareWatchpoint(1,ptr(config.cl_watch.address),1,'w');}
+                rotating.arm(prefix ? -5 : operationMode ? -2 : 0);
             } catch (_) {finish('cl_probe_error');}
             return {started: true};
         },
@@ -860,5 +1164,5 @@ function runGadget(config) {
           window_ms: config.window_ms, event_cap: config.event_cap, bytes_cap: config.bytes_cap});
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = {createMachine, createStopper, createRotatingBreakpoint, inspectPredecessorGraph, createClMachine};
+if (typeof module !== 'undefined' && module.exports) module.exports = {createMachine, createStopper, createRotatingBreakpoint, inspectPredecessorGraph, createClMachine, createStackCopyMachine,decodeSwapCandidate,createSwapDecoder};
 else runGadget(__CONFIG__);

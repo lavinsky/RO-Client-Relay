@@ -59,21 +59,22 @@ class FakeSend:
     _target_gid = Capture._target_gid
     _on_inbound_sendcall = Capture._on_inbound_sendcall
 
+from types import SimpleNamespace
 s = FakeSend()
 # tagarelice do consumidor (pedido de nome 0368) NÃO é reinjetada
 s._on_inbound_sendcall(bytes.fromhex('680384c18e06'), 'S')
 assert s.posted == [], s.posted
-# ataque 0437 (GID 854b5c07 != 0): emite 0368 do alvo ANTES do 0437
+# DEFAULT (--target-select off): ação com alvo NÃO emite 0368 (ele quebra a ação; o 0437/0438 já
+# carrega o GID). Observado live: sem o 0368 o ataque/perícia funciona.
+# ataque 0437 (GID 854b5c07 != 0): só o 0437
 s._on_inbound_sendcall(bytes.fromhex('3704854b5c0707'), 'S')
-assert s.posted == [{'type': 'sendcall-emit', 'data': '6803854b5c07'},
-                    {'type': 'sendcall-emit', 'data': '3704854b5c0707'}], s.posted
+assert s.posted == [{'type': 'sendcall-emit', 'data': '3704854b5c0707'}], s.posted
 s.posted.clear()
-# perícia 0438 (Fire Ball nv9 no GID 84c18e06): 0368 do alvo antes do 0438
+# perícia 0438 (Fire Ball nv9 no GID 84c18e06): só o 0438
 s._on_inbound_sendcall(bytes.fromhex('38040900110084c18e06'), 'S')
-assert s.posted == [{'type': 'sendcall-emit', 'data': '680384c18e06'},
-                    {'type': 'sendcall-emit', 'data': '38040900110084c18e06'}], s.posted
+assert s.posted == [{'type': 'sendcall-emit', 'data': '38040900110084c18e06'}], s.posted
 s.posted.clear()
-# sentar 0437 (GID 0, ação 2): sem alvo -> sem 0368
+# sentar 0437 (GID 0, ação 2): sem alvo -> sem 0368 de qualquer forma
 s._on_inbound_sendcall(bytes.fromhex('37040000000002'), 'S')
 assert s.posted == [{'type': 'sendcall-emit', 'data': '37040000000002'}], s.posted
 s.posted.clear()
@@ -81,9 +82,9 @@ s._on_inbound_sendcall(bytes.fromhex('3704854b5c0707'), 'R')      # não-'S' é 
 s._on_inbound_sendcall(b'\x37', 'S')                             # curto demais: ignorado
 assert s.posted == [], s.posted
 
-# dedup do 0368: ataque/perícia repetidos no MESMO alvo NÃO reemitem o target-select (anti-flood);
-# só quando o GID muda. Numa rajada de retentativas do consumidor isso evita floodar o gepard.
-d = FakeSend()
+# --target-select ON: reativa o clique-mímico (emite 0368 do alvo antes da ação) com dedup por GID:
+# ataque/perícia repetidos no MESMO alvo NÃO reemitem o 0368 (anti-flood); só quando o GID muda.
+d = FakeSend(); d.opts = SimpleNamespace(target_select=True)
 d._on_inbound_sendcall(bytes.fromhex('3704854b5c0707'), 'S')      # 1º ataque no alvo A: 0368 + 0437
 assert d.posted == [{'type': 'sendcall-emit', 'data': '6803854b5c07'},
                     {'type': 'sendcall-emit', 'data': '3704854b5c0707'}], d.posted
@@ -127,9 +128,8 @@ sp = FakeSplit()
 sp._on_inbound_split(bytes.fromhex('5f03bec3fd'), 'S')            # 035f (andar) -> merge pre-XOR
 assert sp.posted == [{'type': 'scramble-set', 'id': 0x035f, 'body': 'bec3fd'}], sp.posted
 sp.posted.clear()
-sp._on_inbound_split(bytes.fromhex('3704854b5c0707'), 'S')       # 0437 (ataque) -> 0368 alvo + SendPacket
-assert sp.posted == [{'type': 'sendcall-emit', 'data': '6803854b5c07'},
-                     {'type': 'sendcall-emit', 'data': '3704854b5c0707'}], sp.posted
+sp._on_inbound_split(bytes.fromhex('3704854b5c0707'), 'S')       # 0437 (ataque) -> SendPacket (sem 0368 por padrão)
+assert sp.posted == [{'type': 'sendcall-emit', 'data': '3704854b5c0707'}], sp.posted
 sp.posted.clear()
 sp._on_inbound_split(bytes.fromhex('380405000600'), 'S')         # 0438 curto (sem GID) -> SendPacket direto
 assert sp.posted == [{'type': 'sendcall-emit', 'data': '380405000600'}], sp.posted
@@ -176,4 +176,46 @@ assert d._scramble_armed is True and d.sendwatch is None and d.scramble['off'] =
 d.posted.clear(); d._autodiscover_scramble({'enc': hex(0x76aceff4), 'enc_off': '0x18eff4'})
 assert d.posted == [], d.posted
 print('_autodiscover_scramble ok')
+# --- PoC move-dispatch: unpack_move (inverso de pack_move) + roteamento 035f -> dispatch + drop ---
+from types import SimpleNamespace
+from relay.packets import pack_move, unpack_move
+from relay.protocol import move_dispatch_msg
+for (x, y, dr) in [(0, 0, 0), (1023, 1023, 15), (150, 187, 3), (5, 700, 8), (513, 2, 1)]:
+    assert unpack_move(pack_move(x, y, dr)) == (x, y, dr), (x, y, dr)
+assert move_dispatch_msg(150, 187) == {'type': 'native-dispatch', 'recipe': 'walk-035f', 'args': {'x': 150, 'y': 187}}
+assert move_dispatch_msg(arm=True, dispatcher='0xd473b0', site='0x4dcba0') == \
+    {'type': 'native-dispatch', 'arm': True, 'recipe': 'walk-035f', 'dispatcher': 0xd473b0, 'site': 0x4dcba0}
+assert move_dispatch_msg(disarm=True) == {'type': 'native-dispatch', 'disarm': True}
+
+
+class FakeMove:
+    WALK_ID = Capture.WALK_ID
+    def __init__(self, move_dispatch=True):
+        self.posted, self.scrambled, self.sendcalled = [], [], []
+        self.opts = SimpleNamespace(move_dispatch=move_dispatch, inject_call=False)
+
+    def post(self, msg):
+        self.posted.append(msg)
+
+    def _on_inbound_scramble(self, payload, typ):
+        self.scrambled.append(payload)
+
+    def _on_inbound_sendcall(self, payload, typ):
+        self.sendcalled.append(payload)
+
+    post_move_dispatch = Capture.post_move_dispatch
+    _on_inbound_split = Capture._on_inbound_split
+
+
+mv = FakeMove()
+mv._on_inbound_split(b'\x5f\x03' + pack_move(150, 187, 3), 'S')
+assert mv.posted == [move_dispatch_msg(150, 187)] and mv.scrambled == [] and mv.sendcalled == [], mv.posted
+mv.posted.clear()
+mv._on_inbound_split(b'\x5f\x03\x00', 'S')                          # curto: dropado, nada postado
+mv._on_inbound_split(b'\x5f\x03' + pack_move(1, 2), 'R')            # nao-'S': ignorado
+assert mv.posted == [] and mv.scrambled == [], mv.posted
+off = FakeMove(move_dispatch=False)                                  # sem a flag: caminho antigo (merge)
+off._on_inbound_split(b'\x5f\x03' + pack_move(150, 187), 'S')
+assert off.posted == [] and len(off.scrambled) == 1
+print('move-dispatch routing ok')
 print('ALL PASS')

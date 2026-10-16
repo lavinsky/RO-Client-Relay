@@ -22,7 +22,7 @@
 > (`sendmsg`), recebeu `recv_0087` com dst = destino injetado e manteve o cliente responsivo** — 1ª
 > origem autônoma de `035F` ponta-a-ponta. Sustenta que o **contexto read/wineserver era a causa** dos
 > crashes 04/05, mas **NÃO** prova "reentrância resolvida em geral" (o callback de HW-BP ainda é
-> contexto não-natural) e foi observada **uma única vez, sem reprodução**. H2/H3 seguem **não
+> contexto não-natural); **reproduzida** na rodada 08 através de relogin (§13.12). H2/H3 seguem **não
 > isoladas**; exclusões de §12 restritas à cobertura. Lacunas: reprodução (determinismo) e comparação
 > delimitada com a via de relay (merge pré-XOR em `gepard+0x18eff2`). Nova execução ao vivo exige
 > direção direta do responsável.
@@ -788,8 +788,100 @@ main-loop — relevante ao objetivo xKore 0. **Lacunas abertas:** reprodução (
 comparação delimitada com a via de relay (merge pré-XOR em `gepard+0x18eff2`, §13.8). Ambas exigem
 direção direta do responsável para nova execução ao vivo.
 
+### 13.11 Rodada 09 — PoC do relay: `035F` do OpenKore → dispatcher nativo (OBSERVADO live, cliente vivo)
+
+**Marco de integração.** A primitiva nativa de §13.10 foi **integrada ao relay/agent de produção** e
+dirigida pelo **OpenKore de ponta a ponta**: quando um `035F` (CZ_REQUEST_MOVE) chega do consumidor
+pelo enquadramento XKore `S`, o relay **extrai o destino `x,y` e aciona o dispatcher nativo** do
+cliente; o próprio cliente monta, cifra e envia seu `035F`, e o servidor responde `0087`. **O relay
+não fabrica corpo cifrado nem reencaminha o `035F` original** — ele é dropado (preserva a política de
+não forjar corpo decifrado e a identidade da conexão).
+
+**Procedência.** OBSERVADO **uma vez**, live, **2026-10-16**. Build: `uaRO.exe`
+`f2f2…9569` (§anchor em `docs/MOVEMENT_035F_PRECONDITIONS.md`), `gepard.dll` base `0x76920000`
+(hash em `docs/CIPHER_INVESTIGATION.md`); cliente uaRO PID 3520569 porta 27053 (Wine); OpenKore
+`perl openkore.pl` em container podman, XKore 1 porta 2350. Servidor emulador **próprio do
+responsável** (escopo autorizado). Mudanças de código em **working tree, não commitadas** no
+momento do registro.
+
+**Caminho no código (OBSERVADO — leitura estática do checkout):**
+- Roteamento: ramo `WALK_ID` em `relay/writeback.py:243` — `if pid == self.WALK_ID and md:` decodifica
+  `payload[2:5]` via `unpack_move` e chama `post_move_dispatch(x, y)`; o `035F` original **não** é
+  reenviado (`relay/writeback.py:249`). Sem `--move-dispatch`, o ramo legado de merge pré-XOR
+  (`:250`) é preservado.
+- Decoder: `relay/packets.py:119` `unpack_move` (inverso de `pack_move:112`; round-trip testado).
+- Mensagem Python↔Frida: `relay/protocol.py:106` `move_dispatch_msg`; armar/postar em
+  `relay/writeback.py:197,205`.
+- Agent: bloco `native-dispatch` com `MD_RECIPES['walk-035f']` (`agent/relay_hook_linux.js:647-752`,
+  dispatcher `0xd473b0`, fire-site `0x4dcba0`); captura passiva do `this` + fire-site em `mdTrap`
+  (`:435`). Receita validada originalmente pelo MOVER (`research/movement_035f/dispatcher_trial_pesite.py`).
+
+**Orçamento de debug registers (restrição OBSERVADA — x86 = 4 HW BP):** DR0 scramble (`--inject`) ·
+DR1 SendPacket (`--inject-call`) · DR2 captura passiva do `this` do dispatcher · DR3 fire-site
+`0x4dcba0`. O **`send-watch` precisa ficar OFF** (`--no-send-watch`), senão não há slot livre. HW
+**exec** BP em código (não o watchpoint de DADOS no slot de pilha do walk, proibido por memória do
+projeto).
+
+**Gotcha corrigido (OBSERVADO offline + confirmado live).** `move_dispatch` **soma** ao
+`inject-call`, não o substitui. Na versão inicial os dois eram mutuamente exclusivos no `_arm`
+(`if/elif`): sem `--inject-call`, o relay **dropava todo pacote não-`035F`** do consumidor e
+`sendcall_rva` nunca era setado, e o OpenKore travava no ciclo "Aguardando…/pronto" sem sincronizar.
+Corrigido em `relay/writeback.py:101-107`: sob `move_dispatch`, `sendcall_rva` é setado quando
+`inject_call` está on (as demais ações seguem pelo client SendPacket na DR1).
+
+**Invocação que funciona (rodada manualmente pelo responsável):**
+`./run.sh --inject --inject-call --move-dispatch --no-send-watch --out <ARQUIVO>` (criar o diretório
+de saída antes; `--out` exige **arquivo**, não diretório — `IsADirectoryError` se for pasta).
+
+**Sequência live OBSERVADA.** relay conecta no XKore 2350 (OpenKore para de ciclar) → andar 1× no
+cliente captura o `this` do dispatcher (`disp_captured`) → OpenKore emite walk → `035F → native
+dispatch to (x,y); original dropped` → cliente monta/cifra o próprio `035F` → `recv_0087 dst =
+destino` → **cliente VIVO**. Os 4 critérios de §13.10 (retorno/envio/`recv_0087` dst=destino/
+responsivo) = SIM.
+
+**Classificação e limites.** **OBSERVADO** uma vez, dirigido por OpenKore (difere de §13.10, que
+disparava de um harness de pesquisa). **NÃO** eleva a cifra a "compreendida": o relay continua sem
+conhecer a geração de keystream — só decide o destino e aciona o código nativo (§13.8 segue o
+DESCONHECIDO anterior ao XOR). **Lacunas:** reprodução/determinismo em várias sessões; recaptura
+obrigatória do `this` por sessão (relogin invalida PID/base/heap); comparação de custo/robustez com
+a via de relay (merge pré-XOR) ainda pendente. Verificações offline que acompanham:
+`bash scripts/test-offline.sh` ALL PASS; `python3 scripts/validate-research.py` PASS (ver
+[RESEARCH_EVIDENCE_INDEX](RESEARCH_EVIDENCE_INDEX.md) M-12).
+
+### 13.12 Rodada 08 — reprodução da 06b através de relogin (OBSERVADO, cliente vivo)
+
+**Fonte:** MOVER-20261016-08 (`research/movement_035f/HANDOFF.md`, `STATE.md`). Revisão `4d0b787` +
+diffs locais; autorização direta do responsável; sonda e sítio idênticos à 06b
+(`dispatcher_trial_pesite.py`, HW exec BP `0x4dcba0`). Nova sessão: PID 3520569, build MATCH.
+Artefato privado `/tmp/claude-035f-20261016-014857-repro06b/trial.json`.
+
+- `disp_captured` passivo code=120, **`this_ecx=0x28c95668`** (≠ `0x28c7b158` da 06b → heap por sessão;
+  a captura passiva funciona após relogin).
+- `emit_call` dest [273,314], frame `[0,17,0,273,0,314,0×7]` @711 ms → `sendmsg` fd196 5/5 B
+  during_call @713 ms → `emit_return retval=12809` sem exceção @713 ms → `recv_0087 src=[273,313]
+  dst=[273,314]` @970 ms (src = tile real informada pelo responsável).
+- Cliente vivo (state R). **4 critérios = SIM.**
+
+**Classificação:** OBSERVADO — a 06b reproduz com PID/heap/destino diferentes. Mesmos limites da
+§13.10: BPs desarmados antes da chamada, store do scrambler não observado during_call; não prova
+"reentrância resolvida em geral". A reprodução vale para a **sonda PE**, não para o PoC relay §13.11.
+Conferência documental dos dois `trial.json`: [RESEARCH_STATUS M-13](RESEARCH_STATUS.md#m-13--reprodução-08-e-lições-do-contexto-de-disparo).
+
+### 13.13 A primitiva do fire-site não transfere para a perícia (ACT-20261016-01, OBSERVADO)
+
+O mesmo mecanismo (captura passiva do `this` + `thiscall` ao dispatcher `0xd473b0` a partir de
+`0x4dcba0`) foi aplicado à cadeia de cast observada `0x29 → 0x5a → 0x2a` (perícia `0438`). Com
+allowlist estrita, as três chamadas retornaram (`0x2a`→**0**), **nenhum `0x0438` saiu** e o cliente
+**crashou de forma deferida**. Diferença estrutural OBSERVADA: `0x11` carrega X,Y no frame e comete
+sozinho; `0x28`/`0x2a` não levam argumentos e leem estado global preparado pelo caminho de input
+natural. Logo, o sucesso de §§13.10–13.12 **não** generaliza para ações/perícias; a pré-condição do
+`0x2a` segue **NÃO VERIFICADA**. Detalhes e mapa code→pacote em
+[GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md#mapa-dispatcher--pacote-de-ação-act-20261016-01).
+
 ---
 
 _Integração §13.8–§13.10 incorporada a partir dos HANDOFFs MOVER-20261015-01..07
-(`research/movement_035f/HANDOFF.md`) e do `research/DOCUMENTADOR_BACKLOG.md`. Fonte viva nos
-artefatos privados citados; classificação segundo `docs/AGENTS.md` §3.2._
+(`research/movement_035f/HANDOFF.md`) e do `research/DOCUMENTADOR_BACKLOG.md`. §13.11 registra o PoC
+de integração do relay (sessão OrquestradorCLAUDE, 2026-10-16); §13.12 vem de MOVER-20261016-08 e
+§13.13 de ACT-20261016-01 (`research/action_0437_0438/`). Fonte viva nos artefatos privados
+citados; classificação segundo `docs/AGENTS.md` §3.2._

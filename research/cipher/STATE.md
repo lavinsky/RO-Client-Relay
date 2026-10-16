@@ -1,67 +1,70 @@
 # CIFRA — estado operacional
 
-Reconciliação pontual em 2026-10-15; protocolo: `research/COORDINATION.md`.
-Este arquivo não substitui os documentos científicos nem uma confirmação de janela.
+Atualizado em 2026-10-16 após SLICE-12; protocolo `research/COORDINATION.md`.
 
-## Objetivo e próxima rodada
+## Estado atual e próximo recorte
 
-Demonstrar o escritor do byte efetivamente consumido, distinguindo transporte,
-transformação e estado. Próximo experimento único: confirmar antes/depois de
-`gepard+0x1C70DC pop dword ptr [edx]`, preservando destino EDX e a única dword
-de ESP usada como operando; associar à carga `+0x1C7502` e ao store `+0x1C752B`.
-Modo `cl-producer` preparado; aguarda estímulo coordenado do responsável.
+Usuário confirmou reinício e exclusividade após SLICE-12. /proc do alvo
+antigo ausente, novo runtime em `inventory-session4.json`, dois hashes revalidados.
+Não transportar heap/estado entre instâncias. A rodada compartilhada permanece
+inválida para conclusões de cifra ou causa do travamento.
 
-## Revisão e evidência executada
+SLICE-12 concluiu gate experimental no quarto hit: 73 traps, 20 escritas destino
++0x36/14 fonte +0x57, duas trocas, 151 ms, 13 pontos CL, sem limites/perdas/erros.
+Limpeza do coletor confirmada; nenhum instrumento próprio ativo.
+Evidência `session4-slice-late4-1/{chain-capture,audit,candidate-slice}.json`.
+Plano offline HIPÓTESE atravessou quatro transportes candidatos e parou em fonte
+EBP+0x09 da candidata +0x256809 POP/EDI: primeiro POP não observado nesse byte.
+Só o prefixo +13A194..+13A19A foi executado pré/pós dentro desta coleta; não
+promover demais padrões reversos a fluxo provado.
 
-HEAD na transferência: `435461546a1ef7d3cdcba863ea5bbb0ace81b7dd`;
-há alterações locais, sem commit CIFRA. As capturas anteriores não gravaram HEAD
-individual: não atribuir retroativamente essa revisão a elas. Identidade exata
-executada está em `tools_sha256` e `loaded_script_sha256` de cada captura.
-Novas capturas também gravam HEAD/digest do diff dos instrumentos.
+Próximo: observar +0x09 mantendo associação ao consumidor e no máximo quatro DRs.
+Não ampliar janela de 500 ms. Gate reduz cobertura inicial; contagem não é regra.
 
-Raiz privada: `/tmp/ro-cipher-20261015T174618Z/` (0700/0600).
-Última rodada principal: `session2-cl-writer256-round-1/chain-capture.json`,
-evento `DONE`: 129 escritas, 142 traps, 13 pontos, 349 ms totais/10 ms de sequência;
-sem perdas/erros; último escritor candidato POP, byte associado a CL, mesma
-thread/EBP. Script executado SHA-256:
-`a208b68623a6e2130e8a1ea682b21a66983a6b0e93386cf732d78505ad38ab5c`.
-Último preflight: `session2-cl-producer-preflight/`, timeout 200 ms, sem acertos,
-limpeza confirmada; revisões de campos/diagnóstico seguintes só testadas offline.
+## Revisão e evidência atual
 
-## Fatos estabelecidos
+HEAD `6c20733ef0af42d8a618bba39a16322f316207db`, diffs locais em instrumentos;
+revisão/digest do diff/hashes de fonte e script em cada `chain-capture.json`.
+Raiz privada 0700 `/tmp/ro-cipher-resume-20261016/`; inventário validado nesta
+conversa contra hashes dos dois módulos. Cliente reiniciado novamente pelo usuário; inventário novo
+`inventory-session4.json`, sem continuidade de heap com capturas anteriores. Driver confere starttime/build antes de anexar.
 
-- Carga em `+0x1C7502` define CL; 13 pontos até pós-store, ECX estável;
-  origem `EBP+0x36` nas ocorrências observadas, fora dos mapas de ESP enumerados.
-- XOR local em `+0x2689FB` demonstrado por operandos antes/depois; houve 17
-  escritas posteriores, sem consumidor associado naquela rodada.
-- Teto de 64 cortou a coleta antes do consumidor; ampliação autorizada para uma
-  rodada de 256 permitiu identificar a última escrita candidata POP.
-- Reinício entre instâncias: nenhuma continuidade de heap/sessão criptográfica.
+`lineage-passive-and-1/chain-capture.json:DONE` e `audit.json`: coleta sem clique
+solicitado/automatizado, seis trocas, 306 traps, destino 130 escritas, origem 120,
+13 pontos CL, 414 ms de sequência, sem teto/discontinuidades/erros de leitura e
+sem SCRIPT_ERROR; desarme automático/unload/detach confirmados pelo coletor.
+Cobertura: uma thread, um byte de cada alvo, sem excluir outras threads.
+Não atribuir a movimento: mecanismo any-chain, tráfego/direção não observados.
 
-## Hipóteses e limites
+## Fatos e limites
 
-- POP ainda candidato por decode reverso; a prova antes/depois está pendente.
-- Operando da pilha ainda sem produtor demonstrado; grafo reverso tem alternativas.
-- XOR não identificado como cifra. Direção, pacote, fronteira F, estado,
-  inicialização e vetores independentes continuam desconhecidos.
-- Observação por thread/um byte não exclui escritores em outras threads.
-- Retirada qualquer atribuição automática do XOR observado ao byte final.
+- POP-03 e STACK-04 provaram transporte por pilha; STACK-04 tinha ESI==EDX.
+- SOURCE-06 provou troca EBP+0x68→+0x36, mas houve 102 escritas posteriores.
+- REPEAT-07 selecionou pela execução a última troca: fonte EBP+0x57, destino +0x36;
+  seu byte permaneceu igual através das escritas cobertas até CL. Isso não é
+  atribuição causal ao último escritor direto, nem identifica cifra.
+- LINEAGE-08 associou última escrita observada em +0x57 à leitura da última troca;
+  decode único +0x256889 POP/EAX é candidato nessa ocorrência; pré/pós local
+  foi comprovado independentemente em UPSTREAM-09.
+- XOR local anterior continua sem atribuição ao byte final; inicialização, estado,
+  keystream e fronteira F permanecem desconhecidos.
 
-## Sondas e autorização
+## Autorização, instrumentos e limpeza
 
-`chain_capture.py`: coleta limitada; `chain_probe.js`: agentes/doubles;
-`chain_audit.py`/`analyze.py`: auditoria offline, sem Frida/rede.
-`cl-producer` usa capturas explícitas da mesma instância; não depende das âncoras
-antigas. Sem ação nativa, reinício, login, mudança de relay ou watchpoint de stack.
-Padrão: 10 s de espera, 500 ms de sequência, 64 escritas, 1.000 eventos, 256 KiB.
-Ampliação anterior a 256 foi expressamente autorizada para a rodada indicada.
-Exclusividade atual liberada por MOVER via confirmação do responsável; válida
-para a rodada POP preparada, até liberação/reinício/novo conflito. Não inferir de locks.
+Mandato autônomo vigente; exclusividade restaurada explicitamente nesta conversa.
+Perguntar prontidão antes do input manual. Preservar instrumentos de terceiros;
+sem login/reinício automático, publicação ou commit.
+`chain_capture.py`/`chain_probe.js`: 10 s de espera, 500 ms de sequência, 1000 traps,
+256 KiB, até 256 escritas por alvo/32 trocas. Nenhum watchpoint stack.
+`candidate_slice.py`: plano offline HIPÓTESE, até 32 arestas, para em lacuna/conflito.
+Cache novo conserva apenas padrões de código e verifica oito bytes a cada uso;
+registradores são atuais, com teste sintético de invalidação por mudança de bytes.
 
-## Limpeza, testes e propriedade
+## Saúde e testes
 
-Nenhum instrumento próprio ativo; todas as rodadas terminaram com limpeza confirmada.
-53 testes próprios PASS; suíte offline PASS (10 scripts); validador documental e
-`git diff --check` PASS no checkpoint. Isso não valida execução do POP no cliente.
-Docs liberados ao Documentador; snapshot privado `docs-transfer.diff/.json`.
-Próximas evidências entram no HANDOFF, sem escrita concorrente em docs.
+Rodadas anteriores tinham TypeError após DONE. Trocar null por callback e evitar
+RPC stop redundante não eliminaram erro. Desarmar antes do callback adiado, testado
+com scheduler sintético adiado, foi seguido por LINEAGE-08 sem erro. Causa ainda
+NÃO VERIFICADA; não validar retroativamente capturas anteriores.
+63 testes próprios PASS; não validam segurança em cliente compartilhado.
+Validadores serão registrados no HANDOFF. Sem commit/docs/produção.

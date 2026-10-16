@@ -27,14 +27,23 @@ def audit_chain(container):
     require(isinstance(cleanup, dict) and type(cleanup.get('ok')) is bool and
             type(container.get('cleanup_confirmed')) is bool, 'invalid chain cleanup metadata')
     clean = container['cleanup_confirmed'] and cleanup['ok']
-    limited = end.get('reason') in ('event_limit', 'write_limit', 'byte_limit') or counts['visits'] >= config['event_cap']
+    done_index=events.index(end)
+    script_errors_before=sum(e.get('tag')=='SCRIPT_ERROR' for e in events[:done_index])
+    script_errors_after=sum(e.get('tag')=='SCRIPT_ERROR' for e in events[done_index+1:])
+    limited = end.get('reason') in ('event_limit', 'write_limit', 'source_write_limit','extra_write_limit',
+                                   'producer_occurrence_limit', 'byte_limit') or counts['visits'] >= config['event_cap']
     result = {'observed_site_visits': counts['visits'],
               'complete_unretained_chains': counts['unselected_chains'],
               'cleanup_confirmed': clean, 'capture_limit_reached': limited,
+              'script_errors_before_done':script_errors_before,'script_errors_after_done':script_errors_after,
+              'runtime_health':'UNVERIFIED' if script_errors_before or script_errors_after else 'NO_SCRIPT_ERROR_RECORDED',
               'retained_chain': False, 'chain_conclusion': 'NO_RETAINED_OCCURRENCE',
               'cipher_conclusion': 'NOT_TESTED', 'direction': 'unknown', 'session': 'unknown',
               'missing': ['producer write', 'proven transformation input/output',
                           'consumed cipher state', 'state transition', 'cipher initialization']}
+    # A later script failure does not erase a recorded local operation, but must
+    # remain visible; an in-window script failure invalidates its admissibility.
+    clean=clean and not script_errors_before
     writer_counts = end.get('writer_counts')
     if writer_counts is not None:
         require(isinstance(writer_counts, dict), 'invalid writer counters')
@@ -51,6 +60,26 @@ def audit_chain(container):
         result['cl_transformation'] = audit_cl_transformation(end['cl_transformation'], clean and not limited)
     if end.get('cl_producer') is not None:
         result['cl_producer'] = audit_cl_producer(end['cl_producer'], clean and not limited)
+    if end.get('cl_stack_source') is not None:
+        result['cl_stack_source']=audit_stack_source(end['cl_stack_source'],clean and not limited)
+        stack=end['cl_stack_source'];producer=end.get('cl_producer')
+        if stack.get('complete') is True and producer and producer.get('complete') is True:
+            observations=stack['observations']
+            result['cl_stack_source']['linked_to_pop']=(
+                result['cl_stack_source']['conclusion']=='STACK_MEMORY_TRANSPORT_CONFIRMED' and
+                result['cl_producer']['conclusion']=='POP_COPY_CONFIRMED' and
+                observations[3]['sp']==producer['source_address'] and observations[3]['stack_top']==producer['source_sample'] and
+                observations[3]['order']==producer['before_order'] and observations[4]['order']==producer['after_order'] and
+                stack['code_path'][3]['rva']==producer['rva'] and stack['code_path'][3]['next_rva']==producer['next_rva'] and
+                stack['destination_address']==producer['address'] and observations[0]['source_word']==producer['source_sample'] and
+                stack['context']['thread']==producer['context']['thread'] and stack['context']['frame']==producer['context']['frame'])
+        if end.get('cl_source_watch') is not None:
+            result['source_lineage']=audit_source_lineage(stack,end['cl_source_watch'],
+                end.get('cl_source_writer_observations'),end.get('cl_source_write_count'),clean and not limited)
+        if end.get('cl_extra_source_watch') is not None:
+            extra_stack={k:v for k,v in stack.items() if k!='source_lineage'}
+            result['extra_source_watch']=audit_source_lineage(extra_stack,end['cl_extra_source_watch'],
+                end.get('cl_extra_source_writer_observations'),end.get('cl_extra_source_write_count'),clean and not limited)
     if end.get('cl_origin') is not None:
         result['cl_origin'] = audit_cl_origin(end['cl_origin'], end.get('path'), clean and not limited)
         require(end['cl_origin']['context']['thread'] == uint(end.get('thread_id')), 'conflicting CL thread')
@@ -89,6 +118,21 @@ def audit_chain(container):
                     producer['context']['thread']==preceding['thread'] and producer['context']['frame']==preceding['frame'] and
                     result['cl_writer']['same_thread'] and result['cl_writer']['same_frame'] and
                     result['cl_writer']['byte_matches_loaded_low_byte'])
+                # Equality through covered writes is weaker than a causal link.
+                following=[w for w in end.get('cl_writer_observations',[]) if
+                           producer['write_order']<w['order']<producer.get('load_order',0)]
+                expected=(producer['after']>>(8*producer['watched_offset']))&255
+                result['cl_producer']['byte_preserved_through_observed_writes']=(
+                    clean and not limited and result['cl_producer']['conclusion']=='POP_COPY_CONFIRMED' and
+                    result['cl_origin']['conclusion']=='CL_LOAD_AND_STORE_CONFIRMED' and
+                    end['cl_origin']['source_address']==producer['address']+producer['watched_offset'] and
+                    writer_counts is not None and len(end.get('cl_writer_observations',[]))==writer_counts['writes'] and
+                    expected==(end['cl_origin']['source_sample']&255) and
+                    all(w['byte_after']==expected and w['thread']==producer['context']['thread'] and
+                        w['frame']==producer['context']['frame'] for w in following))
+                if 'cl_stack_source' in result:
+                    result['cl_stack_source']['linked_to_cl_load']=(result['cl_stack_source']['linked_to_pop'] and
+                                                                   result['cl_producer']['linked_to_cl_load'])
     row = end.get('occurrence')
     if row is None:
         return result
@@ -202,29 +246,118 @@ def _byte_writer(raw, admissible):
             'paired_with_later_load': False}
 
 
+def audit_source_lineage(stack,watch,writes,write_count,admissible=True):
+    require(isinstance(watch,dict) and isinstance(writes,list) and len(writes)<=256,'invalid source watch metadata')
+    uint(write_count,256)
+    for key in ('address','frame','offset','thread','start_order'):uint(watch.get(key))
+    require(watch['address']==((watch['frame']+watch['offset'])&0xffffffff),'conflicting source selector')
+    previous=watch['start_order']
+    for row in writes:
+        require(isinstance(row,dict),'invalid source write')
+        for key in ('order','thread','frame'):uint(row.get(key))
+        uint(row.get('byte_after'),255)
+        require(row['order']>previous,'unordered source writes');previous=row['order']
+        require(isinstance(row.get('candidates'),list) and 0<len(row['candidates'])<=15,'invalid source candidates')
+        for candidate in row['candidates']:
+            uint(candidate.get('rva'));require(isinstance(candidate.get('instruction'),str),'invalid source code')
+    result=dict(conclusion='SOURCE_READ_NOT_ASSOCIATED',offset=watch['offset'],observed_writes=len(writes),
+                executed_writer_proven=False,cipher_role='UNKNOWN')
+    lineage=stack.get('source_lineage')
+    if lineage is None:return result
+    require(isinstance(lineage,dict),'invalid source lineage')
+    for key in ('consumer_order','watch_start_order','address'):uint(lineage.get(key))
+    uint(lineage.get('sampled_byte'),255)
+    require(lineage['address']==watch['address']==stack['source_address'] and
+            lineage['watch_start_order']==watch['start_order']<=lineage['consumer_order'] and
+            stack['context']['thread']==watch['thread'] and stack['context']['frame']==watch['frame'] and
+            lineage['sampled_byte']==(stack['observations'][0]['source_word']&255),'conflicting source read')
+    before=[w for w in writes if w['order']<lineage['consumer_order']]
+    last=before[-1] if before else None
+    require(lineage.get('preceding_write')==last,'source writer association mismatch')
+    if last is None:return result
+    matched=(last['byte_after']==lineage['sampled_byte'] and last['thread']==watch['thread'] and last['frame']==watch['frame'])
+    result.update(conclusion='BYTE_WRITER_BEFORE_SOURCE_READ_OBSERVED' if admissible and write_count==len(writes) and matched
+                  else 'SOURCE_WRITER_UNVERIFIED',writer_candidates=[dict(rva=hex(c['rva']),instruction=c['instruction']) for c in last['candidates']],
+                  executed_writer_proven=last.get('predecessor_execution_proven') is True)
+    return result
+
+
+def audit_stack_source(raw,admissible=True):
+    require(isinstance(raw,dict) and type(raw.get('complete')) is bool and isinstance(raw.get('context'),dict),
+            'invalid stack source observation')
+    for key in ('thread','sp','frame'):uint(raw['context'].get(key))
+    for key in ('source_address','destination_address'):uint(raw.get(key))
+    code=raw.get('code_path')
+    require(isinstance(code,list) and len(code)==4,'missing stack source code path')
+    source_register=raw.get('source_register','esi');destination_register=raw.get('destination_register','edx')
+    require(source_register in ('eax','ebx','ecx','edx','esi','edi') and
+            destination_register in ('eax','ebx','ecx','edx','esi','edi'),'unsupported stack register')
+    for index,text in enumerate((f'push dword ptr [{source_register}]',f'push dword ptr [{destination_register}]',
+                                f'pop dword ptr [{source_register}]',f'pop dword ptr [{destination_register}]')):
+        node=code[index];require(isinstance(node,dict) and node.get('instruction')==text,'unsupported stack source instruction')
+        uint(node.get('rva'));uint(node.get('next_rva'))
+        require(node['rva']<node['next_rva']<=node['rva']+15 and
+                (index==3 or node['next_rva']==code[index+1].get('rva')),'discontinuous stack source code')
+    overlap=max(0,4-abs(raw['source_address']-raw['destination_address']))
+    require(type(raw.get('same_address')) is bool and raw['same_address']==(raw['source_address']==raw['destination_address']) and
+            type(raw.get('overlap_bytes')) is int and raw['overlap_bytes']==overlap,'conflicting operand alias metadata')
+    rows=raw.get('observations')
+    require(isinstance(rows,list) and 0<len(rows)<=5,'invalid stack source points')
+    for index,row in enumerate(rows):
+        require(isinstance(row,dict),'invalid stack source point')
+        for key in ('site','order','thread','frame','sp','source_word','destination_word'):uint(row.get(key))
+        source_pointer=uint(row.get('source_pointer',row.get('esi')))
+        destination_pointer=uint(row.get('destination_pointer',row.get('edx')))
+        require(row['site']==index and row['thread']==raw['context']['thread'] and row['frame']==raw['context']['frame'] and
+                source_pointer==raw['source_address'] and destination_pointer==raw['destination_address'] and
+                row['sp']==((raw['context']['sp']+[0,-4,-8,-4,0][index])&0xffffffff),'discontinuous stack source context')
+        if index:require(row['order']>rows[index-1]['order'],'unordered stack source points')
+        if 0<index<4:uint(row.get('stack_top'))
+        if index==2:uint(row.get('older_stack_word'))
+    result=dict(conclusion='PARTIAL_STACK_SOURCE',observed_points=len(rows),same_address=raw['same_address'],
+        overlap_bytes=overlap,cipher_role='UNKNOWN',state_identified=False,linked_to_pop=False,linked_to_cl_load=False,
+        other_thread_writes_observed=False)
+    if not raw['complete']:return result
+    require(len(rows)==5 and isinstance(raw.get('comparisons'),dict),'missing complete stack source points')
+    s=rows
+    checks=dict(first_push=s[1]['stack_top']==s[0]['source_word'],second_push=s[2]['stack_top']==s[1]['destination_word'],
+        first_stack_slot_preserved=s[2]['older_stack_word']==s[1]['stack_top'],first_pop=s[3]['source_word']==s[2]['stack_top'],
+        remaining_stack_slot_preserved=s[3]['stack_top']==s[2]['older_stack_word'],second_pop=s[4]['destination_word']==s[3]['stack_top'],
+        original_source_reaches_destination=s[4]['destination_word']==s[0]['source_word'])
+    for key,value in checks.items():
+        require(type(raw['comparisons'].get(key)) is bool and raw['comparisons'][key]==value,'conflicting stack source comparison')
+    result.update(conclusion='STACK_MEMORY_TRANSPORT_CONFIRMED' if admissible and all(checks.values()) else 'STACK_TRANSPORT_UNVERIFIED',
+        comparisons=checks,intervening_traps=sum(b['order']-a['order']-1 for a,b in zip(rows,rows[1:])),
+        operation='two stack-mediated memory transfers')
+    return result
+
+
 def audit_cl_producer(raw, admissible=True):
     """Confirm the POP's single stack operand and memory destination; no stack scan."""
     require(isinstance(raw,dict) and type(raw.get('complete')) is bool,'invalid CL POP observation')
     for key in ('rva','next_rva','address','before','source_address','source_sample','before_order'):uint(raw.get(key))
     uint(raw.get('watched_offset'),3)
-    require(raw.get('instruction')=='pop dword ptr [edx]' and raw['rva']<raw['next_rva']<=raw['rva']+15,
+    register=raw.get('destination_register','edx')
+    require(register in ('eax','ebx','ecx','edx','esi','edi') and
+            raw.get('instruction')=='pop dword ptr ['+register+']' and raw['rva']<raw['next_rva']<=raw['rva']+15,
             'unsupported CL POP instruction')
     require(isinstance(raw.get('context'),dict),'missing POP context')
     for key in ('thread','sp','frame'):uint(raw['context'].get(key))
     require(raw['source_address']==raw['context']['sp'],'POP operand not preserved')
-    result={'conclusion':'PARTIAL_POP_OBSERVATION','operation':'pop dword ptr [edx]',
+    result={'conclusion':'PARTIAL_POP_OBSERVATION','operation':raw['instruction'],
         'rva':hex(raw['rva']),'operand_bytes':4,'watched_bytes':1,'cipher_role':'UNKNOWN',
         'state_identified':False,'linked_to_cl_load':False,'other_thread_writes_observed':False}
     if not raw['complete']:
         result['missing']=['post-instruction memory','post-instruction ESP/EDX']
         return result
-    for key in ('after','after_order','write_order','edx_after'):uint(raw.get(key))
+    for key in ('after','after_order','write_order'):uint(raw.get(key))
+    register_after=uint(raw.get('destination_register_after',raw.get('edx_after') if register=='edx' else None))
     require(isinstance(raw.get('post_context'),dict),'missing POP post-context')
     for key in ('thread','sp','frame'):uint(raw['post_context'].get(key))
     require(raw['before_order']<raw['after_order']==raw['write_order'],'unordered POP observation')
     copied=raw['after']==raw['source_sample']
     context=(raw['post_context']['thread']==raw['context']['thread'] and raw['post_context']['frame']==raw['context']['frame'] and
-             raw['post_context']['sp']==((raw['context']['sp']+4)&0xffffffff) and raw['edx_after']==raw['address'])
+             raw['post_context']['sp']==((raw['context']['sp']+4)&0xffffffff) and register_after==raw['address'])
     require(type(raw.get('copy_matches')) is bool and raw['copy_matches']==copied and
             type(raw.get('post_context_matches')) is bool and raw['post_context_matches']==context,'conflicting POP comparison')
     result.update(copy_matches=copied,context_matches=context,

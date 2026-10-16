@@ -77,6 +77,17 @@ def parse_args(argv=None):
                          '(default 0x816640, discovered for this uaRO build). Resolved against --sendpacket-module.')
     ap.add_argument('--sendpacket-module', default='uaRO.exe',
                     help='--inject-call: the module whose base --sendpacket-rva is relative to.')
+    ap.add_argument('--target-select', action=argparse.BooleanOptionalAction, default=False,
+                    help='--inject-call: emit a 0368 (CZ_REQNAME_BYGID) select-by-GID before a targeted '
+                         'action (0437 attack / 0438 skill). OFF by default: the action already carries the '
+                         'GID and the extra 0368 breaks the action on this build (observed live). Enable only '
+                         'if some build needs the click-mimic.')
+    ap.add_argument('--move-dispatch', action=argparse.BooleanOptionalAction, default=False,
+                    help='PoC (needs --inject): on a consumer 035f, fire the client\'s native movement '
+                         'dispatcher (frame 0x11) from a main-loop PE site so the CLIENT builds, encrypts '
+                         'and sends its own 035f. Uses DR2/DR3; keep --no-send-watch.')
+    ap.add_argument('--move-dispatch-ptr', default='0xd473b0', help='--move-dispatch: dispatcher address (hex)')
+    ap.add_argument('--move-dispatch-site', default='0x4dcba0', help='--move-dispatch: PE main-loop fire site (hex)')
     ap.add_argument('--inject-persist', action=argparse.BooleanOptionalAction, default=False,
                     help='--inject + --scramble-bp: keep each consumer packet and replace EVERY matching '
                          'client action of that id (persistent hijack), instead of one-shot per packet. '
@@ -213,6 +224,7 @@ def main(argv=None):
     agent.load()                                       # messages start flowing here
     capture.update_send_watch()
     capture.arm_scramble()                             # exec breakpoint at gepard+off, if --scramble-bp
+    capture.arm_move_dispatch()                        # native movement dispatcher, if --move-dispatch
     capture.arm_sendcall()                             # capture SendPacket `this`, if --inject-call
     capture.arm_trace()                                # Stalker trace, if --trace-test / --trace-walk
     if capture.send_watch_waiting:

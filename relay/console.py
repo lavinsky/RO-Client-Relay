@@ -53,6 +53,9 @@ def show(m):
                 print(f"        [{f.get('sp')}] {f.get('mod')}+{f.get('off')} (ret {f.get('ret')}){ent}")
         else:
             print(f"[scramble] (other id={_pid(m.get('id'))} @{m.get('slot')} body={m.get('body')})")
+    elif tag == 'MOVE-DISPATCH':
+        print(f"[move-dispatch] {m.get('hit')} " + ' '.join(f"{k}={m[k]}" for k in
+              ('x', 'y', 'this', 'retval', 'exception', 'e') if m.get(k) is not None))
     elif tag == 'SENDCALL':
         hit = m.get('hit')
         if hit == 'ready':

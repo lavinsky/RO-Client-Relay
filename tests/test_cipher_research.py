@@ -21,8 +21,10 @@ from research.cipher.core import (Dataset, EvidenceError, analyze, dataset_bytes
     json_bytes, load_dataset, parse_json, private_directory, private_write, validate_record)
 from research.cipher.analyze import inspect_file, main, run
 from research.cipher.inspect_client import observe, SOURCE
-from research.cipher.chain_capture import close_owned, bounded_artifact
-from research.cipher.chain_audit import audit_chain, audit_cl_origin, audit_cl_transformation, audit_cl_producer
+from research.cipher.chain_capture import close_owned, bounded_artifact, cl_source_options, select_pop_candidate, upstream_pop_reference
+from research.cipher.candidate_slice import candidate_slice
+from research.cipher.debug_inventory import snapshot as debug_snapshot
+from research.cipher.chain_audit import audit_chain, audit_cl_origin, audit_cl_transformation, audit_cl_producer, audit_stack_source, audit_source_lineage
 
 FIXTURE = REPO / "research/cipher/fixtures/synthetic_calls.jsonl"
 
@@ -350,6 +352,99 @@ class CipherResearchTests(unittest.TestCase):
 
 
 class ChainCaptureTests(unittest.TestCase):
+    @staticmethod
+    def synthetic_stack_source():
+        source,destination=0x3000,0x2000
+        texts=['push dword ptr [esi]','push dword ptr [edx]','pop dword ptr [esi]','pop dword ptr [edx]']
+        raw=dict(context=dict(thread=7,sp=0x4800,frame=0x1fca),source_address=source,destination_address=destination,
+            same_address=False,overlap_bytes=0,complete=True,observations=[],
+            code_path=[dict(rva=0x100+i*2,next_rva=0x102+i*2,instruction=t) for i,t in enumerate(texts)])
+        for i,delta in enumerate([0,-4,-8,-4,0]):
+            row=dict(site=i,order=i+1,thread=7,frame=0x1fca,sp=0x4800+delta,esi=source,edx=destination,
+                source_word=0x11223344 if i<3 else 0x55667788,destination_word=0x55667788 if i<4 else 0x11223344)
+            if 0<i<4:row['stack_top']=0x55667788 if i==2 else 0x11223344
+            if i==2:row['older_stack_word']=0x11223344
+            raw['observations'].append(row)
+        raw['comparisons']={k:True for k in ('first_push','second_push','first_stack_slot_preserved','first_pop',
+            'remaining_stack_slot_preserved','second_pop','original_source_reaches_destination')}
+        return raw
+
+    def test_stack_transport_is_distinct_from_transformation_and_checks_context(self):
+        row=self.synthetic_stack_source();result=audit_stack_source(row)
+        self.assertEqual(result['conclusion'],'STACK_MEMORY_TRANSPORT_CONFIRMED')
+        self.assertFalse(result['linked_to_cl_load']);self.assertFalse(result['state_identified'])
+        self.assertNotIn(str(0x11223344),json.dumps(result))
+        for change in ('gap','sp','thread','alias','value','code'):
+            raw=copy.deepcopy(row)
+            if change=='gap':raw['observations'][2]['site']=3
+            if change=='sp':raw['observations'][3]['sp']+=4
+            if change=='thread':raw['observations'][3]['thread']+=1
+            if change=='alias':raw['overlap_bytes']=4
+            if change=='value':raw['observations'][1]['stack_top']^=1
+            if change=='code':raw['code_path'][1]['next_rva']+=2
+            with self.subTest(change=change),self.assertRaises(EvidenceError):audit_stack_source(raw)
+        row['complete']=False;row['observations']=row['observations'][:2]
+        self.assertEqual(audit_stack_source(row)['conclusion'],'PARTIAL_STACK_SOURCE')
+
+    def test_stack_pop_and_cl_link_requires_the_same_writer(self):
+        stack=self.synthetic_stack_source();cl,path=self.synthetic_cl();cl['context']['frame']=0x1fca
+        producer=dict(rva=0x106,next_rva=0x108,instruction='pop dword ptr [edx]',address=0x2000,watched_offset=0,
+            before=0x55667788,source_address=0x47fc,source_sample=0x11223344,after=0x11223344,
+            before_order=4,after_order=5,write_order=5,load_order=6,
+            context=dict(thread=7,sp=0x47fc,frame=0x1fca),post_context=dict(thread=7,sp=0x4800,frame=0x1fca),
+            edx_after=0x2000,copy_matches=True,post_context_matches=True,complete=True)
+        end=dict(tag='DONE',reason='cl_origin_observed',cleanup=dict(ok=True),thread_id=7,path=path,cl_origin=cl,
+            cl_producer=producer,cl_stack_source=stack,occurrence=None,
+            counts=dict(visits=13,read_errors=0,discontinuities=0,unselected_chains=0),
+            cl_preceding_write=dict(order=5,thread=7,frame=0x1fca,byte_after=0x44,predecessor_execution_proven=True))
+        container=dict(configuration=dict(window_ms=500,event_cap=1000,bytes_cap=262144),cleanup_confirmed=True,events=[end])
+        self.assertTrue(audit_chain(container)['cl_stack_source']['linked_to_cl_load'])
+        end['cl_preceding_write']['order']=7
+        self.assertFalse(audit_chain(container)['cl_stack_source']['linked_to_cl_load'])
+
+    def test_debug_register_inventory_never_writes_and_detaches_on_error(self):
+        class Backend:
+            def __init__(self,flags=0x400,fail=None):self.flags=flags;self.fail=fail;self.calls=[];self.clock=0.
+            def now(self):return self.clock
+            def sleep(self,n):self.clock+=n
+            def seize(self,pid):
+                self.calls.append('seize')
+                if self.fail=='seize':raise PermissionError(1,'synthetic')
+            def interrupt(self,pid):self.calls.append('interrupt')
+            def wait(self,pid):return (0,0) if self.fail=='timeout' else (pid,(128<<16)|(5<<8)|0x7f)
+            def read(self,pid,index):
+                self.calls.append(('read',index))
+                if self.fail=='read':raise OSError(5,'synthetic')
+                return self.flags if index==7 else 0
+            def detach(self,pid,sig):
+                self.calls.append(('detach',sig))
+                if self.fail=='detach':raise OSError(5,'synthetic')
+        for flags,expected in [(0x400,[]),(1,[0]),(2,[0]),(0x44,[1,3])]:
+            backend=Backend(flags)
+            result=debug_snapshot(7,backend,backend.now,backend.sleep)
+            self.assertEqual(result['enabled_slots'],expected);self.assertTrue(result['cleanup_confirmed'])
+            self.assertFalse(result['debug_registers_changed']);self.assertEqual(backend.calls[-1],('detach',0))
+        for failure in ('seize','read','detach','timeout'):
+            backend=Backend(fail=failure);result=debug_snapshot(7,backend,backend.now,backend.sleep)
+            self.assertEqual(result['status'],'undetermined')
+            self.assertEqual(result['cleanup_confirmed'],failure in ('seize','read'))
+            if failure=='read':self.assertEqual(backend.calls[-1],('detach',0))
+            self.assertLessEqual(result['elapsed_ms'],202)
+
+    def test_relative_cl_reference_reuses_no_runtime_address_or_state(self):
+        source=dict(source_address=0x2036,context=dict(frame=0x2000),source_mapping=dict(private_marker='synthetic'),
+                    source_sample=0x11223344,loaded_value=0x11223344)
+        original=copy.deepcopy(source)
+        with patch.dict(sys.modules,{'frida':None}),patch.object(socket,'socket',side_effect=AssertionError('network forbidden')):
+            result=cl_source_options(source,'a'*64,True)
+        self.assertNotIn('cl_watch',result)
+        self.assertEqual(result['cl_source_relative']['offset'],0x36)
+        self.assertFalse(result['cl_source_relative']['source_session_reused'])
+        for field in ('source_address','source_sample','source_mapping','loaded_value','frame','private_marker'):
+            self.assertNotIn(field,json.dumps(result))
+        self.assertEqual(source,original)
+        with self.assertRaises(EvidenceError):cl_source_options(dict(source,source_address=0x2037),'a'*64,True)
+
     def test_pop_copy_preserves_stack_operand_and_checks_esp_change(self):
         row=dict(rva=0x80,next_rva=0x82,address=0x2000,before=0,source_address=0x47fc,source_sample=0x55667788,
             watched_offset=0,instruction='pop dword ptr [edx]',before_order=1,after_order=2,write_order=2,
@@ -360,6 +455,79 @@ class ChainCaptureTests(unittest.TestCase):
         for key,value in [('source_address',0x47f8),('after',0),('edx_after',0x2004),('after_order',1)]:
             with self.subTest(key=key),self.assertRaises(EvidenceError):audit_cl_producer(dict(row,**{key:value}))
         self.assertEqual(audit_cl_producer(dict(row,complete=False))['conclusion'],'PARTIAL_POP_OBSERVATION')
+
+    def test_earlier_pop_selector_uses_only_unambiguous_code_edges(self):
+        row=dict(pc_after='0x1082',candidates=[dict(pc='0x1080',rva=0x80,instruction='pop dword ptr [ebx]')])
+        end=dict(cl_writer_observations=[row,copy.deepcopy(row)])
+        self.assertEqual(select_pop_candidate(end,0x80),row)
+        for bad in (0x81,True,-1):
+            with self.subTest(bad=bad),self.assertRaises(EvidenceError):select_pop_candidate(end,bad)
+        end['cl_writer_observations'][1]['pc_after']='0x1083'
+        with self.assertRaises(EvidenceError):select_pop_candidate(end,0x80)
+        with self.assertRaises(EvidenceError):select_pop_candidate(dict(cl_writer_observations=[dict(row,candidates=row['candidates']*2)]),0x80)
+
+    def test_pop_destination_register_must_match_and_remain_stable(self):
+        row=dict(rva=0x80,next_rva=0x82,address=0x2000,before=0,source_address=0x47fc,source_sample=0x55667788,
+            watched_offset=0,instruction='pop dword ptr [ebx]',destination_register='ebx',before_order=1,after_order=2,write_order=2,
+            context=dict(thread=7,sp=0x47fc,frame=0x3000),post_context=dict(thread=7,sp=0x4800,frame=0x3000),
+            after=0x55667788,destination_register_after=0x2000,copy_matches=True,post_context_matches=True,complete=True)
+        self.assertEqual(audit_cl_producer(row)['conclusion'],'POP_COPY_CONFIRMED')
+        for key,value in [('destination_register','esp'),('instruction','pop dword ptr [edi]'),('destination_register_after',0x2004)]:
+            with self.subTest(key=key),self.assertRaises(EvidenceError):audit_cl_producer(dict(row,**{key:value}))
+
+    def test_source_lineage_requires_preceding_order_and_matching_byte(self):
+        # Synthetic byte provenance; a watchpoint decode remains a candidate.
+        watch=dict(address=0x2040,frame=0x2000,offset=0x40,thread=7,start_order=1)
+        row=dict(order=2,thread=7,frame=0x2000,byte_after=0x44,
+                 candidates=[dict(rva=0x80,instruction='mov byte ptr [eax], cl')],predecessor_execution_proven=False)
+        stack=dict(source_address=0x2040,context=dict(thread=7,frame=0x2000),observations=[dict(source_word=0x11223344)],
+                   source_lineage=dict(address=0x2040,consumer_order=3,watch_start_order=1,sampled_byte=0x44,preceding_write=row))
+        result=audit_source_lineage(stack,watch,[row],1)
+        self.assertEqual(result['conclusion'],'BYTE_WRITER_BEFORE_SOURCE_READ_OBSERVED')
+        self.assertFalse(result['executed_writer_proven'])
+        self.assertEqual(audit_source_lineage(stack,watch,[row],1,False)['conclusion'],'SOURCE_WRITER_UNVERIFIED')
+        later=dict(row,order=4,byte_after=0x55)
+        self.assertEqual(audit_source_lineage(stack,watch,[row,later],2)['conclusion'],result['conclusion'])
+        with self.assertRaises(EvidenceError):audit_source_lineage(stack,watch,[later],1)
+        with self.assertRaises(EvidenceError):audit_source_lineage(stack,dict(watch,offset=0x41),[row],1)
+
+    def test_upstream_selector_returns_code_and_offset_without_runtime_state(self):
+        row=dict(pc_after='0x1082',candidates=[dict(pc='0x1080',rva=0x80,instruction='pop dword ptr [eax]')],byte_after=0x44)
+        reference=dict(events=[dict(tag='DONE',cl_source_writer_observations=[row],cl_source_watch=dict(offset=0x40,address=0x2040))])
+        with patch('research.cipher.chain_audit.audit_chain',return_value=dict(source_lineage=dict(conclusion='BYTE_WRITER_BEFORE_SOURCE_READ_OBSERVED'))):
+            operation,offset=upstream_pop_reference(reference,0x80)
+        self.assertEqual((operation['rva'],operation['next_rva'],operation['destination_register'],offset),(0x80,0x82,'eax',0x40))
+        self.assertNotIn('address',operation);self.assertNotIn('byte_after',operation)
+        with patch('research.cipher.chain_audit.audit_chain',return_value={}):
+            with self.assertRaises(EvidenceError):upstream_pop_reference(reference,0x80)
+
+    def test_hypothetical_slice_stops_at_missing_or_conflicting_edges(self):
+        # Synthetic swap: source XOR -> first POP overwrites source -> final POP.
+        xor=dict(order=1,byte_after=0x44,candidates=[dict(rva=0x80,instruction='xor byte ptr [eax], cl',effective_address=0x2040)])
+        first=dict(order=2,byte_after=0x55,candidates=[dict(rva=0x104,instruction='pop dword ptr [edi]',effective_address=0x2040)])
+        final=dict(order=3,byte_after=0x44,candidates=[dict(rva=0x106,instruction='pop dword ptr [eax]',effective_address=0x2000,
+            swap_candidate=dict(source_address=0x2040,destination_address=0x2000,first_pop_rva=0x104,executed_path_proven=False))])
+        end=dict(tag='DONE',cl_origin=dict(context=dict(frame=0x2000),source_address=0x2000,source_sample=0x44),
+            cl_producer=dict(load_order=4),cl_writer_observations=[final],cl_source_watch=dict(address=0x2040),
+            cl_source_writer_observations=[xor,first])
+        capture=dict(events=[end])
+        audit=dict(runtime_health='NO_SCRIPT_ERROR_RECORDED',cl_origin=dict(conclusion='CL_LOAD_AND_STORE_CONFIRMED'),capture_limit_reached=False)
+        with patch('research.cipher.candidate_slice.audit_chain',return_value=audit):
+            result=candidate_slice(capture)
+            self.assertEqual(result['classification'],'HYPOTHESIS');self.assertFalse(result['executed_path_proven'])
+            self.assertEqual([s['writer_rva']for s in result['steps']],['0x106','0x80'])
+            self.assertEqual(result['stop'],'NO_SWAP_CANDIDATE')
+            self.assertEqual(candidate_slice(capture,1)['stop'],'SLICE_LIMIT')
+            end['cl_extra_source_watch']=end['cl_source_watch'];end['cl_extra_source_writer_observations']=end['cl_source_writer_observations']
+            end['cl_source_watch']=dict(address=0x2070);end['cl_source_writer_observations']=[]
+            self.assertEqual([step['writer_rva']for step in candidate_slice(capture)['steps']],['0x106','0x80'])
+            end['cl_source_watch']=end.pop('cl_extra_source_watch');end['cl_source_writer_observations']=end.pop('cl_extra_source_writer_observations')
+            end['cl_source_writer_observations']=[xor]
+            self.assertEqual(candidate_slice(capture)['stop'],'FIRST_POP_NOT_OBSERVED')
+            end['cl_source_writer_observations']=[dict(xor,byte_after=0x33),first]
+            self.assertEqual(candidate_slice(capture)['stop'],'CANDIDATE_VALUE_MISMATCH')
+            final['candidates']*=2
+            self.assertEqual(candidate_slice(capture)['stop'],'AMBIGUOUS_WRITER_DECODE')
 
     def test_local_xor_requires_before_after_order_and_context(self):
         row=dict(rva=0x100,next_rva=0x102,address=0x2000,watched_offset=0,
@@ -461,6 +629,17 @@ class ChainCaptureTests(unittest.TestCase):
         self.assertEqual(report['result'], 'C_INSUFFICIENT')
         self.assertNotIn(str(0x11223344), json.dumps(report))
         self.assertNotIn('source_address', json.dumps(report))
+
+    def test_script_error_phase_is_not_hidden_by_local_read_counters(self):
+        after=self.synthetic_chain();after['events'].append(dict(tag='SCRIPT_ERROR',description='synthetic failure'))
+        result=audit_chain(after)
+        self.assertEqual(result['script_errors_after_done'],1)
+        self.assertEqual(result['runtime_health'],'UNVERIFIED')
+        self.assertEqual(result['chain_conclusion'],'COPY_CHAIN_CONFIRMED')
+        before=self.synthetic_chain();before['events'].insert(0,dict(tag='SCRIPT_ERROR',description='synthetic failure'))
+        result=audit_chain(before)
+        self.assertEqual(result['script_errors_before_done'],1)
+        self.assertNotEqual(result['chain_conclusion'],'COPY_CHAIN_CONFIRMED')
 
     def test_chain_missing_malformed_or_ambiguous_fields_are_rejected(self):
         for mutate in (

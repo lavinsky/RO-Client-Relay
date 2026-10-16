@@ -116,6 +116,14 @@ def pack_move(x, y, d=0):
                   ((y & 0xf) << 4) | (d & 0xf)))
 
 
+def unpack_move(body3):
+    """Inverse of pack_move: (x, y, d) from the 3-byte packed body of a client move (035f)."""
+    b = bytes(body3)
+    if len(b) < 3:
+        raise ValueError('035f body needs 3 bytes')
+    return (b[0] << 2) | (b[1] >> 6), ((b[1] & 0x3f) << 4) | (b[2] >> 4), b[2] & 0xf
+
+
 def unpack_pos2(b):
     """(src_x, src_y, dst_x, dst_y) from the 6-byte MoveData2 (the RO WBUFPOS2 packing)."""
     sx = (b[0] << 2) | (b[1] >> 6)

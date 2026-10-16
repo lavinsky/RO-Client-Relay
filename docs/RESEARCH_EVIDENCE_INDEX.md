@@ -1,5 +1,7 @@
 # Índice de evidências técnicas — RO-Client-Relay
 
+> **Integração 2026-10-16:** [entregas conferidas e limites](#c-08--integração-cifra-20261016-pop-03) atualizam os checkpoints anteriores; relatos, consistência de artefatos e prova independente permanecem distintos.
+
 **Revisão:** 2026-10-15. **Referência:** revisão local `524b0f05fa61872e140f98ace9e503d12356641e`. Os resultados abaixo são **documentados em fontes primárias do repositório**, não verificados de novo em cliente real por esta auditoria. Os artefatos privados citados nos estudos **não acompanham** este índice.
 
 | ID | Estado | Evidência / método original | Build e condições | Documento canônico / código | Limitação principal |
@@ -102,3 +104,99 @@ read/wineserver causava os crashes 04/05, **não** "reentrância resolvida em ge
 desarmados em `doFire`, então o `store_035f` do scrambler **não** foi observado during_call;
 origem+cifra+envio provados **funcionalmente** por `sendmsg` 5 B + `recv_0087` dst=injetado.
 **Não reproduzida**; comparação com a via de relay (merge pré-XOR em `gepard+0x18eff2`) pendente.
+
+## M-12 — rodada 09: PoC do relay, `035F` do OpenKore → dispatcher nativo (OBSERVADO live, cliente vivo)
+
+**Origem:** sessão OrquestradorCLAUDE, 2026-10-16; plano
+`/home/bazzite/.claude/plans/abundant-frolicking-aho.md`. Integração da primitiva de M-11/§13.10 ao
+relay/agent de produção, dirigida pelo OpenKore. **Build MATCH por hash:** `uaRO.exe` `f2f2…9569`,
+`gepard.dll` base `0x76920000`. PID cliente 3520569 porta 27053 (Wine); OpenKore XKore 1 porta 2350
+em container podman. Servidor **próprio do responsável** (escopo autorizado). **Mudanças em working
+tree, não commitadas** no registro.
+**OBSERVADO (uma única vez, live):** `035F` do consumidor (XKore `S`) decodificado
+(`relay/packets.py:119` `unpack_move`), roteado em `relay/writeback.py:243` para o dispatcher nativo
+`0xd473b0` (fire-site `0x4dcba0`, `agent/relay_hook_linux.js:647-752` `MD_RECIPES['walk-035f']`), com
+o `035F` original **dropado** (`:249`, nada reenviado) → cliente monta/cifra o próprio `035F` →
+`recv_0087 dst = destino pedido` → **cliente VIVO**. Os 4 critérios de M-11 = SIM.
+**Orçamento de DR (4/4):** DR0 scramble · DR1 SendPacket · DR2 captura passiva do `this` · DR3
+fire-site. `send-watch` OFF obrigatório. **Gotcha corrigido:** `move_dispatch` soma ao `inject-call`
+(`relay/writeback.py:101-107`); eram exclusivos no `_arm` original → sem `--inject-call` o relay
+dropava todo pacote não-`035F` e o OpenKore travava em "Aguardando".
+**Invocação (rodada manualmente pelo responsável; classificador de auto-mode bloqueia o assistente):**
+`./run.sh --inject --inject-call --move-dispatch --no-send-watch --out <ARQUIVO>`.
+**Verificações offline:** `bash scripts/test-offline.sh` ALL PASS (11 scripts); `node --check
+agent/relay_hook_linux.js` PASS; `python3 scripts/validate-research.py` PASS; `py_compile` dos `.py`
+alterados OK. **Limites:** OBSERVADO uma vez; não reproduzido em várias sessões; `this` recapturado a
+cada sessão (relogin invalida PID/base/heap); a cifra **não** é compreendida (o relay só decide o
+destino; geração de keystream anterior ao XOR segue DESCONHECIDA, §13.8). Comparação de custo/robustez
+com a via de relay (merge pré-XOR em `gepard+0x18eff2`) pendente. [Pré-condições §13.11](MOVEMENT_035F_PRECONDITIONS.md).
+
+## C-08 — integração CIFRA-20261016-POP-03
+
+**Origem:** [HANDOFF CIFRA](../research/cipher/HANDOFF.md), POP-03;
+`/tmp/ro-cipher-20261016T061947Z/pop-click-1/capture/chain-capture.json`,
+`DONE.cl_producer/cl_origin/cl_preceding_write`. **OBSERVADO NO ARTEFATO:** cópia
+POP antes/depois, ESP+4, EDX estável e associação até pós-store de CL na mesma
+ocorrência; recálculo local `POP_COPY_CONFIRMED`, `linked_to_cl_load=true`.
+15 traps/uma escrita/13 pontos, 43 ms totais/12 ms sequência. Não é uma coleta
+independente; nenhuma captura privada foi publicada. `SCRIPT_ERROR` posterior ao
+DONE registrado e perguntado ao autor; contadores limpos não significam ausência
+global de erros. Limpeza própria em `stimulus-summary.json` (dois flags verdadeiros),
+sem prova de saúde global. [Integração completa](CIPHER_INVESTIGATION.md#integração-documental--cifra-20261016-pop-03).
+C-07 conserva a etapa de candidato; C-08 demonstra a cópia apenas na nova ocorrência.
+Origem anterior, cifra/estado/pacote permanecem desconhecidos.
+
+## M-13 — MOVER-20261016-08: reprodução da sonda 06b
+
+**Fontes:** [HANDOFF MOVER](../research/movement_035f/HANDOFF.md), IDs06/08;
+`/tmp/claude-035f-20261015-170143-round06b/trial.json` e
+`/tmp/claude-035f-20261016-014857-repro06b/trial.json`, `DONE.events` e flags
+externos de limpeza. Conferidos dois pares chamada/retorno e envio 5/5 bytes,
+resposta com destino correspondente; zero stores observados durante a chamada.
+**OBSERVADO NO ARTEFATO**, não nova execução pelo documentador. UI responsiva é relato
+MOVER; mecanismos da cifra e reentrância não demonstrados. Atualiza o estado “não
+reproduzida” de M-11; não reproduz automaticamente a integração relay M-12.
+[Limites e lições](RESEARCH_STATUS.md#m-13--reprodução-08-e-lições-do-contexto-de-disparo).
+
+## Limites de procedência que mudam decisões
+
+1. **MOVER-01/02, §13.7:** o autor confirmou que nenhum evento identifica o byte
+   verificado ou a colisão; alerta/encerramento são relato. A indetectabilidade geral
+   de Stalker/HW BP não foi demonstrada por esses recortes. Pergunta de evidência
+   encaminhada ao pesquisador via orquestrador; não autoriza nova instrumentação.
+2. **§13.8 / ORCH-20261016-01a:** os trechos citados documentam o caminho de merge e
+   uma implementação; não medem operandos XOR do cliente ou gerador criptográfico.
+   Solicitados artefato/eventos do PoC e evidência da operação, sem rebaixar o relato
+   funcional nem promovê-lo a prova independente.
+3. **WRITER-02 / POP-03:** erro tardio após DONE comunicado a CIFRA. Cópias e XOR
+   local conferidos são preservados com cobertura; causa/impacto tardio e saúde global
+   não preenchidos por inferência. Próxima entrega do autor poderá resolver a lacuna.
+
+## C-09 — informação confirmada: valores enviados ao cliente no login
+
+**Fonte:** declaração direta do responsável nesta rodada, 2026-10-16; no login
+valores relacionados à cifra são enviados ao cliente. **Confirmação informada**, sem
+captura/reprodução independente pelo documentador. Não identifica automaticamente
+seed, chave completa, pacote, estado ou derivação. [Registro e limites](CIPHER_INVESTIGATION.md#valores-de-cifra-recebidos-no-login--confirmação-do-responsável).
+
+## C-10 — CIFRA STACK-04 … SLICE-12 (linhagem por transportes)
+
+**Fonte:** [HANDOFF CIFRA](../research/cipher/HANDOFF.md), IDs STACK-04 a SLICE-12; raiz privada
+`/tmp/ro-cipher-resume-20261016/` (`prefix-manual-1`, `earlier-pop-manual-256`,
+`earlier-prefix-sixth-manual-1`, `repeat-prefix-manual-1`, `lineage-passive-and-1`,
+`upstream-eax-manual-1`, `session2-upstream-prefix-manual-1`, `session4-slice-late4-1`).
+**OBSERVADO por ocorrência:** trocas PUSH/POP `+0x1C70D6`, `+0x13A194..A`, `+0x256883..9`;
+igualdade do byte através das escritas cobertas até CL. **HIPÓTESE:** plano até `EBP+0x09`.
+SLICE-11 inválida (exclusividade perdida). Relato do autor, não reexecutado pelo documentador.
+[Integração](CIPHER_INVESTIGATION.md#integração-documental--cifra-stack-04--slice-12).
+
+## A-01 — ACT-20261016-01: dispatcher × ataque/perícia
+
+**Fonte:** `research/action_0437_0438/STATE.md`, `HANDOFF.md`; artefatos privados
+`/tmp/claude-act-20261016-031147-sendpkt/observe.json`,
+`/tmp/claude-act-20261016-110249-soulstrike2/inject.json`. **OBSERVADO:** codes `0x11/0x1f/0x28/0x2a/0x0a`
+→ `035F/0437/0437/0438/(0368)`; cadeia de cast `0x29→0x5a→0x2a`; caller imediato `gepard+0xb2c251`.
+**OBSERVADO (injeção):** replay da cadeia pelo fire-site `0x4dcba0` → `0x2a`=0, sem egress, crash
+deferido. **REFUTADO:** `0368` pré-select como bloqueio. **RETIRADO:** cadeias de caller por
+Backtracer/EBP-walk. [Controle](GEPARD_CONTROL_PACKETS.md#mapa-dispatcher--pacote-de-ação-act-20261016-01).
+Supera a leitura da rodada 09b citada em M-12.

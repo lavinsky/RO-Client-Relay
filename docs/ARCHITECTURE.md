@@ -128,8 +128,10 @@ A afirmação histórica de latência ~700 ms causada exclusivamente pelos hooks
 não descreve o código atual. Frequência e latência atuais não foram medidas nesta revisão.
 
 `relay/writeback.py:224` extrai GID no offset 6 de `0438` (mínimo 10 bytes) ou no offset 2
-de `0437` (mínimo 7, GID não zero). Antes da ação, envia seleção `0368` somente quando o
-GID muda; cache `_last_select_gid` evita flood. IDs `0368/0369/0193/0094/0360` recebidos do
+de `0437` (mínimo 7, GID não zero). Somente com `--target-select` (default OFF desde 2026-10-16)
+envia seleção `0368` antes da ação, e apenas quando o GID muda; cache `_last_select_gid` evita
+flood. A remoção do `0368` **não** fez ataque/perícia executarem (REFUTADO, ver
+[GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md)). IDs `0368/0369/0193/0094/0360` recebidos do
 consumidor são ignorados nesse caminho (`:23`, `:234`). No dreno do agente, `0438/0af4`
 com intervalo desde o último cast menor que `castMs` são descartados, sem reenfileirar (`agent/relay_hook_linux.js:617`).
 A configuração de 0,8 s vira 800 ms; isso é política atual de writeback, não descoberta

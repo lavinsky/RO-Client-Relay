@@ -11,7 +11,8 @@ Também mora aqui a autodescoberta do ponto de cifragem e o rastreio com Stalker
 self.scramble, self.sendwatch, self.gepard_base, self._queue_range, self._disc_lock)."""
 import threading
 
-from .protocol import (scramble_msg, scramble_set_msg, sendcall_emit_msg, sendcall_msg,
+from .packets import unpack_move
+from .protocol import (move_dispatch_msg, scramble_msg, scramble_set_msg, sendcall_emit_msg, sendcall_msg,
                        sendwatch_msg, trace_msg)
 
 # A watch de dados dispara uma instrução DEPOIS da escrita; o store `mov [reg],bl` tem 2 bytes.
@@ -97,7 +98,18 @@ class WriteBack:
         relay = self.relay
         if getattr(opts, 'probe_entry', '') or getattr(opts, 'probe_at', ''):
             return                                     # a sonda de entrada é dona do breakpoint; sem escrita
-        if getattr(opts, 'inject_call', False):
+        if getattr(opts, 'move_dispatch', False):
+            # PoC: 035f -> dispatcher nativo de movimento (o cliente cifra o proprio). Os DEMAIS
+            # pacotes "S" do consumidor so chegam ao cliente pela SendPacket (--inject-call); sem ela
+            # caem no ramo de drop de _on_inbound_split e o OpenKore nao sincroniza/loga.
+            relay.on_inbound = self._on_inbound_split
+            if getattr(opts, 'inject_call', False):
+                self.sendcall_rva = int(opts.sendpacket_rva, 16)   # demais acoes -> client SendPacket (DR1)
+            print(f'[*] --move-dispatch: 035f from the consumer -> native movement dispatcher '
+                  f'(client builds/encrypts its own 035f); original 035f is DROPPED'
+                  + ('' if getattr(opts, 'inject_call', False)
+                     else '  [!] sem --inject-call: demais pacotes do consumidor sao DROPADOS'))
+        elif getattr(opts, 'inject_call', False):
             self.sendcall_rva = int(opts.sendpacket_rva, 16)
             if self.scramble:
                 # roteia por id: 035f pelo merge (DR0), demais ações pela SendPacket (DR1).
@@ -182,6 +194,17 @@ class WriteBack:
             print(f'[*] --inject-call: do one in-client 0437/0438 action to capture the send object (this)'
                   f'{f"; casts pacejados a {cast_ms}ms no dreno" if cast_ms else ""}')
 
+    def arm_move_dispatch(self):
+        """Arma a captura passiva do `this` do dispatcher nativo (DR2); o sitio de disparo (DR3) so
+        e armado quando chega um 035f."""
+        if getattr(self.opts, 'move_dispatch', False) and self.relay is not None:
+            self.post(move_dispatch_msg(arm=True, dispatcher=getattr(self.opts, 'move_dispatch_ptr', None),
+                                        site=getattr(self.opts, 'move_dispatch_site', None)))
+            print('[*] --move-dispatch: walk once in-client so the dispatcher `this` is captured (passive)')
+
+    def post_move_dispatch(self, x, y):
+        self.post(move_dispatch_msg(x, y))
+
     def arm_trace(self):
         """Rastreio com Stalker: teste de sobrevivência (--trace-test), uaRO->gepard (--trace-walk)
         ou uaRO->uaRO (--trace-internal). Faixa do código uaRO 0x401000..0x1717000."""
@@ -216,8 +239,18 @@ class WriteBack:
             print(f"[inject] skip typ={typ!r} len={len(payload)} (need an 'S' packet with an id)")
             return
         pid = payload[0] | payload[1] << 8
-        if pid == self.WALK_ID:
+        md = getattr(getattr(self, 'opts', None), 'move_dispatch', False)
+        if pid == self.WALK_ID and md:
+            if len(payload) < 5:
+                print(f'[inject] 035f too short ({len(payload)}B): dropped')
+                return
+            x, y, _d = unpack_move(payload[2:5])
+            print(f'[inject] 035f -> native dispatch to ({x},{y}); original 035f dropped')
+            self.post_move_dispatch(x, y)              # o cliente monta/cifra o proprio; nada e reenviado
+        elif pid == self.WALK_ID:
             self._on_inbound_scramble(payload, typ)
+        elif md and not getattr(self.opts, 'inject_call', False):
+            print(f'[inject] id=0x{pid:04x}: no handler under --move-dispatch without --inject-call; dropped')
         else:
             self._on_inbound_sendcall(payload, typ)
 
@@ -243,11 +276,16 @@ class WriteBack:
         # O paceamento dos casts (0438/0af4) é feito no DRENO do agente, não aqui: o consumidor manda
         # re-tentativas espaçadas que passariam deste filtro mas, enfileiradas, drenam juntas e cada
         # cast cancela o anterior. O agente deixa passar um cast por janela (ver cast_ms em sendcall).
-        gid = self._target_gid(pid, payload)
-        if gid is not None and gid != getattr(self, '_last_select_gid', None):
-            select = bytes([self.SELECT_ID & 0xff, self.SELECT_ID >> 8]) + gid
-            print(f"[inject] target-select 0x{self.SELECT_ID:04x} GID={gid.hex()} antes de 0x{pid:04x}")
-            self.post(sendcall_emit_msg(select.hex()))
-            self._last_select_gid = gid                # só reemite o 0368 quando o alvo muda (anti-flood)
+        # O 0368 (CZ_REQNAME_BYGID) pré-ação é só um PEDIDO DE NOME, não um lock de alvo; a ação
+        # (0437/0438) já carrega o GID. Injetá-lo antes QUEBRA a ação (observado live: ataque/perícia
+        # não funcionam com o 0368; sem ele o sendmsg sai e funciona). OFF por padrão; --target-select
+        # reativa o clique-mímico se algum build precisar.
+        if getattr(getattr(self, 'opts', None), 'target_select', False):
+            gid = self._target_gid(pid, payload)
+            if gid is not None and gid != getattr(self, '_last_select_gid', None):
+                select = bytes([self.SELECT_ID & 0xff, self.SELECT_ID >> 8]) + gid
+                print(f"[inject] target-select 0x{self.SELECT_ID:04x} GID={gid.hex()} antes de 0x{pid:04x}")
+                self.post(sendcall_emit_msg(select.hex()))
+                self._last_select_gid = gid            # só reemite o 0368 quando o alvo muda (anti-flood)
         print(f"[inject] inbound id=0x{pid:04x} len={len(payload)} -> SendPacket: {payload[:16].hex()}")
         self.post(sendcall_emit_msg(payload.hex()))

@@ -432,6 +432,7 @@ function scrPrologueBefore(addr) {                                   // nearest 
 function scrTrap(d) {
     if (d.type !== 'breakpoint') return false;
     var ctx = d.context;
+    if (md !== null && mdTrap(ctx)) return true;       // native-dispatch (DR2/DR3)
     // sendcall: captura de uso unico do `this` (ecx) na entrada da SendPacket, no DR1 -- independente
     // do merge de 035f (DR0), que segue armado. Depois a SendPacket e chamada por NativeFunction.
     if (scrCall !== null && ctx.pc.equals(scrCall.pc)) {
@@ -643,8 +644,115 @@ function drainSendCall() {                       // only runs on the game thread
     } finally { scDraining = false; }
 }
 
+// ---- native-dispatch (opt-in: {type:'native-dispatch'}) ---------------------------------------
+// PoC: em vez de fabricar o corpo do 035f, dispara o DISPATCHER NATIVO de movimento do cliente
+// (0xd473b0, thiscall, frame 0x11) a partir de um sitio de main-loop do uaRO.exe (HW exec BP em
+// CODIGO, DR2/DR3; sem Interceptor inline). O cliente monta, cifra e envia o proprio 035f.
+// Receita validada: research/movement_035f/dispatcher_trial_pesite.py (rodadas 06b/08).
+var MD_MGR = ptr('0x1213338'), MD_RET34 = ptr('0xd47e61');
+var MD_RECIPES = {
+    'walk-035f': {
+        dispatcher: 0xd473b0, fireSite: 0x4dcba0,
+        buildFrame: function (a) {                      // 13 dwords: f[1]=code 0x11, f[3]=dx, f[5]=dy
+            var dx = Math.max(0, Math.min(1023, a.x | 0)), dy = Math.max(0, Math.min(1023, a.y | 0));
+            return [0, 0x11, 0, dx >>> 0, 0, dy >>> 0, 0, 0, 0, 0, 0, 0, 0];
+        }
+    }
+};
+var md = null;      // {recipe, disp, site, fn, thisp, receiver, queue:[args], th, capArmed, fireArmed, busy}
+
+function mdUnarm(slot) { if (md !== null && md.th !== null) { try { md.th.unsetHardwareBreakpoint(slot); } catch (e) {} } }
+
+function mdReceiverReady() {                    // guarda de prontidao do receptor (rodada 06b)
+    try {
+        if (MD_MGR.add(0x58).readU32() !== 1) return false;
+        var obj = MD_MGR.add(4).readPointer();
+        var rcv = obj.readPointer().add(0x18).readPointer();
+        return getGepard() !== null && rcv.equals(g.add(0x10a90));
+    } catch (e) { return false; }
+}
+
+function mdTrap(ctx) {                          // devolve true se tratou o breakpoint
+    if (md === null) return false;
+    if (md.capArmed && ctx.pc.equals(md.disp)) {                   // captura passiva do `this` (construct mode)
+        if (md.thisp === null && !md.busy) {
+            var lo = ctx.esp.add(8).readU32(), hi = ctx.esp.add(12).readU32();
+            if (hi === 0 && lo <= 0x95) {
+                md.thisp = ctx.ecx; md.capArmed = false; mdUnarm(2);
+                send({tag: 'MOVE-DISPATCH', hit: 'captured', 'this': ctx.ecx.toString(), code: lo});
+            }
+        }
+        return true;
+    }
+    if (md.fireArmed && ctx.pc.equals(md.site)) {                  // sitio PE do main-loop
+        if (Process.getCurrentThreadId() !== md.tid || md.thisp === null || md.queue.length === 0 || md.busy) return true;
+        var a = md.queue.shift();
+        md.fireArmed = false; mdUnarm(3); md.capArmed = false; mdUnarm(2);   // sem BP aninhado
+        var r = {tag: 'MOVE-DISPATCH', hit: 'fired', x: a.x, y: a.y, 'this': md.thisp.toString()};
+        if (!mdReceiverReady()) { r.hit = 'abort'; r.e = 'receiver not ready/changed'; send(r); }
+        else {
+            try {
+                md.busy = true;
+                var f = md.recipe.buildFrame(a);
+                r.frame = f;
+                send({tag: 'MOVE-DISPATCH', hit: 'call', x: a.x, y: a.y});
+                var rv = md.fn.apply(null, [md.thisp].concat(f));
+                r.retval = rv >>> 0; r.exception = null;
+            } catch (e) { r.exception = String(e.message || e); }
+            md.busy = false;
+            send(r);
+        }
+        if (md.queue.length) { try { md.th.setHardwareBreakpoint(3, md.site); md.fireArmed = true; } catch (e) {} }
+        return true;
+    }
+    return false;
+}
+
+function onNativeDispatch(m) {
+    try {
+        if (m.disarm) {
+            if (md !== null) { mdUnarm(2); mdUnarm(3); }
+            md = null;
+        } else if (m.arm) {
+            var rec = MD_RECIPES[m.recipe];
+            var base = peBase(m.module || 'uaRO.exe');
+            if (!rec || base === null) { send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'recipe/base unresolved'}); }
+            else {
+                var disp = ptr(m.dispatcher !== undefined ? m.dispatcher : rec.dispatcher);
+                var site = ptr(m.site !== undefined ? m.site : rec.fireSite);
+                var why = null;
+                if (!Process.findRangeByAddress(disp)) why = 'dispatcher unmapped';
+                else if (!/ret\s+0x34/.test(Instruction.parse(MD_RET34).toString())) why = 'ret 0x34 anchor mismatch';
+                else if (!Process.findRangeByAddress(site)) why = 'fire-site unmapped';
+                if (why) send({tag: 'MOVE-DISPATCH', hit: 'error', e: why});
+                else {
+                    var th = Process.enumerateThreads().filter(function (t) { return t.id === Process.id; })[0];
+                    var types = ['pointer']; for (var i = 0; i < 13; i++) types.push('uint32');
+                    md = {recipe: rec, disp: disp, site: site, thisp: null, queue: [], th: th || null, tid: Process.id,
+                          capArmed: false, fireArmed: false, busy: false,
+                          fn: new NativeFunction(disp, 'uint', types, {abi: 'thiscall', exceptions: 'propagate'})};
+                    if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
+                    if (md.th === null) { send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'main thread not found'}); md = null; }
+                    else { md.th.setHardwareBreakpoint(2, disp); md.capArmed = true;     // DR2: captura passiva
+                           send({tag: 'MOVE-DISPATCH', hit: 'armed', disp: disp.toString(), site: site.toString()}); }
+                }
+            }
+        } else if (m.args && md !== null) {
+            if (md.thisp === null) send({tag: 'MOVE-DISPATCH', hit: 'dropped', e: 'dispThis not captured yet (walk once in-client)', x: m.args.x, y: m.args.y});
+            else if (md.queue.length >= 8) send({tag: 'MOVE-DISPATCH', hit: 'dropped', e: 'queue full'});
+            else {
+                md.queue.push(m.args);
+                if (!md.fireArmed) { md.th.setHardwareBreakpoint(3, md.site); md.fireArmed = true; }   // DR3: sitio de disparo
+                send({tag: 'MOVE-DISPATCH', hit: 'queued', x: m.args.x, y: m.args.y});
+            }
+        } else if (m.args) send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'native-dispatch with no arm'});
+    } catch (e) { send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'native-dispatch: ' + e.message}); }
+    recv('native-dispatch', onNativeDispatch);
+}
+recv('native-dispatch', onNativeDispatch);
+
 // never leave debug registers armed without our handler: the client would die on the next write
-rpc.exports = { dispose: function () { sw = null; swDisarm(); scr = null; scrDisarm(); scrCall = null; scrCallDisarm(); scSend = null; } };
+rpc.exports = { dispose: function () { sw = null; swDisarm(); scr = null; scrDisarm(); scrCall = null; scrCallDisarm(); scSend = null; if (md !== null) { mdUnarm(2); mdUnarm(3); } md = null; } };
 
 // ---- rastreio com Stalker (opcional: o driver envia {type:'trace'}) ----------------------------
 // ARRISCADO em codigo protegido pelo gepard: o Stalker reescreve o codigo executado. Primeiro um

@@ -14,7 +14,7 @@
 | Hipótese | Base | Limitação / alternativa |
 |---|---|---|
 | A intenção de mover aciona uma cadeia de preparação antes do envio de `0x035F` | `docs/HISTORY/ARCHITECTURE_LEGACY.md` §§9–10; analogia com roBrowserLegacy relatada pelo responsável | A analogia não prova equivalência entre implementações |
-| A falha de `0x0438` está relacionada à cobertura/estado da cifra | Código servidor Gepard 2016 descrito em `docs/HISTORY/GEPARD_LEGACY.md` §3; comportamento descrito em `docs/HISTORY/ARCHITECTURE_LEGACY.md` §5.1 | Diferentes pré-condições de ação, parser e estado interno também podem explicar falhas |
+| A falha de `0x0438` está relacionada à cobertura/estado da cifra | Código servidor Gepard 2016 descrito em `docs/HISTORY/GEPARD_LEGACY.md` §3; comportamento descrito em `docs/HISTORY/ARCHITECTURE_LEGACY.md` §5.1 | Diferentes pré-condições de ação, parser e estado interno também podem explicar falhas. 2026-10-16: "era o `0368` pré-select" **REFUTADO** pelo responsável (pacote sai com/sem `0368`, ação sem efeito); disparo nativo `0x29→0x5a→0x2a` de `0x4dcba0` retornou `0x2a`→0 sem egress e crashou (ACT-20261016-01, [controle](GEPARD_CONTROL_PACKETS.md#mapa-dispatcher--pacote-de-ação-act-20261016-01)) |
 | A sincronização do servidor é governada pelos estados de cifragem e mensagens de controle | Modelo do servidor 2016 | IDs, transições e algoritmos do build atual não estão completamente identificados |
 | `0x8280` serve como heartbeat uaRO | `docs/HISTORY/GEPARD_LEGACY.md` §3.3; entrada 128 bytes na tabela | Papel/direção e equivalência com `0x8285` histórico pendem de evidência específica |
 

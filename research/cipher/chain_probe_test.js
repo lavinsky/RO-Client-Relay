@@ -1,7 +1,28 @@
 'use strict';
 // Synthetic doubles only. No client, Frida or network.
 const assert = require('assert');
-const {createMachine, createStopper, createRotatingBreakpoint, inspectPredecessorGraph, createClMachine} = require('./chain_probe.js');
+const {createMachine, createStopper, createRotatingBreakpoint, inspectPredecessorGraph, createClMachine, createStackCopyMachine,decodeSwapCandidate,createSwapDecoder} = require('./chain_probe.js');
+{
+    function stackFixture(source=0x3000,badSite=null) {
+        const memory=new DataView(new ArrayBuffer(0x6000));let reason=null;
+        const write=(a,v)=>memory.setUint32(a,v,true),read=a=>memory.getUint32(a,true);
+        write(source,0x11223344);write(0x2000,0x55667788);
+        const machine=createStackCopyMachine({read32:read,mapping:a=>({base:Math.floor(a/4096)*4096,size:4096}),stop:r=>{reason=r;}});
+        const c={thread:7,sp:0x4800,frame:0x1fca,esi:source,edx:0x2000};
+        machine.observe(0,c);const input=read(source);write(0x47fc,input);c.sp-=4;
+        machine.observe(badSite===1?2:1,c);write(0x47f8,read(0x2000));c.sp-=4;
+        machine.observe(2,c);write(source,read(c.sp));c.sp+=4;
+        machine.observe(3,c);write(0x2000,read(c.sp));c.sp+=4;
+        machine.observe(4,c);return {row:machine.current(),reason};
+    }
+    for(const source of [0x3000,0x2000,0x2001]) {
+        const {row,reason}=stackFixture(source);assert.equal(reason,null);assert(row.complete);
+        assert(Object.values(row.comparisons).every(Boolean));assert.equal(row.same_address,source===0x2000);
+    }
+    const lost=stackFixture(0x3000,1);assert.equal(lost.reason,'stack_prefix_discontinuity');assert(!lost.row.complete);
+    const aliasStack=stackFixture(0x47fc);assert(aliasStack.row.complete);
+    assert(!aliasStack.row.comparisons.remaining_stack_slot_preserved && !aliasStack.row.comparisons.original_source_reaches_destination);
+}
 {
     const result = inspectPredecessorGraph({now: () => 0, parse: rva => {
         if (rva === 99) return {rva, next_rva: 100, mnemonic: 'mov'};
@@ -122,11 +143,33 @@ process.stdout.write('CHAIN SYNTHETIC PASS: order, effective source, post-store,
 
 // Exercise the actual RPC/timer wrapper with synthetic Frida doubles, too.
 // This proves bounded control flow in the double, not client safety.
+{
+    const code=['push dword ptr [edi]','push dword ptr [eax]','pop dword ptr [edi]'];
+    const io={parse:rva=>({instruction:code[(rva-0x100)/2],next_rva:rva+2}),register:n=>n==='edi'?0x2040:0x2000};
+    const result=decodeSwapCandidate(io,{rva:0x106,instruction:'pop dword ptr [eax]'});
+    assert(result && !result.executed_path_proven && result.source_address===0x2040 && result.first_pop_rva===0x104);
+    assert.equal(decodeSwapCandidate(io,{rva:0x106,instruction:'pop dword ptr [esp]'}),null);
+    code[1]='push dword ptr [ebx]';assert.equal(decodeSwapCandidate(io,{rva:0x106,instruction:'pop dword ptr [eax]'}),null);
+}
+{
+    let signature='first',parses=0;
+    const texts=['push dword ptr [edi]','push dword ptr [eax]','pop dword ptr [edi]'];
+    const decoder=createSwapDecoder({fingerprint:()=>signature,parse:rva=>{parses++;return {instruction:texts[(rva-0x100)/2],next_rva:rva+2};},register:(n,c)=>c[n]});
+    const final={rva:0x106,instruction:'pop dword ptr [eax]'};
+    assert.equal(decoder.decode(final,{edi:0x2040,eax:0x2000}).source_address,0x2040);
+    const count=parses;
+    assert.equal(decoder.decode(final,{edi:0x2080,eax:0x2000}).source_address,0x2080);assert.equal(parses,count);
+    signature='changed';texts[1]='push dword ptr [ebx]';assert.equal(decoder.decode(final,{edi:0x2080,eax:0x2000}),null);assert(parses>count);
+}
 const vm = require('vm'), fs = require('fs');
-function runtime(failFollow, mechanism = 'stalker', noHit = false, writeCap = 64, producerOnly = false, eventCap = 1000, writeKind = 'mov') {
-    const messages = [], timers = [], callouts = [];
+function runtime(failFollow, mechanism = 'stalker', noHit = false, writeCap = 64, producerOnly = false, eventCap = 1000, writeKind = 'mov', relative = false, stackPrefix = false, producerRegister = 'edx', producerHit = 1, repeatProducer = false, lineage = false, deferred = false, upstreamOnly = false, third = false) {
+    const messages = [], timers = [], callouts = [], immediates=[];
+    let consumerArmed=null,sourceWatched=false,extraWatched=false,extraByte=0x99;
+    const prefixSourceAddress=lineage?0x200a:0x3200;
     let unfollow = 0, flush = 0, handler = null, armed = null, unsets = 0, written = 0x66, watched = false;
     let sourceWord = 0x11223344;
+    let prefixSourceWord=0x55667788,stackOlder=0x55667788,stackNewer=0x11223344;
+    const clFrame=relative?(upstreamOnly?0x1fc0:0x1fca):0x3000;
     function pointer(value) {
         return {value, add: n => pointer(value + n), sub: n => pointer(value - (n.value === undefined ? n : n.value)),
             compare: p => Math.sign(value - p.value),
@@ -134,10 +177,12 @@ function runtime(failFollow, mechanism = 'stalker', noHit = false, writeCap = 64
             toUInt32: () => value,
             readU16: () => {if(value===0x1000)return 0x5a4d;if(value===0x1098)return 0x10b;throw Error('unexpected synthetic header');},
             readU32: () => {if(value===0x103c)return 0x80;if(value===0x1080)return 0x4550;if(value===0x10d0)return 0x300000;
-                if(value === 0x47fc)return 0x55667788;
+                if(value === 0x47fc)return stackOlder;
+                if(value === 0x47f8)return stackNewer;
+                if(value === prefixSourceAddress)return prefixSourceWord;
                 if(value === 0x2000) return sourceWord;
                 if(value === 0x3100) return 0x4002; throw Error('unexpected synthetic read');},
-            readU8: () => written};
+            readU8: () => value===0x201a && third ? extraByte : value===prefixSourceAddress && lineage ? prefixSourceWord&255 : written};
     }
     const offsets = [0x18efec, 0x18efee, 0x18eff0, 0x18eff2, 0x18eff4];
     const expected = ['mov ebx, dword ptr [ebx]', 'add ecx, ebp', 'mov ecx, dword ptr [ecx]',
@@ -149,13 +194,15 @@ function runtime(failFollow, mechanism = 'stalker', noHit = false, writeCap = 64
     const stackRange = {base: pointer(0x4000), size: 4096, protection: 'rw-'};
     const valueRange = {base: pointer(0x8000), size: 4096, protection: 'rwx'};
     const thread = {id: 7, context: {esp: pointer(0x4800)},
-        setHardwareBreakpoint: (slot, address) => {assert.equal(slot, 0); armed = address;
+        setHardwareBreakpoint: (slot, address) => {if(slot===2){consumerArmed=address;return;}assert.equal(slot, 0); armed = address;
             if (failFollow) throw Error('synthetic arm failure');},
-        unsetHardwareBreakpoint: slot => {assert.equal(slot, 0); armed = null; unsets++;},
+        unsetHardwareBreakpoint: slot => {if(slot===2){consumerArmed=null;return;}assert.equal(slot, 0); armed = null; unsets++;},
         setHardwareWatchpoint: (slot, address, size, access) => {
+            if(slot===2){assert.equal(address.value,0x201a);assert.equal(size,1);assert.equal(access,'w');extraWatched=true;return;}
+            if(slot===3){assert.equal(address.value,0x200a);assert.equal(size,1);assert.equal(access,'w');sourceWatched=true;return;}
             assert.equal(slot, 1); assert.equal(address.value, mechanism.startsWith('byte-') ? 0x8000 : 0x2000); assert.equal(size, 1);
-            assert.equal(access, 'w'); watched = true;},
-        unsetHardwareWatchpoint: slot => {assert.equal(slot, 1); watched = false;}};
+            assert.equal(access, 'w'); watched = true;if(noHit==='watch-arm-error')throw Error('synthetic watch arm failure');},
+        unsetHardwareWatchpoint: slot => {if(slot===2){extraWatched=false;return;}if(slot===3){sourceWatched=false;return;}assert.equal(slot, 1); watched = false;}};
     const writerInstruction = {address: pointer(0x7000), next: pointer(0x7002), mnemonic: writeKind,
         operands: [{type: 'mem', size: writeKind === 'add' ? 1 : 4, value: {base: 'ebx'}}, {type: 'reg', value: 'ecx'}],
         toString: () => writeKind === 'add' ? 'add byte ptr [ebx], al' : writeKind+' dword ptr [ebx], ecx'};
@@ -167,7 +214,12 @@ function runtime(failFollow, mechanism = 'stalker', noHit = false, writeCap = 64
     const xorInstruction = {address:pointer(0xb000),next:pointer(0xb002),mnemonic:'xor',
         toString:()=>'xor dword ptr [ecx], edx'};
     const popInstruction = {address:pointer(0xc000),next:pointer(0xc002),mnemonic:'pop',
-        toString:()=>'pop dword ptr [edx]'};
+        toString:()=>'pop dword ptr ['+producerRegister+']'};
+    const prefixSourceRegister=producerRegister==='ebx'?'edi':'esi';
+    const prefixRows=[[0xaffa,'push dword ptr ['+prefixSourceRegister+']'],[0xaffc,'push dword ptr ['+producerRegister+']'],[0xaffe,'pop dword ptr ['+prefixSourceRegister+']']];
+    const prefixPath=prefixRows.map(([rva,instruction])=>({rva,next_rva:rva+2,instruction}));
+    const prefixInstructions=prefixPath.map(n=>({address:pointer(n.rva+0x1000),next:pointer(n.next_rva+0x1000),
+        mnemonic:n.instruction.split(' ')[0],toString:()=>n.instruction}));
     const loadPath = [
         [0x5fe7, 0x5fe9, 'mov al, byte ptr [eax]'], [0x5fe9, 0x5fee, 'mov esi, 0'],
         [0x5fee, 0x5ff1, 'movzx ebx, bx'], [0x5ff1, 0x5ff6, 'mov esi, 1'],
@@ -187,7 +239,7 @@ function runtime(failFollow, mechanism = 'stalker', noHit = false, writeCap = 64
         getCurrentThreadId: () => 7, setExceptionHandler: callback => {handler = callback;},
         enumerateRanges: () => [range], findRangeByAddress: p => p.value >= 0x2000 && p.value < 0x3000 ? sourceRange :
             p.value >= 0x4000 && p.value < 0x5000 ? stackRange : p.value >= 0x8000 && p.value < 0x9000 ? valueRange : range},
-        Instruction: {parse: p => [operandInstruction, byteInstruction, writerInstruction, xorInstruction, popInstruction,
+        Instruction: {parse: p => [operandInstruction, byteInstruction, writerInstruction, xorInstruction, popInstruction, ...prefixInstructions,
             ...clInstructions, ...loadInstructions, ...instructions].find(i => i.address.equals(p))},
         Stalker: {
             follow: (thread, options) => {
@@ -199,7 +251,7 @@ function runtime(failFollow, mechanism = 'stalker', noHit = false, writeCap = 64
             unfollow: () => {unfollow++;}, flush: () => {flush++;}
         }, ptr: pointer, rpc: {exports: {}}, send: value => messages.push(value),
         setTimeout: callback => {timers.push(callback); return timers.length;},
-        clearTimeout: () => {}, setImmediate: callback => callback(), Date: {now: () => 1000}};
+        clearTimeout: () => {}, setImmediate: callback => {if(deferred)immediates.push(callback);else callback();}, Date: {now: () => 1000}};
     vm.runInNewContext(fs.readFileSync(__dirname + '/chain_probe.js', 'utf8')
         .replace('__CONFIG__', JSON.stringify({pid: 7, window_ms: 500, event_cap: eventCap,
             bytes_cap: 262144, mechanism, arm_timeout_ms: 10000, selection: 'any-chain', write_cap: writeCap,
@@ -208,8 +260,14 @@ function runtime(failFollow, mechanism = 'stalker', noHit = false, writeCap = 64
             load_path: loadPath,
             cl_path: clPath,
             cl_transform:{rva:0xa000,next_rva:0xa002,instruction:'xor dword ptr [ecx], edx'},
-            cl_producer:{rva:0xb000,next_rva:0xb002,instruction:'pop dword ptr [edx]'},
-            cl_watch: {address:0x2000,mapping:{base:'0x2000',size:4096,protection:'rw-',file_backed:false}},
+            cl_producer:{rva:0xb000,next_rva:0xb002,instruction:'pop dword ptr ['+producerRegister+']',destination_register:producerRegister},
+            cl_watch: relative?undefined:{address:0x2000,mapping:{base:'0x2000',size:4096,protection:'rw-',file_backed:false}},
+            cl_source_relative:relative?{register:'ebp',offset:upstreamOnly?0x40:0x36,historical_reference_only:true,source_session_reused:false,upstream_operand_reference:upstreamOnly}:undefined,
+            cl_stack_prefix:stackPrefix?prefixPath:undefined,
+            cl_extra_source:third?{register:'ebp',offset:0x50,runtime_reused:false}:undefined,
+            cl_lineage_source:lineage?{register:'ebp',offset:0x40,runtime_reused:false}:undefined,
+            cl_stack_source_register:prefixSourceRegister,cl_producer_hit:producerHit,cl_producer_repeat:repeatProducer,
+            cl_producer_track_intervening: noHit==='producer-overwrite-retain',cl_upstream_only:upstreamOnly,
             value_watch: {address: 0x8000, mapping: {base: '0x8000', size: 4096, protection: 'rwx', file_backed: false}},
             byte_producer: {rva: 0x8000, next_rva: 0x8002},
             source_watch: {address: 0x2000, frame: 0x3000,
@@ -217,7 +275,20 @@ function runtime(failFollow, mechanism = 'stalker', noHit = false, writeCap = 64
     context.rpc.exports.start();
     if (['cl-origin','cl-writer','cl-transform','cl-producer'].includes(mechanism)) {
         if (!failFollow) {
-            if (noHit === 'writeburst') {
+            if (['wrong-relative','stack-relative','watch-arm-error','producer-overwrite','producer-overwrite-retain'].includes(noHit)) {
+                const c={ecx:pointer(0x2000),edx:pointer(noHit==='stack-relative'?0x4800:noHit==='wrong-relative'?0x2004:0x2000),
+                    esp:pointer(0x47fc),ebp:pointer(noHit==='stack-relative'?0x47ca:clFrame)};
+                assert(handler({type:'breakpoint',context:{...c,pc:armed}}));
+                if(noHit==='wrong-relative'){assert(!watched);timers[0]();}
+                if(['producer-overwrite','producer-overwrite-retain'].includes(noHit)) {
+                    sourceWord=0x55667788;written=sourceWord&255;c.esp=pointer(0x4800);
+                    assert(handler({type:'breakpoint',context:{...c,pc:armed}}));
+                    written^=1;sourceWord^=1;
+                    assert(handler({type:'single-step',context:{pc:writerInstruction.next,ebx:pointer(0x2000),ebp:pointer(clFrame)}}));
+                    assert(handler({type:'breakpoint',context:{...c,esi:pointer(0x3100),ecx:pointer(0x2000),pc:armed}}));
+                    if(noHit==='producer-overwrite-retain')timers[0]();
+                }
+            } else if (noHit === 'writeburst') {
                 for(let i=0;i<writeCap;i++) assert(handler({type:'single-step',context:{pc:writerInstruction.next,
                     ebx:pointer(0x2000),ebp:pointer(0x3000)}}));
             } else if (noHit) {
@@ -227,9 +298,28 @@ function runtime(failFollow, mechanism = 'stalker', noHit = false, writeCap = 64
             } else if (eventCap === 1) {
                 assert(handler({type:'breakpoint',context:{pc:armed,ecx:pointer(0x2000)}}));
             } else {
-                if (['cl-transform','cl-producer'].includes(mechanism)) {
+                if(stackPrefix) {
+                  for(let cycle=0;cycle<(repeatProducer && !third?2:1);cycle++){
+                    const c={ecx:pointer(0),edx:pointer(0x2000),esi:pointer(0x3200),esp:pointer(0x4800),ebp:pointer(clFrame)};
+                    c[prefixSourceRegister]=pointer(prefixSourceAddress);
+                    if(lineage && cycle===1){
+                        prefixSourceWord=0xaabbccdd;
+                        assert(handler({type:'single-step',context:{pc:writerInstruction.next,ebx:pointer(prefixSourceAddress),ebp:pointer(clFrame)}}));
+                    }c[producerRegister]=pointer(0x2000);
+                    for(let h=1;cycle===0 && h<producerHit;h++){assert(handler({type:'breakpoint',context:{...c,pc:armed}}));assert(!watched);}
+                    assert(handler({type:'breakpoint',context:{...c,pc:armed}}));
+                    stackOlder=prefixSourceWord;c.esp=pointer(0x47fc);
+                    assert(handler({type:'breakpoint',context:{...c,pc:armed}}));
+                    stackNewer=sourceWord;c.esp=pointer(0x47f8);
+                    assert(handler({type:'breakpoint',context:{...c,pc:armed}}));
+                    prefixSourceWord=stackNewer;c.esp=pointer(0x47fc);
+                    assert(handler({type:'breakpoint',context:{...c,pc:armed}}));
+                    sourceWord=stackOlder;written=sourceWord&255;c.esp=pointer(0x4800);
+                    assert(handler({type:'breakpoint',context:{...c,pc:armed}}));
+                  }
+                } else if (['cl-transform','cl-producer'].includes(mechanism)) {
                     const pop=mechanism==='cl-producer', ins=pop?popInstruction:xorInstruction;
-                    const c = {ecx:pointer(0x2000),edx:pointer(pop?0x2000:0x01020304),esp:pointer(pop?0x47fc:0x4800),ebp:pointer(0x3000)};
+                    const c = {ebx:pointer(0x2000),ecx:pointer(0x2000),edx:pointer(pop?0x2000:0x01020304),esp:pointer(pop?0x47fc:0x4800),ebp:pointer(clFrame)};
                     assert(armed.equals(ins.address));
                     assert(handler({type:'breakpoint',context:{...c,pc:armed}}));
                     sourceWord=pop?0x55667788:(sourceWord^0x01020304)>>>0; written=sourceWord&255;
@@ -242,18 +332,35 @@ function runtime(failFollow, mechanism = 'stalker', noHit = false, writeCap = 64
                     assert(handler({type:'single-step',context:{pc:writerInstruction.next,
                         ebx:pointer(0x2000),ebp:pointer(0x3000)}}));
                 }
-                if (writeCap > 1) clInstructions.forEach((ins,i) => {
-                assert(armed.equals(ins.address));
+                if(third){extraByte=0x77;assert(handler({type:'single-step',context:{pc:writerInstruction.next,ebx:pointer(0x201a),ebp:pointer(clFrame)}}));}
+                if (writeCap > 1 && !upstreamOnly) clInstructions.forEach((ins,i) => {
+                const activePc=repeatProducer && !third && i===0?consumerArmed:armed;
+                assert(activePc.equals(ins.address));
                 if (i === 12) written = sourceWord&255;
-                assert(handler({type:'breakpoint',context:{pc:armed,esp:pointer(0x4800),ebp:pointer(0x3000),
+                assert(handler({type:'breakpoint',context:{pc:activePc,esp:pointer(0x4800),ebp:pointer(clFrame),
                     ecx:pointer(i === 0 ? 0x2000 : sourceWord),esi:pointer(i <= 9 ? 0x3100 : 0x4002)}}));
                 });
             }
         }
+        if(deferred){
+            assert(armed===null && !watched && !sourceWatched && !extraWatched && consumerArmed===null);
+            assert(!messages.some(e=>e.tag==='DONE'));
+            immediates.forEach(callback=>callback());
+        }
         const end = messages.find(e => e.tag === 'DONE');
-        assert.equal(end.reason, failFollow ? 'cl_probe_error' : noHit === 'writeburst' ? 'write_limit' : noHit ? 'timeout' : eventCap === 1 ? 'event_limit' : writeCap === 1 ? 'write_limit' : 'cl_origin_observed');
-        assert(end.cleanup.ok && armed === null && handler === null && !watched);
-        if (!failFollow && !noHit && writeCap > 1 && eventCap > 1) {
+        assert.equal(end.reason, upstreamOnly?'upstream_pop_observed':failFollow || ['stack-relative','watch-arm-error'].includes(noHit) ? 'cl_probe_error' :
+            noHit==='producer-overwrite'?'transform_overwritten':noHit === 'writeburst' ? 'write_limit' : noHit ? 'timeout' :
+            eventCap === 1 ? 'event_limit' : writeCap === 1 ? 'write_limit' : 'cl_origin_observed');
+        assert(consumerArmed===null && !sourceWatched && !extraWatched);
+        if(third){assert(end.cl_extra_source_write_count===1);assert(end.cl_extra_source_writer_observations[0].byte_after===0x77);}
+        if(lineage && !third){
+            assert(end.cl_source_writer_observations.length===3);
+            assert(end.cl_stack_source.source_lineage.preceding_write.byte_after===end.cl_stack_source.source_lineage.sampled_byte);
+        }
+        if(repeatProducer)assert(end.cl_producer_occurrences.length===(third?1:2));
+        assert(end.cleanup.ok && armed === null && (handler === null || handler({type:'synthetic-unowned'}) === false) && !watched);
+        if(upstreamOnly){assert(end.cl_origin===null && end.cl_producer.complete);if(stackPrefix)assert(end.cl_stack_source.complete);}
+        if (!failFollow && !noHit && writeCap > 1 && eventCap > 1 && !upstreamOnly) {
             assert(end.cl_origin.complete && end.cl_origin.store_matches);
             if (mechanism === 'cl-writer') assert(end.cl_preceding_write.byte_after === end.cl_origin.store_byte);
             if (mechanism === 'cl-transform') {
@@ -264,9 +371,12 @@ function runtime(failFollow, mechanism = 'stalker', noHit = false, writeCap = 64
             if (mechanism==='cl-producer') {
                 assert(end.cl_producer.complete && end.cl_producer.copy_matches && end.cl_producer.post_context_matches);
                 assert(end.cl_producer.source_address===0x47fc && end.cl_origin.source_sample===end.cl_producer.after);
+                if(relative)assert(end.resolved_source.observed_in_current_hit && end.resolved_source.address===0x2000);
+                if(stackPrefix)assert(end.cl_stack_source.complete && Object.values(end.cl_stack_source.comparisons).every(Boolean));
             }
         }
         if (noHit === 'unpaired') assert(end.cl_reads_without_writer === 1 && end.cl_origin === null);
+        if(noHit==='producer-overwrite')assert(end.cl_producer.complete && end.cl_origin===null);
         if (noHit === 'writeburst') {
             assert(end.writer_counts.writes===writeCap && end.cl_writer_observations.length===writeCap-1);
             assert(JSON.stringify(messages).length<262144);
@@ -404,8 +514,26 @@ runtime(false, 'cl-transform', false, 64, false, 1);
 runtime(false, 'cl-writer', false, 64, false, 1000, 'xor');
 runtime(false, 'cl-writer', false, 64, false, 1000, 'add');
 runtime(false, 'cl-writer', 'writeburst', 256);
+runtime(false,'cl-producer','producer-overwrite-retain',64,false,1000,'mov',true);
+runtime(false,'cl-producer',false,64,false,1000,'mov',true,false,'ebx');
 runtime(false,'cl-producer');runtime(true,'cl-producer');runtime(false,'cl-producer',true);
 runtime(false,'cl-producer',false,1);runtime(false,'cl-producer',false,64,false,1);
+runtime(false,'cl-producer',false,64,false,1000,'mov',true);
+runtime(false,'cl-producer',true,64,false,1000,'mov',true);
+runtime(true,'cl-producer',false,64,false,1000,'mov',true);
+for(const scenario of ['wrong-relative','stack-relative','watch-arm-error','producer-overwrite'])
+    runtime(false,'cl-producer',scenario,64,false,1000,'mov',true);
+runtime(false,'cl-producer',false,64,false,1000,'mov',true,true,'eax',1,false,false,true,true);
+runtime(false,'cl-producer',false,64,false,1000,'mov',true,false,'ebx',1,false,false,true,true);
+runtime(false,'cl-producer',false,64,false,1000,'mov',true,true,'ebx',4,true,true,true,false,true);
+runtime(false,'cl-producer',false,64,false,1000,'mov',true,true,'ebx',4,true,true,true);
+runtime(false,'cl-producer',false,64,false,1000,'mov',true,true,'ebx',1,true,true,true);
+runtime(false,'cl-producer',false,64,false,1000,'mov',true,true,'ebx',1,true,true);
+runtime(false,'cl-producer',false,64,false,1000,'mov',true,true,'ebx',1,true);
+runtime(false,'cl-producer',false,64,false,1000,'mov',true,true,'ebx',2);
+runtime(false,'cl-producer',false,64,false,1000,'mov',true,true);
+runtime(false,'cl-producer',true,64,false,1000,'mov',true,true);
+runtime(true,'cl-producer',false,64,false,1000,'mov',true,true);
 {
     let fail = true;
     const rotating = createRotatingBreakpoint({set: () => {}, unset: () => {if(fail) throw Error('synthetic');}});

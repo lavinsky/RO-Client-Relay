@@ -47,6 +47,37 @@ VENV=/caminho/do/venv ./run.sh
 
 A precedência declarada é **defaults internos CLI → `relay_capture.conf` → argumentos CLI**. O arquivo INI usa `[capture]`; `--config ARQUIVO` aponta alternativa. O driver encerra ao receber EOF no stdin; `run.sh` mantém stdin aberto. Encerramento normal por Ctrl-C/SIGTERM, liberando a instrumentação; evitar kill abrupto enquanto registradores de depuração permanecerem armados.
 
+## Flags de pesquisa do CLI (fora da config; exigem autorização para uso live)
+
+Estas flags **não** estão em `relay_capture.conf` (entram pelo CLI; `relay_capture.conf` permanece
+inalterado). Uso live contra o cliente exige escopo explicitamente aprovado — validação offline por
+padrão.
+
+| Flag | Default | Efeito |
+|---|---|---|
+| `--move-dispatch` | OFF | Roteia o `035F` (CZ_REQUEST_MOVE) do consumidor para o **dispatcher nativo de movimento do cliente** em vez do merge pré-XOR: o cliente monta/cifra/envia o próprio `035F` e o `035F` original é dropado. Usa **DR2+DR3**; requer `--no-send-watch`. Ref.: [MOVEMENT_035F_PRECONDITIONS §13.11](MOVEMENT_035F_PRECONDITIONS.md). |
+| `--move-dispatch-ptr` | `0xd473b0` | Endereço do dispatcher (hex); evita hardcode no agent. |
+| `--move-dispatch-site` | `0x4dcba0` | Fire-site de main-loop do `uaRO.exe` (hex). |
+| `--target-select` | OFF | Reativa o `0368` (seleção por GID) **antes** de ações com alvo (`0437` ataque / `0438` perícia). **Default OFF** (o cliente já emite o `0368` sozinho). A leitura de que o `0368` pré-ação bloqueava ataque/perícia foi **REFUTADA** pelo responsável em 2026-10-16: o `sendmsg` da ação sai com ou sem `0368`, e a ação continua **sem efeito** via SendPacket crua. Ligar/desligar a flag **não** resolve ataque/perícia (ver [GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md)). |
+
+**Orçamento de debug registers (x86 = 4 HW BP).** Com `--move-dispatch`, os 4 slots são:
+DR0 scramble (`--inject`) · DR1 SendPacket (`--inject-call`) · DR2 captura passiva do `this` do
+dispatcher · DR3 fire-site. Por isso **`--no-send-watch` é obrigatório** com `--move-dispatch`
+(send-watch usa os mesmos registradores).
+
+**Invocação do PoC de movimento (OBSERVADA funcionando live 2026-10-16, rodada pelo responsável):**
+
+```sh
+mkdir -p <dir-saida>
+./run.sh --inject --inject-call --move-dispatch --no-send-watch --out <dir-saida>/relay_log.jsonl
+```
+
+`--out` exige **arquivo**, não diretório (passar um diretório gera `IsADirectoryError`). O
+`--move-dispatch` **soma** ao `--inject-call` (não o substitui): sem `--inject-call`, o relay dropa
+pacotes não-`035F` do consumidor e o OpenKore não sincroniza. Sequência: relay conecta no XKore 2350
+→ andar 1× no cliente captura o `this` do dispatcher → OpenKore emite walk → `035F → native dispatch`
+→ `recv_0087 dst=destino` → cliente vivo.
+
 ## Configuração observada no checkout local
 
 | Chave | Valor em `relay_capture.conf` | Interpretação/conferência |

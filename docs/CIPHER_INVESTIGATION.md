@@ -1,5 +1,7 @@
 # Investigação da cifra uaRO/Gepard — 2026-10-15
 
+> **Integração 2026-10-16:** [entregas conferidas e limites](#integração-documental--cifra-20261016-pop-03) atualizam os checkpoints anteriores; relatos, consistência de artefatos e prova independente permanecem distintos.
+
 ## Resultado e escopo
 
 **Resultado atual: C quanto à cifra, com avanço dinâmico comprovado na cadeia de bytes.**
@@ -503,3 +505,111 @@ desconhecidos: **fluxo de chave / keystream**, **estado criptográfico** e sua e
 XOR observado dinamicamente em `+0x2689FB` (seção *Nova instância*) é uma transformação local de quatro
 bytes **não atribuída** a essa cifra final — não confundir cópia/transporte de byte nem um XOR local
 com a operação geradora do keystream. A classificação da cifra permanece **C** (não reconstruída).
+
+## Integração documental — CIFRA-20261016-POP-03
+
+**Transferência:** CIFRA liberou os quatro documentos compartilhados no
+[HANDOFF](../research/cipher/HANDOFF.md), preservado com CL-01, WRITER-02 e POP-03.
+Esta edição acrescenta a rodada; os diffs anteriores e o histórico de candidato POP
+continuam preservados. Conferência de artefatos em 2026-10-16; nenhuma coleta nova.
+
+**Pergunta discriminante:** a última escrita candidata de WRITER-02 foi realmente
+`gepard+0x1C70DC: pop dword ptr [edx]`, e seu byte chegou à carga de CL na mesma ocorrência?
+
+**OBSERVADO NO ARTEFATO:**
+`/tmp/ro-cipher-20261016T061947Z/pop-click-1/capture/chain-capture.json`,
+`DONE.cl_producer`, `DONE.cl_preceding_write` e `DONE.cl_origin`. Há pontos antes/depois
+do POP: dword de ESP igual ao valor de destino depois, EDX estável, ESP acrescido de 4,
+thread/EBP preservados. A carga `+0x1C7502` e os 13 pontos até depois de
+`+0x1C752B mov [esi],cl` seguem na mesma ocorrência. As igualdades de cópia, incremento
+ESP e byte baixo foram recalculadas sem exportar endereços ou valores privados.
+`audit_chain` retorna `POP_COPY_CONFIRMED`, `linked_to_cl_load=true` e
+`CL_LOAD_AND_STORE_CONFIRMED`. São verificações de consistência **da mesma captura**,
+não repetição independente do experimento ou autenticação externa dos instrumentos.
+
+**Cobertura:** 15 traps, uma escrita observada, 13 pontos de cadeia, 43 ms totais/12 ms
+na sequência; contadores `read_errors=0` e `discontinuities=0`, sem teto atingido.
+O watchpoint cobre um byte/uma thread: não excluir outros escritores fora da cobertura.
+A origem é resolvida no hit atual, não reutilizada como endereço de heap da sessão antiga.
+Build/revisão de instrumentos constam do handoff e dos metadados da captura; a revisão
+atual do código não é atribuída retroativamente às coletas CL-01/WRITER-02.
+
+**Erro tardio e limpeza:** a ordem registrada é `READY → DONE → SCRIPT_ERROR`, com
+`TypeError: not a function` depois do resultado. Isso também aparece no artefato
+`session2-cl-writer256-round-1` de WRITER-02. CIFRA confirmou a errata: “zero erros”
+descreve os contadores de leitura/ordem, não todos os eventos. A versão executada
+registrou apenas a descrição, sem linha/stack; chamada exata e impacto tardio continuam
+**NÃO VERIFICADOS**. O resultado local anterior não é descartado automaticamente.
+`cleanup_confirmed` e `DONE.cleanup.ok` são verdadeiros; em
+`pop-click-1/stimulus-summary.json`, `probe_cleanup_confirmed` e
+`input_daemon_cleanup_confirmed` também são verdadeiros. Segundo o esclarecimento de CIFRA, `cleanup_confirmed` é marcado pelo host após
+RPC stop, unload e detach sem exceção: é autorrelato do mesmo coletor, separado do
+`DONE`. Isso registra limpeza dos recursos próprios; não prova saúde global do processo. CIFRA relatou encerramento do
+cliente depois, em outra etapa; causa não atribuída a POP-03 por esta integração.
+
+**Estado científico:** o POP deixou de ser apenas candidato reverso nessa ocorrência;
+foi confirmada uma **cópia** e sua associação ao consumidor. O XOR de dword de C-06,
+com 17 escritas posteriores, continua sem ligação ao byte final. Origem anterior do
+operando da pilha, função criptográfica, pacote, direção, estado e inicialização seguem
+**NÃO VERIFICADOS**. O recorte PUSH/POP seguinte é proposta, não resultado incorporado.
+A cifra permanece sem vetor completo. A confirmação funcional de movimento em MOVER
+não fornece os operandos do gerador nem resolve essa lacuna.
+
+## Integração documental — CIFRA STACK-04 … SLICE-12
+
+**Fonte:** `research/cipher/HANDOFF.md` (IDs CIFRA-20261016-STACK-04 a SLICE-12) e `STATE.md`.
+Base HEAD `6c20733` com diffs locais; revisão/digest/hashes de cada execução em
+`chain-capture.json`. Raiz privada `/tmp/ro-cipher-resume-20261016/` (não versionada). Cada rodada é
+uma ocorrência em uma thread, com um byte por alvo; **não** fundir ocorrências nem instâncias
+(sessões 1–4 tiveram PIDs/heaps distintos, inventários `inventory-session{2,3,4}.json`).
+
+| ID | Pergunta | Resultado | Classificação |
+|---|---|---|---|
+| STACK-04 | PUSH/POP candidatos fornecem o operando de CL? | `+1c70d6 push [esi]; push [edx]; pop [esi]; pop [edx]`, 5 pontos/7 relações; ESI==EDX (valor volta ao mesmo endereço); POP ligado à carga e pós-store CL; 18 traps, 13 pontos CL | OBSERVADO; transporte redundante INFERIDO |
+| EARLIER-05 | `+0x13A19A pop [ebx]` fornece o valor consumido? | POP pré/pós confirmado, mas 129 escritas intermediárias impedem atribuição ao consumidor; código apareceu 6× na ocorrência | OBSERVADO local; ligação NÃO VERIFICADA |
+| SOURCE-06 | Origem de memória das trocas `+0x13A194–+0x13A19A` | operandos distintos: fonte `EBP+0x68` → destino `EBP+0x36` (fonte em mapa anônimo); 102 escritas posteriores impedem ligação causal | OBSERVADO; transporte INFERIDO |
+| REPEAT-07 | Última troca selecionada pela execução | 5 trocas; a última lê `EBP+0x57` → `EBP+0x36`; byte preservado em todas as escritas cobertas até CL | OBSERVADO (igualdade, não causalidade) |
+| LINEAGE-08 | Quem escreve `EBP+0x57`? | última escrita da fonte = operando do primeiro PUSH; decode único `+0x256889 pop dword ptr [eax]`; `lineage-manual-1` terminou em `unattributed_exception` com decode `+0x2c042f and byte ptr [edi], dl` | OBSERVADO / escritor candidato INFERIDO |
+| UPSTREAM-09 | Confirmar `+0x256889` | POP/EAX pré/pós, ESP+4, cópia para `EBP+0x57` (4 traps, 2 ms); CL não retido por desenho | OBSERVADO local |
+| SWAP-10 | Origem do POP/EAX (nova instância) | `+0x256883 push [edi]; push [eax]; pop [edi]; pop [eax]`: fonte `EBP+0x36`, destino `EBP+0x57` | OBSERVADO; ciclo 36→57→36 **não** provado (instâncias distintas) |
+| SLICE-11 | Dependências sob dois watchpoints | duas coletas pararam em 502 ms sem CL; terceira (gate no 4º hit) só READY; jogo travou e exclusividade foi comprometida por outro agente (relato do responsável) | **INVÁLIDA** para cifra/causa; limpeza pendente restrita àquela instância |
+| SLICE-12 | Plano retrospectivo com gate no 4º hit | 73 traps, 20 escritas em +0x36, 14 em +0x57, 2 trocas, 13 pontos CL; plano de 5 escritores `+1C70DC→+28E0A7→+13A19A→+256889→+256809` até fonte `EBP+0x09`, parado em `FIRST_POP_NOT_OBSERVED` | prefixo `+13A194..+13A19A` OBSERVADO; resto HIPÓTESE |
+
+**Estado científico:** a linhagem do byte de CL foi recuada por **transportes** (cópias via pilha)
+`EBP+0x09 →(hipótese) … → EBP+0x57 → EBP+0x36 → CL → +0x1C752B`. Nenhuma das etapas demonstradas é
+transformação criptográfica. O XOR local `+0x2689FB` (C-06) e o XOR imediato próximo a `+0x256889`
+continuam **candidatos estáticos** sem ligação ao byte final. Keystream, estado, inicialização,
+pacote/direção e fronteira F permanecem **DESCONHECIDOS**.
+
+**Saúde do instrumento:** `TypeError: not a function` após DONE em várias rodadas. Trocar handler
+`null` por callable e evitar RPC stop redundante **não** suprimiram o erro (mitigações REFUTADAS);
+desarmar os watchpoints antes do callback adiado foi seguido por LINEAGE-08/UPSTREAM-09/SWAP-10/
+SLICE-12 sem SCRIPT_ERROR, mas causalidade NÃO VERIFICADA e sem validação retroativa.
+`runtime_health` global segue UNVERIFIED; limpeza de recursos próprios confirmada pelo coletor
+(autorrelato), exceto SLICE-11.
+
+**Ferramentas novas:** `research/cipher/candidate_slice.py` (plano offline, sempre HIPÓTESE, até 32
+arestas; para em decode ambíguo, primeiro POP ausente, fonte não observada ou byte divergente);
+`research/cipher/debug_inventory.py`; limites de `chain_capture.py`/`chain_probe.js`: 10 s de espera,
+500 ms de sequência, 1000 traps, 256 KiB, 256 escritas por alvo, 32 trocas, sem watchpoint de stack.
+63 testes próprios em `tests/test_cipher_research.py` (PASS segundo o autor; não validam segurança em
+cliente compartilhado).
+
+**Próximo recorte (CIFRA):** observar `EBP+0x09` mantendo ligação ao consumidor, no máximo 4 DRs,
+sem ampliar a janela de 500 ms; o seletor do 4º hit é experimental, não invariante.
+
+## Valores de cifra recebidos no login — confirmação do responsável
+
+**Conhecimento confirmado pelo responsável em 2026-10-16:** no momento do login,
+valores relacionados à cifra são enviados ao cliente. **Procedência:** declaração
+direta nesta rodada documental; não foi feita captura ou reprodução independente
+para esta afirmação. A ausência de campos identificados nesta documentação não
+nega o recebimento informado.
+
+**NÃO VERIFICADO nesta integração:** ID/direção exata do pacote de protocolo,
+fronteira login/char/mapa, layout/tamanhos, se os valores constituem seeds, chaves,
+parâmetros ou outra entrada, derivação e ponto em que inicializam/alteram estado.
+Não associar automaticamente esses valores ao byte de CL/POP-03 ou ao modelo Gepard
+2016. Distinguir envio ao cliente, uso na inicialização e consumo na transformação.
+Próxima questão delimitada: qual campo recebido chega a qual consumidor/inicializador,
+com build, ordem e sessão identificados? Nenhum login/captura foi executado aqui.

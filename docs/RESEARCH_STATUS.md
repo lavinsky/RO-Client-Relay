@@ -1,5 +1,7 @@
 # RO-Client-Relay — estado atual do conhecimento técnico
 
+> **Integração 2026-10-16:** [entregas conferidas e limites](#integração-de-entregas--2026-10-16) atualizam os checkpoints anteriores; relatos, consistência de artefatos e prova independente permanecem distintos.
+
 > **Revisão documental local:** 2026-10-15, `main@524b0f05fa61872e140f98ace9e503d12356641e`. Pacote inicial baseado em `bdc2a07`, reconciliado com `2645fad`, `87245d6` e o ensaio posterior de `524b0f0`. Alterações preexistentes foram preservadas; artefatos privados/ignorados não foram abertos. **Este arquivo é o mapa; os estudos especializados contêm a evidência integral.**
 
 ## A. Estado geral — revisão 2026-10-15
@@ -8,13 +10,13 @@
 
 **OBSERVADO na implementação/documentação de operação:** o agente Frida inspeciona `recvmsg`/`sendmsg` sob Wine/Proton; o driver ordena quadros, tenta substituir corpos recebidos somente com cópias decifradas verificadas pelo cliente e oferece tráfego ao consumidor XKore 1 (`R` e `S`). Os caminhos de escrita são distintos: merge reativo no store do `0x035F` e `SendPacket` para ações da fila (`0x0437`/`0x0438`), usando o próprio cliente. A **transformação final** do `0x035F` é um **XOR in-place byte a byte** no store do scrambler (`gepard+0x18eff2`) — **FATO/OBSERVADO na implementação do relay** (`agent/relay_hook_linux.js:224-233`, `:518`; `relay/writeback.py:4-6`; `relay_capture.conf:99-111`); a geração de keystream, o estado e a inicialização **anteriores** ao XOR continuam **DESCONHECIDOS** (ver [CIPHER_INVESTIGATION](CIPHER_INVESTIGATION.md)). `relay_capture.conf` fixa intencionalmente `inject = true` e `inject-call = true`, embora defaults internos do CLI sejam outros. Fontes: [arquitetura](ARCHITECTURE.md), [operações](OPERATIONS.md), `relay/writeback.py`, `relay/wire_feed.py`, `relay/relay.py`, `agent/relay_hook_linux.js`.
 
-**Limitações:** o merge do movimento **pelo relay** é reativo, não inicia por conta própria um passo natural; chamar `0x035F` pela rotina da fila foi associado à dessincronização de cifra na sessão documentada de 2026-10-13. Existe, à parte do relay, uma **primitiva nativa de andar autônomo OBSERVADA uma única vez** (§13.10/M-11) disparada de um sítio de main-loop via HW exec BP — **contexto de disparo não-natural e ainda não reproduzido**; não eleva o relay a inicializador nem prova um mecanismo geral. A cifra atual não foi reconstruída e o comportamento suficiente para xKore 0 permanece desconhecido. Resultados do cliente, ainda que documentados com controles, são específicos do build e da janela indicada em cada evidência.
+**Limitações:** o merge do movimento **pelo relay** é reativo, não inicia por conta própria um passo natural; chamar `0x035F` pela rotina da fila foi associado à dessincronização de cifra na sessão documentada de 2026-10-13. Existe, à parte do relay, uma **primitiva nativa de andar autônomo OBSERVADA uma única vez** (§13.10/M-11) disparada de um sítio de main-loop via HW exec BP — **contexto de disparo não-natural; reproduzida na rodada 08 (nova sessão, M-13) para a sonda PE**; não eleva o relay a inicializador nem prova um mecanismo geral. A cifra atual não foi reconstruída e o comportamento suficiente para xKore 0 permanece desconhecido. Resultados do cliente, ainda que documentados com controles, são específicos do build e da janela indicada em cada evidência.
 
 ## B. Linhas de pesquisa — revisão 2026-10-15
 
 | Linha | Estado fundamentado | Fonte detalhada | Próxima dependência |
 |---|---|---|---|
-| Movimento `0x035F` | **OBSERVADO:** cadeia natural `0x11 → 0x0D → 0x5B → 0x8A` até store (= byte-store do scrambler, §13.8 — `035F` é cifrado); dependência de fase OBSERVADA (§13.9); rodada **06b** originou um `035F` autônomo ponta-a-ponta **uma vez** (retorno+envio+`recv_0087` dst=injetado+cliente vivo), em contexto de disparo não-natural e **sem reprodução** (§13.10) | [Investigação](MOVEMENT_035F_INVESTIGATION.md); [Pré-condições](MOVEMENT_035F_PRECONDITIONS.md) §§5, 13.8–13.10 | Reproduzir 06b (determinismo) e comparar com a via de relay (merge pré-XOR em `gepard+0x18eff2`); mecanismo do crash 04/05 segue HIPÓTESE; nova execução ao vivo exige direção do responsável |
+| Movimento `0x035F` | **OBSERVADO:** cadeia natural `0x11 → 0x0D → 0x5B → 0x8A` até store (= byte-store do scrambler, §13.8 — `035F` é cifrado); dependência de fase OBSERVADA (§13.9); rodada **06b** originou um `035F` autônomo ponta-a-ponta **uma vez** (retorno+envio+`recv_0087` dst=injetado+cliente vivo), em contexto de disparo não-natural, **reproduzido** na rodada 08 através de relogin (§§13.10, 13.12; M-13) | [Investigação](MOVEMENT_035F_INVESTIGATION.md); [Pré-condições](MOVEMENT_035F_PRECONDITIONS.md) §§5, 13.8–13.10 | Reproduzir o PoC relay (rodada 09) e comparar com a via de relay (merge pré-XOR em `gepard+0x18eff2`); mecanismo do crash 04/05 segue HIPÓTESE; nova execução ao vivo exige direção do responsável |
 | Cifra atual | **OBSERVADO:** origem imediata de CL até o store, XOR local independente e última escrita com byte associado ao consumidor; **NÃO VERIFICADO:** produção anterior, papel criptográfico, estado/inicialização, fronteira P/C e vetor completo | [Cifra](CIPHER_INVESTIGATION.md) §§ *Retomada após consolidação*, *Nova instância*; C-05–C-07 abaixo | Confirmar `+0x1C70DC pop [edx]` antes/depois e seguir a origem de seu operando |
 | Controle de sessão/Gepard | Tabela uaRO contém tamanhos de alguns IDs; modelo `SC_GEPARD_INIT` e `CS_GEPARD_INIT_ACK` é **histórico de 2016**, não especificação do build atual. Papel de `0x8280` é **HIPÓTESE** | [Pacotes de controle](GEPARD_CONTROL_PACKETS.md) | IDs, direção, fase, handshake, reset, cadência, transições no build atual |
 | OpenKore/relay | xKore 1 em uso como ponte; rota futura xKore 0 depende de demonstrar protocolo e estados sem o cliente | [Arquitetura](ARCHITECTURE.md); [Decisões](RESEARCH_DECISIONS.md) | Provas da cifra e controles; decisão humana sobre integração futura |
@@ -112,9 +114,26 @@ read/wineserver era a causa** dos crashes 04/05; **NÃO** eleva a "reentrância 
 callback de HW-BP ainda é contexto não-natural). **Cobertura/perda:** os HW BP foram desarmados em
 `doFire`, então o `store_035f` do scrambler **não** foi observado during_call; origem+cifra+envio ficam
 provados **funcionalmente** pelo `sendmsg` 5 B + `recv_0087` dst=injetado, não pela observação do store.
-**Lacunas:** reprodução (determinismo, 1×) e comparação com a via de relay (merge pré-XOR em
+**Lacunas:** reprodução (determinismo — **atendida para a sonda PE pela rodada 08, ver M-13**) e comparação com a via de relay (merge pré-XOR em
 `gepard+0x18eff2`). Nova execução ao vivo exige direção direta do responsável. Artefato privado em
 [RESEARCH_EVIDENCE_INDEX](RESEARCH_EVIDENCE_INDEX.md) M-11. [Pré-condições §13.10](MOVEMENT_035F_PRECONDITIONS.md).
+
+### M-12 — rodada 09: PoC do relay, `035F` do OpenKore → dispatcher nativo (MARCO de integração, cliente vivo)
+
+**OBSERVADO (live, 2026-10-16, uma única vez):** a primitiva de M-11 foi **integrada ao relay/agent
+de produção** e dirigida pelo **OpenKore de ponta a ponta**. Um `035F` do consumidor (XKore `S`) é
+decodificado e roteado para o **dispatcher nativo do cliente** (`0xd473b0`, fire-site `0x4dcba0`);
+o cliente monta/cifra o próprio `035F`, o servidor responde `recv_0087 dst = destino` e o cliente
+fica **VIVO** (4 critérios de M-11 = SIM). O `035F` original é **dropado** — o relay **não** fabrica
+corpo cifrado nem reencaminha. **Orçamento de DR 4/4** (scramble/SendPacket/captura `this`/fire-site);
+`send-watch` OFF obrigatório. **Gotcha:** `move_dispatch` soma ao `inject-call`
+(`relay/writeback.py:101-107`), não o substitui. **Classificação/limite:** a cifra **não** está
+compreendida — o relay só decide o destino e aciona o código nativo (§13.8 segue DESCONHECIDO antes
+do XOR); OBSERVADO uma vez, sem reprodução multi-sessão; `this` recapturado por sessão. Mudanças em
+**working tree, não commitadas**. [Pré-condições §13.11](MOVEMENT_035F_PRECONDITIONS.md);
+[índice M-12](RESEARCH_EVIDENCE_INDEX.md). Achado de pacotes de controle associado (ataque `0437`/
+perícia `0438` × seleção `0368`) em [GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md) —
+**posteriormente REFUTADO** como solução (ver A-01).
 
 ### C-01 — bytes efetivamente acompanhados, não cifra resolvida
 
@@ -155,7 +174,7 @@ do pacote. A associação posterior de escrita→carga está delimitada em C-07.
 | ID | Status | Favorável | Limite/rival | Experimento discriminatório (planejamento, **não executado aqui**) |
 |---|---|---|---|---|
 | M-H2 | **HIPÓTESE não isolada** — preparação de estado | Buffer compatível no trap pré-store em §13; folha isolada sem store atribuído em 6.4 | Contexto também mudou; não prova necessidade dos campos. Exclusões de §12 restritas à cobertura; consumo de global não observado | Demonstrar consumo de estado mantendo contexto comparável; proposta própria |
-| M-H3 | **PARCIALMENTE SUSTENTADA** — contexto/callsite | Dependência de fase OBSERVADA (§13.9); disparar fora do contexto `read`/wineserver (06b, §13.10) retornou+enviou+manteve o cliente vivo, enquanto no `read` onLeave travava/abortava | Causa exata do crash 04/05 ainda HIPÓTESE (reentrância Wine, não provada); callback de HW-BP é contexto não-natural; 06b não reproduzida; não isola de M-H2 | Reproduzir 06b; variar a fase/ponto e medir; comparar com a via de relay |
+| M-H3 | **PARCIALMENTE SUSTENTADA** — contexto/callsite | Dependência de fase OBSERVADA (§13.9); disparar fora do contexto `read`/wineserver (06b, §13.10) retornou+enviou+manteve o cliente vivo, enquanto no `read` onLeave travava/abortava | Causa exata do crash 04/05 ainda HIPÓTESE (reentrância Wine, não provada); callback de HW-BP é contexto não-natural; 06b reproduzida em 08 (M-13), sem variar fase/ponto; não isola de M-H2 | Reproduzir 06b; variar a fase/ponto e medir; comparar com a via de relay |
 | M-H4 | **HIPÓTESE residual** — destino/condição | Resultado negativo pode depender de regras de movimento | Destino alterado em 6.4 e ainda assim não houve store/envio | Escolher destino com ground-truth em experimento autorizado |
 | C-H1 | **NÃO VERIFICADO** — região de estado incorreta | Janela EBX histórica não foi demonstrada como estado | Cargas rastreadas são cópias, não evolução de estado | Seguir última definição de CL e efetivas leituras/escritas de estado |
 | C-H2 | **NÃO VERIFICADO** — geração antecipada | Há bytes já disponíveis a copiar | Nenhum produtor criptográfico ou fronteira de geração demonstrado | Distinguir operação geradora de transporte de byte |
@@ -173,8 +192,20 @@ do pacote. A associação posterior de escrita→carga está delimitada em C-07.
 
 ## F. Pendências e prioridades — revisão 2026-10-15
 
-1. **Movimento:** a dependência de fase/contexto está **OBSERVADA** (§13.9) e a rodada **06b** demonstrou uma origem autônoma de `035F` ponta-a-ponta **uma única vez** com o cliente vivo (§13.10/M-11). Prioridades: (a) **reproduzir 06b** para avaliar determinismo; (b) **comparar** com a via de relay validada (merge pré-XOR no store `gepard+0x18eff2`, `inject=true`/`inject-call=true`) e decidir a entrega realista; (c) o **mecanismo do crash 04/05 continua HIPÓTESE** (líder: reentrância Wine), não demonstrado. Trap pré-store não comprova pacote finalizado; o store observado é o do scrambler (§13.8). Qualquer ensaio vivo exige direção direta do responsável.
-2. **Cifra:** determinar a última definição executada de CL que alcança `gepard+0x1C752B`, sem assumir que desassembly linear antecedente seja fluxo real; depois identificar regiões de estado consumidas/modificadas. Não associar fontes de sessões distintas.
+1. **Movimento:** a dependência de fase/contexto está **OBSERVADA** (§13.9); a rodada **06b**
+   demonstrou origem autônoma de `035F` ponta-a-ponta **uma única vez** (§13.10/M-11); e a rodada
+   **09** demonstrou o **PoC do relay dirigido por OpenKore** (`035F` do consumidor → dispatcher
+   nativo → `recv_0087` dst=destino → cliente vivo), também **uma única vez** live (§13.11/M-12,
+   working tree não commitado). Prioridades: (a) **reproduzir** 06b/09 para avaliar determinismo;
+   (b) **comparar** com a via de relay validada (merge pré-XOR no store `gepard+0x18eff2`,
+   `inject=true`/`inject-call=true`) e decidir a entrega realista; (c) o **mecanismo do crash 04/05
+   continua HIPÓTESE** (líder: reentrância Wine), não demonstrado; (d) **ações com alvo** (`0437` ataque / `0438` perícia): a remoção do `0368`
+   pré-select **não** era a solução (REFUTADO pelo responsável, 2026-10-16) e o disparo nativo da
+   cadeia de cast de `0x4dcba0` foi inócuo e instável (A-01); próximo passo é RE read-only do sítio/
+   pré-condição do code `0x2a` (ver [GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md)). Trap pré-store não comprova
+   pacote finalizado; o store observado é o do scrambler (§13.8). Qualquer ensaio vivo exige direção
+   direta do responsável.
+2. **Cifra:** a linhagem do byte de CL foi recuada por transportes de pilha até `EBP+0x57`/`EBP+0x09` (C-10, STACK-04→SLICE-12), sem operação criptográfica demonstrada. Próximo: observar a fonte `EBP+0x09` mantendo a ligação ao consumidor, no máximo quatro DRs e sem ampliar a janela de 500 ms; depois identificar regiões de estado consumidas/modificadas e o vínculo com os valores recebidos no login. Não associar fontes de sessões distintas.
 3. **Protocolo:** estabelecer mensagens de inicialização/reinicialização e controle do build atual, com direção, comprimento, sequência, estado e artefatos sanitizados, antes de projetar implementação independente.
 4. **Operação:** conservar `inject = true` e `inject-call = true` na configuração; nenhuma alteração funcional ou ação externa sem aprovação humana. Toda sonda viva exige coordenação de exclusividade por colisões nos DRs/handlers.
 5. **Curadoria:** conservar a migração sanitizada em `docs/HISTORY/` e o manual em `CIPHER_TOOLS.md`; inventário, proveniência e limites da revisão local em [DOCUMENTATION_AUDIT.md](DOCUMENTATION_AUDIT.md). Não interpretar os históricos como especificação atual.
@@ -203,3 +234,103 @@ Themida/WinLicense 3.XX no executável e VMProtect na DLL, confirmados pelo resp
 arquivos da mesma build. Isso não prova virtualização de funções individuais. A correção
 local `888764a` foi preservada pelo merge. Metadados iniciais desta página identificam a
 etapa anterior de consolidação; esta nota e M-08 registram a integração posterior.
+
+## Integração de entregas — 2026-10-16
+
+**Precedência:** esta seção atualiza os checkpoints anteriores de C-07 e M-11; os
+relatos originais e os diffs da rodada 09 foram preservados. Documentador conferiu
+somente trechos citados, sem executar cliente/sondas. Propriedade recebida de CIFRA
+pelo handoff e de MOVER pela transferência confirmada pelo responsável.
+
+### C-08 — POP-03: cópia associada a CL e ao pós-store
+
+ID incorporado: **CIFRA-20261016-POP-03**, após **CIFRA-20261015-CL-01/WRITER-02**.
+O artefato permite recalcular POP antes/depois, ESP+4, EDX estável e associação ao
+byte carregado por CL, com pós-store na mesma ocorrência. 15 traps/uma escrita,
+13 pontos, sem erros de leitura/ordem reportados. **Erro pós-DONE presente**:
+`TypeError: not a function`; origem exata ainda em investigação. Limpeza própria
+registrada, sem prova de saúde global. [Detalhes e limitações](CIPHER_INVESTIGATION.md#integração-documental--cifra-20261016-pop-03).
+O próximo desconhecido é a origem anterior do operando; o POP já não é só candidato
+nessa ocorrência. XOR de C-06 não ligado ao byte final; cifra/estado/vetor não resolvidos.
+
+### M-13 — reprodução 08 e lições do contexto de disparo
+
+IDs conferidos: **MOVER-20261015-06** (06b) e **MOVER-20261016-08** (reprodução).
+Nos dois `trial.json` citados no handoff, a sequência inclui `emit_call`,
+`sendmsg` solicitado/retornado de 5 bytes durante a chamada, `emit_return` e
+`recv_0087` cujo destino coincide com o solicitado. Os dois registros informam
+`cleared=true`, RPC de limpeza bem-sucedida, sem saturação/framing errors.
+A reprodução usa nova instância/objeto/destino; a nota antiga “uma única vez, não
+reproduzida” fica superada para a **sonda PE**, não para o PoC relay da rodada 09.
+
+**Limites de decisão:** os BPs foram desarmados antes da chamada; nenhum store foi
+observado durante essas duas chamadas. Envio de 5 bytes e resposta correspondente
+sustentam funcionamento no recorte, mas não expõem corpo cifrado, operação XOR ou
+estado criptográfico. Responsividade da UI e limpeza de todos os processos são
+relatos de MOVER, não medições independentes desses JSON. O contraste com hangs
+no contexto `read` sustenta **dependência do contexto/fase**; reentrância específica
+não foi isolada. Sucesso nesse contexto não prova que outro seja causa única.
+
+### Rodada 09 e fronteira para CIFRA
+
+O [handoff do integrador](../research/HANDOFF_ORQUESTRADOR_CODEX.md),
+**ORCH-20261016-01a**, relata PoC OpenKore/relay; os hunks §13.11/M-12 foram
+preservados. As referências citam código, não um artefato vivo reproduzível; a
+classificação nesta revisão é **relato do autor**, com implementação examinável,
+sem revalidação independente de retorno/envio/resposta/saúde. São quatro DRs
+previstos no modo combinado; exclusividade e liberação exigem confirmação atual.
+A limpeza de MOVER-08 não libera automaticamente uma execução posterior do relay.
+Comentários `writeback`/`scramble` e flags são contrato operacional; a instrução
+`mov [ecx],bl` ou o uso de merge não demonstram por si só XOR nem seu gerador.
+O relato de XOR final deve permanecer separado das cargas/cópias demonstradas por
+CIFRA. Não se integra nova evidência criptográfica a partir de aceitação de movimento.
+
+### Login — valores relacionados à cifra recebidos pelo cliente
+
+Confirmado diretamente pelo responsável em 2026-10-16: no momento do login valores
+relacionados à cifra são enviados ao cliente. É conhecimento informado, sem nova
+captura independente nesta integração. Campos, pacote/fase exata, papel (seed/chave/
+parâmetro), inicialização e vínculo com CL/estado continuam por identificar.
+[Procedência e próximo discriminador](CIPHER_INVESTIGATION.md#valores-de-cifra-recebidos-no-login--confirmação-do-responsável).
+
+## Integração de entregas — 2026-10-16 (segunda passada)
+
+**Precedência:** atualiza F.1(d), F.2, M-11/M-12 e a seção "Login" acima. Fontes conferidas apenas
+nos trechos citados; nenhuma coleta viva foi executada pelo Documentador.
+
+### A-01 — dispatcher × ataque/perícia (ACT-20261016-01)
+
+**OBSERVADO (read-only, ao vivo):** mapa dispatcher `0xd473b0` → pacote: `0x11`→`035F`,
+`0x1f`→`0437` sentar/levantar, `0x28`→`0437` ataque (`3704 <GID> 07`), `0x2a`→`0438` perícia
+(`3804 0a00 0d00 <GID>`), `0x0a`→seleção de alvo. Fronteira em claro na `SendPacket` uaRO+0x816640.
+`0x28`/`0x2a` não levam argumentos no frame; cadeia de cast observada `0x29 → 0x5a → 0x2a`. Caller
+imediato sempre `gepard+0xb2c251` (shim); cadeias de chamadores além dele **RETIRADAS**.
+
+**OBSERVADO (injeção, autorizada):** replay `0x29→0x5a→0x2a` pelo fire-site `0x4dcba0` →
+`0x2a` retorna 0, nenhum `0x0438` sai, cliente crasha de forma deferida. A primitiva de movimento
+(M-11/M-13) **não transfere** para a perícia.
+
+**REFUTADO (responsável):** "`0368` pré-select bloqueava `0437`/`0438`" — o envio sempre ocorria;
+a falta de efeito é anterior. Isso supera a leitura da rodada 09b (M-12). **Em aberto:** sítio real e
+pré-condição do `0x2a` (método proposto: *validated stack scan*, read-only).
+[Detalhes](GEPARD_CONTROL_PACKETS.md#mapa-dispatcher--pacote-de-ação-act-20261016-01);
+[pré-condições §13.13](MOVEMENT_035F_PRECONDITIONS.md).
+
+### C-10 — CIFRA STACK-04 → SLICE-12: linhagem do byte de CL por transportes
+
+IDs conferidos em `research/cipher/HANDOFF.md`: STACK-04, EARLIER-05, SOURCE-06, REPEAT-07,
+LINEAGE-08, UPSTREAM-09, SWAP-10, SLICE-11, SLICE-12. **OBSERVADO** (por ocorrência, uma thread,
+bytes sob watch): trocas PUSH/PUSH/POP/POP em `+0x1C70D6` (STACK-04, ESI==EDX, transporte redundante),
+`+0x13A194..+0x13A19A` (SOURCE-06 `EBP+0x68→+0x36`; REPEAT-07 última troca `EBP+0x57→+0x36`, byte
+preservado nas escritas cobertas até CL) e `+0x256883..+0x256889` (UPSTREAM-09/SWAP-10, POP/EAX
+pré/pós). **HIPÓTESE** (SLICE-12, plano offline): cinco escritores `+1C70DC→+28E0A7→+13A19A→
++256889→+256809`, chegando à fonte `EBP+0x09`; só o prefixo `+13A194..+13A19A` foi executado na
+coleta. **Nenhuma transformação criptográfica** demonstrada; XOR local (C-06) e XOR próximo a
+`+0x256889` seguem candidatos sem ligação ao byte final.
+
+**Saúde/limites:** `TypeError: not a function` pós-DONE em várias rodadas; mitigações "callback em
+vez de null" e "sem RPC stop redundante" **REFUTADAS**; desarme antes do callback adiado foi seguido
+por coletas sem erro, causalidade NÃO VERIFICADA. SLICE-11 foi **invalidada** por perda de
+exclusividade (outro agente; relato do responsável) e deixou limpeza pendente restrita àquela
+instância. Não fundir ocorrências de instâncias diferentes.
+[Detalhes](CIPHER_INVESTIGATION.md#integração-documental--cifra-stack-04--slice-12).

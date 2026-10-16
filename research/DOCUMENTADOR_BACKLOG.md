@@ -1,3 +1,8 @@
+> **Integrado pelo Documentador (2026-10-16, segunda passada):** MOVER-20261016-08 (§13.12),
+> ACT-20261016-01 (`GEPARD_CONTROL_PACKETS.md`, §13.13, RESEARCH_STATUS A-01, índice A-01; refutação
+> do `0368` aplicada em OPERATIONS/ARCHITECTURE/DECISIONS) e CIFRA STACK-04…SLICE-12
+> (`CIPHER_INVESTIGATION.md`, RESEARCH_STATUS/índice C-10). Afirmações "06b não reproduzida" corrigidas.
+
 # Backlog do Documentador
 
 > **PARCIALMENTE INTEGRADO pelo Orquestrador (2026-10-15, commit a seguir), enquanto o Documentador

@@ -22,7 +22,7 @@ from research.cipher.core import (Dataset, EvidenceError, analyze, dataset_bytes
 from research.cipher.analyze import inspect_file, main, run
 from research.cipher.inspect_client import observe, SOURCE
 from research.cipher.chain_capture import close_owned, bounded_artifact
-from research.cipher.chain_audit import audit_chain
+from research.cipher.chain_audit import audit_chain, audit_cl_origin, audit_cl_transformation, audit_cl_producer
 
 FIXTURE = REPO / "research/cipher/fixtures/synthetic_calls.jsonl"
 
@@ -350,6 +350,85 @@ class CipherResearchTests(unittest.TestCase):
 
 
 class ChainCaptureTests(unittest.TestCase):
+    def test_pop_copy_preserves_stack_operand_and_checks_esp_change(self):
+        row=dict(rva=0x80,next_rva=0x82,address=0x2000,before=0,source_address=0x47fc,source_sample=0x55667788,
+            watched_offset=0,instruction='pop dword ptr [edx]',before_order=1,after_order=2,write_order=2,
+            context=dict(thread=7,sp=0x47fc,frame=0x3000),post_context=dict(thread=7,sp=0x4800,frame=0x3000),
+            after=0x55667788,edx_after=0x2000,copy_matches=True,post_context_matches=True,complete=True)
+        self.assertEqual(audit_cl_producer(row)['conclusion'],'POP_COPY_CONFIRMED')
+        self.assertFalse(audit_cl_producer(row)['linked_to_cl_load'])
+        for key,value in [('source_address',0x47f8),('after',0),('edx_after',0x2004),('after_order',1)]:
+            with self.subTest(key=key),self.assertRaises(EvidenceError):audit_cl_producer(dict(row,**{key:value}))
+        self.assertEqual(audit_cl_producer(dict(row,complete=False))['conclusion'],'PARTIAL_POP_OBSERVATION')
+
+    def test_local_xor_requires_before_after_order_and_context(self):
+        row=dict(rva=0x100,next_rva=0x102,address=0x2000,watched_offset=0,
+            instruction='xor dword ptr [ecx], edx',before=0x11223344,operand_edx=0x01020304,
+            after=0x10203040,before_order=1,after_order=2,write_order=2,
+            context=dict(thread=7,sp=0x4800,frame=0x3000),complete=True,
+            xor_matches=True,post_context_matches=True)
+        result=audit_cl_transformation(row)
+        self.assertEqual(result['conclusion'],'XOR_WRITE_CONFIRMED')
+        self.assertFalse(result['linked_to_cl_load']);self.assertFalse(result['state_identified'])
+        self.assertNotIn(str(row['before']),json.dumps(result))
+        self.assertEqual(audit_cl_transformation(row,False)['conclusion'],'XOR_UNVERIFIED')
+        for key,value in [('after',0),('after_order',1),('watched_offset',4),('context',None)]:
+            with self.subTest(key=key),self.assertRaises(EvidenceError):audit_cl_transformation(dict(row,**{key:value}))
+        self.assertEqual(audit_cl_transformation(dict(row,complete=False))['conclusion'],'PARTIAL_XOR_OBSERVATION')
+
+    def test_xor_to_cl_association_is_separate_and_requires_order_and_context(self):
+        cl,path=self.synthetic_cl()
+        transform=dict(rva=0x80,next_rva=0x82,address=cl['source_address'],watched_offset=0,
+            instruction='xor dword ptr [ecx], edx',before=cl['source_sample']^0x01020304,operand_edx=0x01020304,
+            after=cl['source_sample'],before_order=1,after_order=2,write_order=2,load_order=3,
+            context=dict(cl['context']),complete=True,xor_matches=True,post_context_matches=True)
+        end=dict(tag='DONE',reason='cl_origin_observed',cleanup=dict(ok=True),
+            counts=dict(visits=13,discontinuities=0,read_errors=0,unselected_chains=0),
+            cl_origin=cl,path=path,thread_id=7,occurrence=None,cl_transformation=transform,
+            cl_preceding_write=dict(order=2,thread=7,frame=0x3000,byte_after=0x44,predecessor_execution_proven=True))
+        container=dict(configuration=dict(window_ms=500,event_cap=1000,bytes_cap=262144),
+            cleanup_confirmed=True,events=[end])
+        result=audit_chain(container)
+        self.assertTrue(result['cl_transformation']['linked_to_cl_load'])
+        self.assertEqual(result['cipher_conclusion'],'NOT_TESTED')
+        transform['context']['frame']+=4
+        self.assertFalse(audit_chain(container)['cl_transformation']['linked_to_cl_load'])
+        transform['context']=dict(cl['context']);transform['load_order']=1
+        self.assertFalse(audit_chain(container)['cl_transformation']['linked_to_cl_load'])
+
+    @staticmethod
+    def synthetic_cl():
+        path=[dict(rva=0x100+i,next_rva=0x101+i,instruction='synthetic neutral') for i in range(13)]
+        path[0]['instruction']='mov ecx, dword ptr [ecx]';path[11]['instruction']='mov byte ptr [esi], cl'
+        row=dict(context=dict(thread=7,sp=0x4800,frame=0x3000),source_address=0x2000,
+            source_sample=0x11223344,loaded_value=0x11223344,sites=list(range(13)),
+            ecx_values=[0x2000]+[0x11223344]*12,complete=True,pointer_slot=0x3100,
+            pointer_sample=0x4002,pointer_loaded=0x4002,destination=0x4002,
+            store_byte=0x44,destination_before=0x66,destination_after=0x44)
+        for key in ('context_matches','load_matches','ecx_stable','pointer_load_matches',
+                    'destination_matches','store_matches','post_destination_matches'):row[key]=True
+        return row,path
+
+    def test_cl_load_and_low_byte_store_are_not_a_cipher_vector(self):
+        row,path=self.synthetic_cl();result=audit_cl_origin(row,path)
+        self.assertEqual(result['conclusion'],'CL_LOAD_AND_STORE_CONFIRMED')
+        self.assertEqual(result['cipher_role'],'UNKNOWN')
+        self.assertFalse(result['state_identified'])
+        self.assertNotIn(str(0x11223344),json.dumps(result))
+        row['complete']=False;row['sites']=row['sites'][:2];row['ecx_values']=row['ecx_values'][:2]
+        self.assertEqual(audit_cl_origin(row,path)['conclusion'],'PARTIAL_CL_PATH')
+
+    def test_cl_missing_changed_context_order_and_claims_are_rejected(self):
+        for change in ('original_address','order','sample','byte','code_gap','context'):
+            row,path=self.synthetic_cl()
+            if change=='original_address':row['source_address']+=4
+            if change=='order':row['sites'][2]=4
+            if change=='sample':row['source_sample']^=1
+            if change=='byte':row['destination_after']^=1
+            if change=='code_gap':path[1]['next_rva']+=3
+            if change=='context':row['context']=None
+            with self.subTest(change=change),self.assertRaises(EvidenceError):audit_cl_origin(row,path)
+
     @staticmethod
     def synthetic_chain():
         # Exclusively synthetic: no addresses, values or states from the client.

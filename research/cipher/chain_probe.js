@@ -80,7 +80,319 @@ function createRotatingBreakpoint(api) {
     };
 }
 
+function inspectPredecessorGraph(io, anchor) {
+    const queue = [anchor], seen = new Set(), nodes = [], began = io.now();
+    let attempts = 0;
+    while (queue.length && nodes.length < 32 && io.now() - began < 200) {
+        const target = queue.shift();
+        if (seen.has(target)) continue;
+        seen.add(target);
+        for (let size = 1; size <= 15 && nodes.length < 32 && io.now() - began < 200; size++) {
+            const rva = target - size;
+            if (anchor - rva > 64 || (io.lowerBound !== undefined && rva < io.lowerBound)) continue;
+            attempts++;
+            try {
+                const candidate = io.parse(rva);
+                if (candidate.next_rva !== target) continue;
+                nodes.push(candidate);
+                if (!/^(j|call|ret)/.test(candidate.mnemonic)) queue.push(rva);
+            } catch (_) {}
+        }
+    }
+    return {anchor_rva: anchor, nodes, attempts, limit_reached: queue.length > 0,
+        executed_path_proven: false, code_only: true};
+}
+
+function createClMachine(io, config) {
+    let record = null, done = false;
+    const counts = {visits: 0, discontinuities: 0, read_errors: 0, unselected_chains: 0};
+    function stop(reason) {done = true; io.stop(reason);}
+    function observe(site, c) {
+        if (done) return;
+        if (++counts.visits >= config.event_cap) {stop('event_limit'); return;}
+        try {
+            if (site === 0) {
+                record = {context: {thread: c.thread, sp: c.sp, frame: c.frame}, source_address: c.ecx,
+                    source_sample: io.read32(c.ecx), source_mapping: io.mapping(c.ecx),
+                    sites: [], ecx_values: [], context_matches: true, ecx_stable: true, complete: false};
+            }
+            if (record === null || site !== record.sites.length || c.thread !== record.context.thread ||
+                    c.sp !== record.context.sp || c.frame !== record.context.frame) {
+                counts.discontinuities++; stop('cl_discontinuity'); return;
+            }
+            record.sites.push(site); record.ecx_values.push(c.ecx);
+            if (site === 1) {
+                record.loaded_value = c.ecx;
+                record.load_matches = c.ecx === record.source_sample;
+            }
+            if (site > 1) record.ecx_stable = record.ecx_stable && c.ecx === record.loaded_value;
+            if (site === 9) {
+                record.pointer_slot = c.esi;
+                record.pointer_sample = io.read32(c.esi);
+            }
+            if (site === 10) {
+                record.pointer_loaded = c.esi;
+                record.pointer_load_matches = c.esi === record.pointer_sample;
+            }
+            if (site === 11) {
+                record.destination = c.esi; record.store_byte = c.ecx & 255;
+                record.destination_before = io.read8(c.esi);
+                record.destination_matches = c.esi === record.pointer_loaded;
+            }
+            if (site === 12) {
+                record.destination_after = io.read8(record.destination);
+                record.store_matches = record.destination_after === record.store_byte;
+                record.post_destination_matches = c.esi === record.destination;
+                record.complete = true; stop('cl_origin_observed');
+            }
+        } catch (_) {counts.read_errors++; stop('cl_read_error');}
+    }
+    return {observe, counts, current: () => record, stopped: () => done, stop: () => {done = true;}};
+}
+
+function runClOrigin(config) {
+    if (Process.id !== config.pid || Process.arch !== 'ia32') throw new Error('target mismatch');
+    const thread = Process.enumerateThreads().find(t => t.id === Process.id);
+    if (!thread || typeof thread.setHardwareBreakpoint !== 'function' ||
+            typeof thread.unsetHardwareBreakpoint !== 'function') throw new Error('CL thread/API unavailable');
+    let base = null;
+    Process.enumerateRanges({protection: '---', coalesce: false}).forEach(r => {
+        if (r.file && /\/gepard\.dll$/i.test(r.file.path) && (base === null || r.base.compare(base) < 0)) base = r.base;
+    });
+    if (base === null || !Array.isArray(config.cl_path) || config.cl_path.length !== 11) throw new Error('CL module/path unavailable');
+    const path = config.cl_path.slice();
+    const store = base.add(0x1c752b), storeIns = Instruction.parse(store);
+    if (storeIns.toString() !== 'mov byte ptr [esi], cl') throw new Error('CL store changed');
+    path.push({rva: 0x1c752b, next_rva: parseInt(storeIns.next.sub(base).toString(), 16), instruction: storeIns.toString()});
+    path.push({rva: path[11].next_rva, instruction: 'post-store observation'});
+    const sites = {};
+    path.forEach((node, index) => {
+        const pc = base.add(node.rva), range = Process.findRangeByAddress(pc), ins = Instruction.parse(pc);
+        if (!range || range.protection.indexOf('x') < 0 ||
+                (index < 12 && (ins.toString() !== node.instruction || !ins.next.equals(base.add(node.next_rva)) ||
+                    /^(j|call|ret)/.test(ins.mnemonic))))
+            throw new Error('CL instruction/path mismatch');
+        if (index < 12 && node.next_rva !== path[index + 1].rva) throw new Error('CL path is not contiguous');
+        sites[pc.toString()] = index;
+    });
+    function checked(address, size) {
+        const p = ptr(address), range = Process.findRangeByAddress(p);
+        if (!range || !range.protection.includes('r') || p.add(size).compare(range.base.add(range.size)) > 0)
+            throw new Error('CL read bound');
+        return p;
+    }
+    const transformMode = config.mechanism === 'cl-transform';
+    const producerMode = config.mechanism === 'cl-producer';
+    const operationMode = transformMode || producerMode;
+    const operation = transformMode ? config.cl_transform : config.cl_producer;
+    const watchMode = config.mechanism === 'cl-writer' || operationMode;
+    const stackRanges = [];
+    let producerCode = null;
+    if (operationMode) {
+        const spec = operation, pc = base.add(spec.rva), ins = Instruction.parse(pc);
+        const range = Process.findRangeByAddress(pc);
+        if (base.readU16() !== 0x5a4d) throw new Error('CL module DOS header changed');
+        const peOffset=base.add(0x3c).readU32();
+        if (peOffset>1048576 || base.add(peOffset).readU32()!==0x4550 ||
+                base.add(peOffset+24).readU16()!==0x10b) throw new Error('CL module PE header changed');
+        const imageSize=base.add(peOffset+80).readU32();
+        if (imageSize<=0 || imageSize>32*1024*1024 || spec.rva<0 || spec.next_rva>=imageSize)
+            throw new Error('CL XOR outside PE image');
+        if (!range || !range.protection.includes('x') ||
+                (range.file && !/\/gepard\.dll$/i.test(range.file.path)) ||
+                ins.toString() !== (producerMode ? 'pop dword ptr [edx]' : 'xor dword ptr [ecx], edx') ||
+                !ins.next.equals(base.add(spec.next_rva)))
+            throw new Error('CL XOR candidate changed');
+        sites[pc.toString()] = -2; sites[ins.next.toString()] = -1;
+        if (producerMode) producerCode=inspectPredecessorGraph({now:()=>Date.now(),parse:rva=>{
+            const p=base.add(rva),r=Process.findRangeByAddress(p);
+            if(!r || !r.protection.includes('x'))throw new Error('producer code not executable');
+            const i=Instruction.parse(p);return {rva,next_rva:parseInt(i.next.sub(base).toString(),16),
+                mnemonic:i.mnemonic,instruction:i.toString()};
+        }},spec.rva);
+    }
+    if (watchMode) {
+        if (typeof thread.setHardwareWatchpoint !== 'function' || typeof thread.unsetHardwareWatchpoint !== 'function')
+            throw new Error('CL watchpoint API unavailable');
+        const r = Process.findRangeByAddress(ptr(config.cl_watch.address)), old = config.cl_watch.mapping;
+        if (!r || !r.protection.includes('w') || r.base.toString() !== old.base || r.size !== old.size ||
+                r.protection !== old.protection || !!r.file !== old.file_backed) throw new Error('CL source mapping changed');
+        Process.enumerateThreads().forEach(t => {
+            if (!t.context || !t.context.esp) throw new Error('CL stack context unknown');
+            const stack = Process.findRangeByAddress(t.context.esp), a = ptr(config.cl_watch.address);
+            if (!stack || (a.compare(stack.base) >= 0 && a.compare(stack.base.add(stack.size)) < 0))
+                throw new Error('CL source may intersect stack');
+            stackRanges.push(stack);
+        });
+    }
+    let handler = false, done = false, closing = false, armedAt = null, firstHit = null, timer = null, windowTimer = null;
+    let watchOwned = false, lastWrite = null, linkedWrite = null, unattributed = null, transformation = null;
+    const writes = [], writerCounts = {traps: 0, writes: 0, ignored_loads: 0};
+    let unpairedReads = 0;
+    const rotating = createRotatingBreakpoint({set: site => thread.setHardwareBreakpoint(0,
+        base.add(site === -2 ? operation.rva : site === -1 ? operation.next_rva : path[site].rva)),
+        unset: () => thread.unsetHardwareBreakpoint(0)});
+    function stopOwned() {
+        if (watchOwned) {
+            try {thread.unsetHardwareWatchpoint(1); watchOwned = false;}
+            catch (_) {return {ok: false};}
+        }
+        const state = rotating.stop();
+        if (!state.ok) return state;
+        if (handler) {
+            try {Process.setExceptionHandler(null); handler = false;}
+            catch (_) {return {ok: false};}
+        }
+        return {ok: true};
+    }
+    function finish(reason) {
+        if (done) return;
+        done = true; machine.stop();
+        if (timer !== null) clearTimeout(timer);
+        if (windowTimer !== null) clearTimeout(windowTimer);
+        const cleanup = stopOwned();
+        send({tag: 'DONE', reason, cleanup, counts: machine.counts, cl_origin: machine.current(),
+            writer_counts: writerCounts, cl_preceding_write: linkedWrite, cl_writer_observations: writes,
+            cl_reads_without_writer: unpairedReads, unattributed_exception: unattributed,
+            cl_transformation: transformMode ? transformation : null, cl_producer: producerMode ? transformation : null,
+            other_thread_writes_observed: false,
+            occurrence: null, thread_id: thread.id, path,
+            elapsed_ms: armedAt === null ? null : Date.now() - armedAt,
+            chain_elapsed_ms: firstHit === null ? null : Date.now() - firstHit,
+            captured_state: false, transport_observed: false});
+    }
+    function requestFinish(reason) {if (done || closing) return; closing = true; setImmediate(() => finish(reason));}
+    const machine = createClMachine({read32: a => checked(a, 4).readU32(), read8: a => checked(a, 1).readU8(),
+        mapping: a => {const r = Process.findRangeByAddress(ptr(a));
+            return {base: r.base.toString(), size: r.size, protection: r.protection, file_backed: !!r.file};},
+        stop: requestFinish}, config);
+    rpc.exports = {
+        start: () => {
+            if (armedAt !== null) throw new Error('already started');
+            armedAt = Date.now(); timer = setTimeout(() => finish('timeout'), config.arm_timeout_ms);
+            try {
+                Process.setExceptionHandler(details => {
+                    const site = sites[details.context.pc.toString()];
+                    if (Process.getCurrentThreadId() !== thread.id) return false;
+                    const execution = details.type === 'breakpoint' && site !== undefined && rotating.owns(site);
+                    if (!execution && (!watchMode || !watchOwned || !['breakpoint','single-step'].includes(details.type))) return false;
+                    if (done || closing) return true;
+                    try {
+                        if (Date.now() - armedAt >= config.arm_timeout_ms) {requestFinish('timeout'); return true;}
+                        if (firstHit !== null && Date.now()-firstHit >= config.window_ms) {requestFinish('chain_timeout');return true;}
+                        writerCounts.traps++;
+                        if (writerCounts.traps >= config.event_cap) {requestFinish('event_limit'); return true;}
+                        if (execution && site === -2) {
+                            const c = details.context, address = (producerMode ? c.edx : c.ecx).toUInt32(), watched = config.cl_watch.address;
+                            if (watched < address || watched >= address + 4) {writerCounts.ignored_loads++; return true;}
+                            // Expand only to the four bytes of the instruction's proven operand.
+                            const operandRange = Process.findRangeByAddress(ptr(address));
+                            if (!operandRange || !operandRange.protection.includes('w')) throw new Error('XOR operand not writable');
+                            stackRanges.forEach(stack => {
+                                if (ptr(address).compare(stack.base.add(stack.size)) < 0 &&
+                                        ptr(address+4).compare(stack.base) > 0) throw new Error('XOR operand intersects stack');
+                            });
+                            transformation = {rva:operation.rva,next_rva:operation.next_rva,
+                                instruction:operation.instruction,address,watched_offset:watched-address,
+                                before:checked(address,4).readU32(),
+                                context:{thread:thread.id,sp:c.esp.toUInt32(),frame:c.ebp.toUInt32()},
+                                before_order:writerCounts.traps,complete:false};
+                            if(producerMode) {
+                                transformation.source_address=c.esp.toUInt32();
+                                transformation.source_sample=checked(c.esp.toUInt32(),4).readU32();
+                            } else transformation.operand_edx=c.edx.toUInt32();
+                            firstHit = Date.now(); windowTimer = setTimeout(() => finish('chain_timeout'),config.window_ms);
+                            if (!rotating.stop().ok) {requestFinish('cleanup_error');return true;}
+                            rotating.arm(-1); return true;
+                        }
+                        if (execution && site === -1) {
+                            const c = details.context, t = transformation;
+                            if (!t) throw new Error('XOR pre-observation absent');
+                            t.after = checked(t.address,4).readU32();t.after_order=writerCounts.traps;
+                            t.post_context={thread:thread.id,sp:c.esp.toUInt32(),frame:c.ebp.toUInt32()};
+                            t.post_context_matches=(producerMode ? c.edx.toUInt32()===t.address &&
+                                c.esp.toUInt32()===((t.context.sp+4)>>>0) : c.ecx.toUInt32()===t.address &&
+                                c.edx.toUInt32()===t.operand_edx && c.esp.toUInt32()===t.context.sp) &&
+                                c.ebp.toUInt32()===t.context.frame;
+                            if(producerMode){t.copy_matches=t.after===t.source_sample;t.edx_after=c.edx.toUInt32();}
+                            else t.xor_matches=t.after===((t.before^t.operand_edx)>>>0);
+                            t.complete=true;t.write_order=writerCounts.traps;
+                            if (++writerCounts.writes>=config.write_cap) {requestFinish('write_limit');return true;}
+                            lastWrite={order:writerCounts.traps,byte_after:(t.after>>>(8*t.watched_offset))&255,
+                                thread:thread.id,frame:c.ebp.toUInt32(),pc_after:c.pc.toString(),
+                                candidates:[{rva:t.rva,instruction:t.instruction,effective_address:t.address,write_width:4}],
+                                predecessor_execution_proven:true};
+                            writes.push(lastWrite);t.write_order=lastWrite.order;
+                            if (!rotating.stop().ok) {requestFinish('cleanup_error');return true;}
+                            rotating.arm(0);return true;
+                        }
+                        if (!execution) {
+                            const c = details.context, decodes = [], candidates = [];
+                            for (let size = 1; size <= 15; size++) {
+                                try {
+                                    const ins = Instruction.parse(c.pc.sub(size));
+                                    if (!ins.next.equals(c.pc)) continue;
+                                    decodes.push({pc:ins.address.toString(),instruction:ins.toString()});
+                                    // Only observed writer families; reverse decoding remains a candidate.
+                                    if (!['mov','pop','xor','add'].includes(ins.mnemonic) || !ins.operands ||
+                                            ins.operands.length !== (ins.mnemonic === 'pop' ? 1 : 2) || ins.operands[0].type !== 'mem') continue;
+                                    const op = ins.operands[0], mem = op.value;
+                                    if (![1,2,4].includes(op.size) || (mem.segment && !['ds','ss'].includes(mem.segment)) ||
+                                            (ins.mnemonic === 'pop' && mem.base === 'esp')) continue;
+                                    const reg = name => !name || name === 'invalid' ? 0 : c[name].toUInt32();
+                                    const address = (reg(mem.base) + reg(mem.index) * (mem.scale || 1) + (mem.disp || 0)) >>> 0;
+                                    if (config.cl_watch.address < address || config.cl_watch.address >= address + op.size) continue;
+                                    const r = Process.findRangeByAddress(ins.address);
+                                    if (!r || !r.protection.includes('x')) continue;
+                                    candidates.push({pc:ins.address.toString(),instruction:ins.toString(),
+                                        rva:parseInt(ins.address.sub(base).toString(),16), effective_address:address,write_width:op.size});
+                                } catch (_) {}
+                            }
+                            if (!candidates.length) {
+                                unattributed = {pc_after:c.pc.toString(),exception_type:details.type,predecessor_decodes:decodes};
+                                stopOwned(); requestFinish('unattributed_exception'); return true;
+                            }
+                            if (++writerCounts.writes >= config.write_cap) {requestFinish('write_limit'); return true;}
+                            lastWrite = {order:writerCounts.traps,byte_after:checked(config.cl_watch.address,1).readU8(),
+                                thread:thread.id,frame:c.ebp.toUInt32(),pc_after:c.pc.toString(),candidates,
+                                predecessor_execution_proven:false};
+                            writes.push(lastWrite); return true;
+                        }
+                        if (watchMode && site === 0) {
+                            if (details.context.ecx.toUInt32() !== config.cl_watch.address) {writerCounts.ignored_loads++; return true;}
+                            if (lastWrite === null) {unpairedReads++; return true;}
+                            linkedWrite = lastWrite;
+                            if (operationMode && (!transformation || linkedWrite.order!==transformation.write_order)) {
+                                requestFinish('transform_overwritten');return true;
+                            }
+                            if (operationMode) transformation.load_order=writerCounts.traps;
+                        }
+                        if (firstHit === null) {firstHit = Date.now(); windowTimer = setTimeout(() => finish('chain_timeout'), config.window_ms);}
+                        if (Date.now() - firstHit >= config.window_ms) {requestFinish('chain_timeout'); return true;}
+                        const c = details.context;
+                        machine.observe(site, {thread: thread.id, sp: c.esp.toUInt32(), frame: c.ebp.toUInt32(),
+                            ecx: c.ecx.toUInt32(), esi: c.esi.toUInt32()});
+                        if (!rotating.stop().ok) {requestFinish('cleanup_error'); return true;}
+                        if (!closing) rotating.arm(site + 1);
+                    } catch (_) {requestFinish('cl_probe_error');}
+                    return true;
+                });
+                handler = true;
+                if (watchMode) {watchOwned = true;thread.setHardwareWatchpoint(1,ptr(config.cl_watch.address),1,'w');}
+                rotating.arm(operationMode ? -2 : 0);
+            } catch (_) {finish('cl_probe_error');}
+            return {started: true};
+        },
+        stop: () => {closing = true; machine.stop(); if (timer !== null) clearTimeout(timer);
+            if (windowTimer !== null) clearTimeout(windowTimer); return stopOwned();}
+    };
+    send({tag: 'READY', thread_id: thread.id, path, mechanism: 'cl-origin',
+        producer_code:producerCode,
+        window_ms: config.window_ms, event_cap: config.event_cap, bytes_cap: config.bytes_cap});
+}
+
 function runGadget(config) {
+    if (['cl-origin','cl-writer','cl-transform','cl-producer'].includes(config.mechanism)) return runClOrigin(config);
     if (Process.id !== config.pid || Process.arch !== 'ia32') throw new Error('target mismatch');
     const byteProducerMode = config.mechanism === 'byte-producer';
     const byteWriterMode = config.mechanism === 'byte-writer' || byteProducerMode;
@@ -101,6 +413,19 @@ function runGadget(config) {
         if (r.file && /\/gepard\.dll$/i.test(r.file.path) && (base === null || r.base.compare(base) < 0)) base = r.base;
     });
     if (base === null) throw new Error('module absent');
+    let clOriginCode = null;
+    if (config.inspect_cl_origin) {
+        const anchor = base.add(0x1c752b), decoded = Instruction.parse(anchor);
+        const range = Process.findRangeByAddress(anchor);
+        if (!range || range.protection.indexOf('x') < 0 || decoded.toString() !== 'mov byte ptr [esi], cl')
+            throw new Error('CL anchor changed');
+        clOriginCode = inspectPredecessorGraph({now: () => Date.now(), lowerBound: 0x1c752b - 64, parse: rva => {
+            const pc = base.add(rva), range = Process.findRangeByAddress(pc), ins = Instruction.parse(pc);
+            if (!range || range.protection.indexOf('x') < 0) throw new Error('code bound');
+            return {rva, next_rva: parseInt(ins.next.sub(base).toString(), 16),
+                instruction: ins.toString(), mnemonic: ins.mnemonic, operands: ins.operands};
+        }}, config.cl_code_anchor_rva || 0x1c752b);
+    }
     const offsets = [0x18efec, 0x18efee, 0x18eff0, 0x18eff2, 0x18eff4];
     const expected = ['mov ebx, dword ptr [ebx]', 'add ecx, ebp', 'mov ecx, dword ptr [ecx]',
                       'mov byte ptr [ecx], bl', 'mov edi, ebp'];
@@ -529,10 +854,11 @@ function runGadget(config) {
             if (chainTimer !== null) clearTimeout(chainTimer); return stopper.stop(); }
     };
     send({tag: 'READY', pid: Process.id, thread_id: thread.id, instructions,
+          cl_origin_code: clOriginCode,
           producer_code: producerCode,
           byte_producer_code: byteProducerCode,
           window_ms: config.window_ms, event_cap: config.event_cap, bytes_cap: config.bytes_cap});
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = {createMachine, createStopper, createRotatingBreakpoint};
+if (typeof module !== 'undefined' && module.exports) module.exports = {createMachine, createStopper, createRotatingBreakpoint, inspectPredecessorGraph, createClMachine};
 else runGadget(__CONFIG__);

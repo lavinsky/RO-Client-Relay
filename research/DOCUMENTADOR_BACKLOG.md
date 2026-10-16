@@ -1,5 +1,12 @@
 # Backlog do Documentador
 
+> **PARCIALMENTE INTEGRADO pelo Orquestrador (2026-10-15, commit a seguir), enquanto o Documentador
+> estava sem tokens.** JÁ FEITO: §13.8–§13.10 em `MOVEMENT_035F_PRECONDITIONS.md` (tarefas 1a, 1a-bis,
+> 1a-ter e a CORREÇÃO CRÍTICA na parte de movimento); citação do kit em `CODEX_WORKFLOW.md` (tarefa 4).
+> PENDENTE p/ o Documentador: tarefa 1b (conferir se §13.5/§13.7 foram temperadas no corpo antigo do
+> doc), tarefa 2 (CIFRA em `CIPHER_INVESTIGATION.md` — NÃO toquei, há diff concorrente), tarefa 3
+> (`RESEARCH_STATUS.md`/índice — NÃO toquei, diff concorrente), e revisar o que integrei.
+
 Fila de integração montada pelo Orquestrador. **Não é documento científico** e não
 concede autorização. Ao retomar, leia `research/COORDINATION.md` (§Entrega ao
 documentador) e as instruções de `docs/`. Classifique tudo em
@@ -80,6 +87,29 @@ assistida pelo responsável). Cliente DOWN depois.
   abort). Não escrever como mecanismo demonstrado.
 - Próxima rodada (06): discriminante = disparar **fora** do contexto do `read` (HW exec BP em sítio
   de main-loop do `uaRO.exe`, base fixa 0x400000). Aguardando relogin.
+
+### 1a-ter. §13.10 NOVA (rodada 06b) — SUCESSO ponta-a-ponta (fonte: HANDOFF:06)
+**MARCO.** Primeira origem autônoma de 035F que retorna, transmite, recebe resposta e mantém o
+cliente vivo. PID 3338296, artefato `/tmp/claude-035f-20261015-170143-round06b/trial.json`.
+- **Disparo:** dispatcher 0x11 a partir de um **sítio de main-loop do `uaRO.exe` (HW exec BP em
+  `0x4dcba0`, base fixa 0x400000)**, FORA do contexto do `read` do wineserver.
+- **Trace OBSERVADO:** `disp_captured` passivo (code120, this_ecx=0x28c7b158) → `emit_call`
+  dest[273,313] frame `[0,17,0,273,0,313,0×7]` → **`sendmsg` fd195 5 B during_call** →
+  **`emit_return` retval=215959, sem exceção** → **`recv_0087` src[273,314] dst[273,313] =
+  destino injetado** → cliente state S, vivo/estável.
+- **4 critérios:** retorno SIM / envio 5 B SIM / recv_0087 dst=destino SIM / responsivo SIM → **PASSOU.**
+- **Correção de método:** a rodada 06 não disparou por **bug de guard** (no modo `--construct-frame`
+  o capFrame é null de propósito; o guard exigia `!=null`). Corrigido. **NÃO** era slot/threading de HW BP.
+- **Classificação (respeitar o limite do MOVER):** sustenta que **o contexto read/wineserver era a
+  causa** dos crashes r04 (freeze, delay 700) e r05 (abort, delay 2000). **NÃO** escrever
+  "reentrância resolvida em geral" — o callback de HW-BP ainda é contexto não-natural.
+- **Cobertura/perda:** BPs desarmados em `doFire` → o `store_035f` do scrambler **não** foi observado
+  during_call nesta rodada; origem+cifra+envio ficam provados funcionalmente pelo `sendmsg` 5 B +
+  `recv_0087` dst=injetado (o servidor aceitou e o cliente seguiu vivo), não pela observação do store.
+- **Consequência para a §13:** existe agora uma **primitiva nativa de andar autônomo** disparável de
+  um sítio de main-loop — relevante ao objetivo xKore 0 (AGENTS.md). Falta: reprodução (determinismo)
+  e comparação com a via de relay (merge pré-XOR em `gepard+0x18eff2`). Ver §13.9/§13.8 p/ o contraste
+  de fase que levou aqui.
 
 ### 1b. Correções de conclusões fortes já pedidas pelo Orquestrador (verificar se aplicadas)
 - **§13.7:** rebaixar "Stalker/HW BP não são detectáveis" de FATO para **RELATO do responsável

@@ -47,6 +47,48 @@ def audit_chain(container):
         require(isinstance(partial, dict), 'invalid partial observations')
         if partial.get('byte_producer') is not None:
             result['independent_byte_writer'] = _byte_writer(partial['byte_producer'], clean and not limited)
+    if end.get('cl_transformation') is not None:
+        result['cl_transformation'] = audit_cl_transformation(end['cl_transformation'], clean and not limited)
+    if end.get('cl_producer') is not None:
+        result['cl_producer'] = audit_cl_producer(end['cl_producer'], clean and not limited)
+    if end.get('cl_origin') is not None:
+        result['cl_origin'] = audit_cl_origin(end['cl_origin'], end.get('path'), clean and not limited)
+        require(end['cl_origin']['context']['thread'] == uint(end.get('thread_id')), 'conflicting CL thread')
+        preceding = end.get('cl_preceding_write')
+        if preceding is not None:
+            require(isinstance(preceding, dict), 'invalid CL preceding write')
+            for key in ('order','thread','frame','byte_after'):
+                uint(preceding.get(key),255 if key == 'byte_after' else (1 << 32)-1)
+            result['cl_writer'] = {'byte_matches_loaded_low_byte': preceding['byte_after'] == (end['cl_origin']['source_sample'] & 255),
+                'same_thread':preceding['thread'] == end['cl_origin']['context']['thread'],
+                'same_frame':preceding['frame'] == end['cl_origin']['context']['frame'],
+                'predecessor_execution_proven':preceding.get('predecessor_execution_proven') is True,
+                'watched_bytes':1}
+            transform = end.get('cl_transformation')
+            if transform is not None and transform.get('complete') is True:
+                result['cl_transformation']['linked_to_cl_load'] = (
+                    result['cl_transformation']['conclusion'] == 'XOR_WRITE_CONFIRMED' and
+                    result['cl_origin']['conclusion'] == 'CL_LOAD_AND_STORE_CONFIRMED' and
+                    preceding['order'] == transform['write_order'] and
+                    uint(transform.get('load_order')) > transform['write_order'] and
+                    preceding.get('predecessor_execution_proven') is True and
+                    transform['context'] == end['cl_origin']['context'] and
+                    end['cl_origin']['source_address'] == transform['address'] + transform['watched_offset'] and
+                    preceding['byte_after'] == ((transform['after'] >> (8*transform['watched_offset'])) & 255) and
+                    result['cl_writer']['same_thread'] and result['cl_writer']['same_frame'] and
+                    result['cl_writer']['byte_matches_loaded_low_byte'])
+            producer=end.get('cl_producer')
+            if producer is not None and producer.get('complete') is True:
+                result['cl_producer']['linked_to_cl_load']=(
+                    result['cl_producer']['conclusion']=='POP_COPY_CONFIRMED' and
+                    result['cl_origin']['conclusion']=='CL_LOAD_AND_STORE_CONFIRMED' and
+                    preceding['order']==producer['write_order'] < uint(producer.get('load_order')) and
+                    preceding.get('predecessor_execution_proven') is True and
+                    end['cl_origin']['source_address']==producer['address']+producer['watched_offset'] and
+                    preceding['byte_after']==((producer['after']>>(8*producer['watched_offset']))&255) and
+                    producer['context']['thread']==preceding['thread'] and producer['context']['frame']==preceding['frame'] and
+                    result['cl_writer']['same_thread'] and result['cl_writer']['same_frame'] and
+                    result['cl_writer']['byte_matches_loaded_low_byte'])
     row = end.get('occurrence')
     if row is None:
         return result
@@ -158,3 +200,111 @@ def _byte_writer(raw, admissible):
     return {'rva': hex(raw['rva']), 'copy_matches': copied, 'context_matches': raw['context_matches'],
             'independent_copy_confirmed': copied and raw['context_matches'] and admissible,
             'paired_with_later_load': False}
+
+
+def audit_cl_producer(raw, admissible=True):
+    """Confirm the POP's single stack operand and memory destination; no stack scan."""
+    require(isinstance(raw,dict) and type(raw.get('complete')) is bool,'invalid CL POP observation')
+    for key in ('rva','next_rva','address','before','source_address','source_sample','before_order'):uint(raw.get(key))
+    uint(raw.get('watched_offset'),3)
+    require(raw.get('instruction')=='pop dword ptr [edx]' and raw['rva']<raw['next_rva']<=raw['rva']+15,
+            'unsupported CL POP instruction')
+    require(isinstance(raw.get('context'),dict),'missing POP context')
+    for key in ('thread','sp','frame'):uint(raw['context'].get(key))
+    require(raw['source_address']==raw['context']['sp'],'POP operand not preserved')
+    result={'conclusion':'PARTIAL_POP_OBSERVATION','operation':'pop dword ptr [edx]',
+        'rva':hex(raw['rva']),'operand_bytes':4,'watched_bytes':1,'cipher_role':'UNKNOWN',
+        'state_identified':False,'linked_to_cl_load':False,'other_thread_writes_observed':False}
+    if not raw['complete']:
+        result['missing']=['post-instruction memory','post-instruction ESP/EDX']
+        return result
+    for key in ('after','after_order','write_order','edx_after'):uint(raw.get(key))
+    require(isinstance(raw.get('post_context'),dict),'missing POP post-context')
+    for key in ('thread','sp','frame'):uint(raw['post_context'].get(key))
+    require(raw['before_order']<raw['after_order']==raw['write_order'],'unordered POP observation')
+    copied=raw['after']==raw['source_sample']
+    context=(raw['post_context']['thread']==raw['context']['thread'] and raw['post_context']['frame']==raw['context']['frame'] and
+             raw['post_context']['sp']==((raw['context']['sp']+4)&0xffffffff) and raw['edx_after']==raw['address'])
+    require(type(raw.get('copy_matches')) is bool and raw['copy_matches']==copied and
+            type(raw.get('post_context_matches')) is bool and raw['post_context_matches']==context,'conflicting POP comparison')
+    result.update(copy_matches=copied,context_matches=context,
+        conclusion='POP_COPY_CONFIRMED' if admissible and copied and context else 'POP_UNVERIFIED')
+    return result
+
+
+def audit_cl_transformation(raw, admissible=True):
+    """A proven local XOR is not automatically packet encryption or cipher state."""
+    require(isinstance(raw, dict) and type(raw.get('complete')) is bool, 'invalid CL transformation')
+    for key in ('rva', 'next_rva', 'address', 'before', 'operand_edx', 'before_order'):
+        uint(raw.get(key))
+    require(raw['rva'] < raw['next_rva'] <= raw['rva']+15 and
+            raw.get('instruction') == 'xor dword ptr [ecx], edx', 'unsupported CL operation')
+    uint(raw.get('watched_offset'),3)
+    require(isinstance(raw.get('context'),dict), 'missing CL operation context')
+    for key in ('thread','sp','frame'):uint(raw['context'].get(key))
+    result = {'conclusion':'PARTIAL_XOR_OBSERVATION','operation':'xor dword ptr [ecx], edx',
+              'rva':hex(raw['rva']),'operand_bytes':4,'watched_bytes':1,
+              'cipher_role':'UNKNOWN','state_identified':False,'linked_to_cl_load':False,
+              'other_thread_writes_observed':False}
+    if not raw['complete']:
+        result['missing']=['post-instruction operand','executed post-instruction point']
+        return result
+    for key in ('after','after_order','write_order'):uint(raw.get(key))
+    require(raw['before_order'] < raw['after_order'] == raw['write_order'], 'unordered XOR observation')
+    expected=raw['after']==(raw['before']^raw['operand_edx'])
+    require(type(raw.get('xor_matches')) is bool and raw['xor_matches']==expected and
+            type(raw.get('post_context_matches')) is bool, 'conflicting XOR comparison')
+    result.update(xor_matches=expected,context_matches=raw['post_context_matches'],
+                  conclusion='XOR_WRITE_CONFIRMED' if admissible and expected and raw['post_context_matches'] else 'XOR_UNVERIFIED')
+    return result
+
+
+def audit_cl_origin(raw, path, admissible=True):
+    """Recompute the observed ECX load/CL store without exporting captured values."""
+    require(isinstance(raw, dict) and isinstance(path, list) and len(path) == 13, 'invalid CL origin/path')
+    for node in path:
+        require(isinstance(node, dict), 'invalid CL path node')
+        uint(node.get('rva'))
+    for i,node in enumerate(path[:-1]):
+        require(uint(node.get('next_rva')) == path[i+1]['rva'] and node['rva'] < node['next_rva'], 'noncontiguous CL code path')
+    require(path[0].get('instruction') == 'mov ecx, dword ptr [ecx]' and
+            path[11].get('instruction') == 'mov byte ptr [esi], cl', 'unsupported CL endpoints')
+    sites, values = raw.get('sites'), raw.get('ecx_values')
+    require(isinstance(sites, list) and isinstance(values, list) and len(sites) == len(values) <= 13,
+            'invalid CL visits')
+    for site, value in zip(sites, values):
+        uint(site); uint(value)
+    require(sites == list(range(len(sites))), 'unordered CL visits')
+    require(type(raw.get('complete')) is bool and isinstance(raw.get('context'), dict), 'invalid CL completeness/context')
+    for key in ('thread', 'sp', 'frame'):
+        uint(raw['context'].get(key))
+    for key in ('source_address', 'source_sample'):
+        uint(raw.get(key))
+    require(bool(values) and values[0] == raw['source_address'], 'original ECX address not preserved')
+    result = {'conclusion': 'PARTIAL_CL_PATH', 'observed_sites': len(sites), 'cipher_role': 'UNKNOWN',
+              'definition_rva': hex(path[0]['rva']), 'store_rva': hex(path[11]['rva']),
+              'state_identified': False, 'session': 'unknown', 'direction': 'unknown'}
+    if not raw['complete']:
+        result['missing'] = ['remaining executed sites', 'completed CL store']
+        return result
+    require(len(sites) == 13, 'incomplete CL path marked complete')
+    for key in ('loaded_value', 'pointer_slot', 'pointer_sample', 'pointer_loaded', 'destination'):
+        uint(raw.get(key))
+    for key in ('store_byte', 'destination_before', 'destination_after'):
+        uint(raw.get(key), 255)
+    comparisons = {
+        'load_matches': raw['source_sample'] == raw['loaded_value'] == values[1],
+        'ecx_stable': all(v == raw['loaded_value'] for v in values[1:]),
+        'pointer_load_matches': raw['pointer_loaded'] == raw['pointer_sample'],
+        'destination_matches': raw['destination'] == raw['pointer_loaded'],
+        'store_matches': raw['destination_after'] == raw['store_byte'] == (raw['loaded_value'] & 255),
+    }
+    for key, expected in comparisons.items():
+        require(type(raw.get(key)) is bool and raw[key] == expected, 'conflicting CL comparison')
+    for key in ('context_matches', 'post_destination_matches'):
+        require(type(raw.get(key)) is bool, 'missing CL context comparison')
+        comparisons[key] = raw[key]
+    result.update(comparisons=comparisons,
+                  conclusion='CL_LOAD_AND_STORE_CONFIRMED' if admissible and all(comparisons.values()) else 'CL_PATH_UNVERIFIED',
+                  operation='dword load followed by low-byte copy')
+    return result

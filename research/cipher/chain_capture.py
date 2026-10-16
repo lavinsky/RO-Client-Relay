@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import threading
 from datetime import datetime, timezone
@@ -67,7 +68,7 @@ def main(argv=None):
     parser.add_argument('--event-cap', type=int, default=1000)
     parser.add_argument('--start-delay-ms', type=int, default=0)
     parser.add_argument('--selection', choices=('movement-header', 'any-chain'), default='movement-header')
-    parser.add_argument('--mechanism', choices=('stalker', 'breakpoint', 'writer', 'producer', 'operand', 'load', 'byte-writer', 'byte-producer'), default='stalker')
+    parser.add_argument('--mechanism', choices=('stalker', 'breakpoint', 'writer', 'producer', 'operand', 'load', 'byte-writer', 'byte-producer', 'cl-origin', 'cl-writer', 'cl-transform', 'cl-producer'), default='stalker')
     parser.add_argument('--arm-timeout-ms', type=int, default=10000)
     parser.add_argument('--source-capture', type=Path)
     parser.add_argument('--producer-capture', type=Path)
@@ -76,13 +77,23 @@ def main(argv=None):
     parser.add_argument('--value-capture', type=Path)
     parser.add_argument('--byte-producer-capture', type=Path)
     parser.add_argument('--inspect-only', action='store_true', help='code metadata only; do not arm instrumentation')
+    parser.add_argument('--inspect-cl-origin', action='store_true', help='inspect bounded candidate predecessors of the CL store')
+    parser.add_argument('--cl-code-anchor-rva', type=lambda v: int(v, 0), default=0x1c752b)
+    parser.add_argument('--cl-code-input', type=Path, action='append', default=[])
+    parser.add_argument('--cl-source-capture', type=Path)
+    parser.add_argument('--cl-writer-capture', type=Path, help='same-instance watchpoint evidence for a candidate XOR')
+    parser.add_argument('--cl-write-cap', type=int, default=64, help='CL writer limit; increases require a confirmed live scope')
     parser.add_argument('--producer-only', action='store_true', help='stop after verifying the byte writer, without pairing a later read')
     args = parser.parse_args(argv)
     require(1 <= args.window_ms <= 500 and 5 <= args.event_cap <= 1000, 'invalid collection limits')
     require(0 <= args.start_delay_ms <= 5000, 'invalid preparation delay')
     require(1 <= args.arm_timeout_ms <= 10000, 'invalid arming timeout')
     require(args.mechanism == 'stalker' or args.selection == 'any-chain', 'breakpoint requires one-shot selection')
+    require(1 <= args.cl_write_cap <= 256 and (args.cl_write_cap == 64 or args.mechanism in ('cl-writer','cl-transform','cl-producer')),
+            'invalid CL writer cap')
     require(not args.producer_only or args.mechanism == 'byte-producer', 'producer-only requires byte-producer mechanism')
+    require(not args.inspect_cl_origin or args.inspect_only, 'CL code inspection requires inspect-only')
+    require(0x1c752b - 64 <= args.cl_code_anchor_rva <= 0x1c752b, 'CL code anchor outside bounded region')
     out = private_directory(args.out)
     with open_regular(args.inventory) as inventory:
         raw = inventory.read(65537)
@@ -108,7 +119,103 @@ def main(argv=None):
     config = dict(pid=pid, window_ms=args.window_ms, event_cap=args.event_cap, bytes_cap=262144,
                   start_delay_ms=args.start_delay_ms, selection=args.selection,
                   mechanism=args.mechanism, arm_timeout_ms=args.arm_timeout_ms, inspect_only=args.inspect_only,
+                  inspect_cl_origin=args.inspect_cl_origin,
+                  cl_code_anchor_rva=args.cl_code_anchor_rva,
                   producer_only=args.producer_only)
+    if args.mechanism in ('cl-origin', 'cl-writer', 'cl-transform', 'cl-producer'):
+        require(1 <= len(args.cl_code_input) <= 4, 'CL origin requires bounded code evidence')
+        nodes, digests = {}, []
+        for code_path in args.cl_code_input:
+            with open_regular(code_path) as handle:
+                code_raw = handle.read(262145)
+            require(len(code_raw) <= 262144, 'CL evidence size limit')
+            code = parse_json(code_raw)
+            require(code.get('cleanup_confirmed') is True and code.get('build') ==
+                    {k: v['sha256'] for k, v in info['modules'].items()}, 'CL code provenance mismatch')
+            require(code.get('configuration', {}).get('pid') == pid, 'CL code from a different process')
+            readies = [e for e in code.get('events', []) if e.get('tag') == 'READY']
+            require(len(readies) == 1 and isinstance(readies[0].get('cl_origin_code'), dict), 'missing CL code graph')
+            graph = readies[0]['cl_origin_code']
+            require(graph.get('code_only') is True and graph.get('executed_path_proven') is False and
+                    isinstance(graph.get('nodes'),list) and len(graph['nodes']) <= 32, 'invalid bounded CL graph')
+            for node in graph['nodes']:
+                require(isinstance(node, dict) and type(node.get('rva')) is int and
+                        type(node.get('next_rva')) is int and isinstance(node.get('instruction'), str) and
+                        isinstance(node.get('mnemonic'),str) and bool(node['instruction'].split()) and
+                        node['instruction'].split()[0] == node['mnemonic'], 'invalid CL code node')
+                old = nodes.get(node['rva'])
+                require(old is None or (old['instruction'], old['next_rva']) == (node['instruction'], node['next_rva']),
+                        'conflicting CL code snapshots')
+                nodes[node['rva']] = node
+            digests.append(hashlib.sha256(code_raw).hexdigest())
+        current, path = 0x1c7502, []
+        while current < 0x1c752b and len(path) < 16:
+            node = nodes.get(current)
+            require(node is not None and current < node['next_rva'] <= 0x1c752b and
+                    not node.get('mnemonic', '').startswith(('j', 'call', 'ret')), 'incomplete or branching CL path')
+            path.append(dict(rva=current, next_rva=node['next_rva'], instruction=node['instruction']))
+            current = node['next_rva']
+        require(current == 0x1c752b and len(path) == 11 and
+                path[0]['instruction'] == 'mov ecx, dword ptr [ecx]', 'unsupported CL candidate path')
+        require([i for i,n in enumerate(path) if n['instruction'] == 'mov esi, dword ptr [esi]'] == [9],
+                'CL destination pointer load not identified')
+        config['cl_path'] = path
+        config['cl_code_digests'] = digests
+        if args.mechanism in ('cl-writer', 'cl-transform', 'cl-producer'):
+            require(args.cl_source_capture is not None, 'CL writer requires an observed source')
+            with open_regular(args.cl_source_capture) as handle:
+                source_raw = handle.read(262145)
+            require(len(source_raw) <= 262144, 'CL source capture size limit')
+            source_capture = parse_json(source_raw)
+            require(source_capture.get('cleanup_confirmed') is True and source_capture.get('build') ==
+                    {k:v['sha256'] for k,v in info['modules'].items()} and
+                    source_capture.get('configuration',{}).get('pid') == pid, 'CL source provenance mismatch')
+            endings = [e for e in source_capture.get('events',[]) if e.get('tag') == 'DONE']
+            require(len(endings) == 1 and endings[0].get('cleanup',{}).get('ok') is True, 'CL source cleanup unconfirmed')
+            require(endings[0].get('reason') == 'cl_origin_observed' and
+                    endings[0].get('counts',{}).get('visits') == 13, 'CL source capture incomplete')
+            from research.cipher.chain_audit import audit_cl_origin
+            source = endings[0].get('cl_origin')
+            require(audit_cl_origin(source,endings[0].get('path'))['conclusion'] == 'CL_LOAD_AND_STORE_CONFIRMED',
+                    'CL source path not confirmed')
+            config['cl_watch'] = dict(address=source['source_address'], mapping=source['source_mapping'],
+                                      source_digest=hashlib.sha256(source_raw).hexdigest())
+            config['write_cap'] = args.cl_write_cap
+            if args.mechanism in ('cl-transform','cl-producer'):
+                require(args.cl_writer_capture is not None, 'CL transformation requires writer evidence')
+                with open_regular(args.cl_writer_capture) as handle:
+                    writer_raw = handle.read(262145)
+                require(len(writer_raw) <= 262144, 'CL writer evidence size limit')
+                writer_capture = parse_json(writer_raw)
+                require(writer_capture.get('cleanup_confirmed') is True and
+                        writer_capture.get('build') == source_capture['build'] and
+                        writer_capture.get('configuration', {}).get('pid') == pid and
+                        writer_capture.get('configuration', {}).get('cl_watch') == config['cl_watch'],
+                        'CL writer provenance mismatch')
+                ends = [e for e in writer_capture.get('events', []) if e.get('tag') == 'DONE']
+                require(len(ends) == 1 and ends[0].get('cleanup', {}).get('ok') is True, 'CL writer cleanup missing')
+                if args.mechanism == 'cl-transform':
+                    require(ends[0].get('reason') == 'unattributed_exception', 'missing bounded XOR candidate')
+                    candidate = ends[0].get('unattributed_exception')
+                    require(isinstance(candidate, dict), 'missing CL writer exception')
+                    decodes = candidate.get('predecessor_decodes')
+                    instruction = 'xor dword ptr [ecx], edx'
+                else:
+                    require(ends[0].get('reason') == 'cl_origin_observed' and
+                            audit_cl_origin(ends[0].get('cl_origin'),ends[0].get('path'))['conclusion'] == 'CL_LOAD_AND_STORE_CONFIRMED',
+                            'CL writer consumer not confirmed')
+                    candidate = ends[0].get('cl_preceding_write')
+                    require(isinstance(candidate,dict) and candidate.get('byte_after') == (ends[0]['cl_origin']['source_sample']&255) and
+                            ends[0]['cl_origin']['source_address']==source['source_address'], 'CL writer association missing')
+                    decodes = candidate.get('candidates')
+                    instruction = 'pop dword ptr [edx]'
+                require(isinstance(decodes, list) and len(decodes) == 1 and isinstance(decodes[0],dict) and
+                        decodes[0].get('instruction') == instruction, 'unsupported or ambiguous CL writer candidate')
+                base = min(int(r['range'].split('-')[0], 16) for r in info['modules']['gepard.dll']['ranges'])
+                rva, next_rva = int(decodes[0]['pc'], 16)-base, int(candidate['pc_after'], 16)-base
+                require(0 <= rva < next_rva < 32*1024*1024 and next_rva-rva <= 15, 'XOR candidate outside image')
+                config['cl_transform' if args.mechanism=='cl-transform' else 'cl_producer'] = dict(
+                    rva=rva, next_rva=next_rva, instruction=instruction,evidence_digest=hashlib.sha256(writer_raw).hexdigest())
     if args.mechanism in ('writer', 'producer', 'operand', 'load', 'byte-writer', 'byte-producer'):
         require(args.source_capture is not None, 'writer requires a proven source capture')
         with open_regular(args.source_capture) as handle:
@@ -217,6 +324,16 @@ def main(argv=None):
                             config['byte_producer'] = dict(rva=rva_byte, next_rva=next_byte,
                                                           source_digest=hashlib.sha256(byte_raw).hexdigest())
     created_utc = datetime.now(timezone.utc).isoformat()
+    revision = {'head': 'unknown', 'scope_diff_sha256': 'unknown'}
+    try:
+        repo = Path(__file__).resolve().parents[2]
+        revision['head'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'],cwd=repo,timeout=2).decode().strip()
+        diff = subprocess.check_output(['git', 'diff', '--no-ext-diff', '--no-textconv', '--',
+            'research/cipher/chain_capture.py','research/cipher/chain_probe.js','research/cipher/chain_audit.py'],
+            cwd=repo,timeout=2)
+        revision['scope_diff_sha256'] = hashlib.sha256(diff).hexdigest()
+    except (OSError,subprocess.SubprocessError):
+        pass
     probe_source = Path(__file__).with_name('chain_probe.js').read_bytes()
     tool_hashes = {'chain_probe.js': hashlib.sha256(probe_source).hexdigest(),
                    'chain_capture.py': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
@@ -235,7 +352,9 @@ def main(argv=None):
             if value.get('tag') == 'DONE':
                 finished.set()
         else:
-            events.append({'tag': 'SCRIPT_ERROR'}); finished.set()
+            # Keep a bounded private diagnostic, without stack or binary payload.
+            events.append({'tag': 'SCRIPT_ERROR', 'description': str(msg.get('description', ''))[:512]})
+            finished.set()
     def interrupt(*unused):
         stopping.set(); finished.set()
     signal.signal(signal.SIGINT, interrupt)
@@ -268,6 +387,7 @@ def main(argv=None):
         result = {'events': events, 'cleanup_confirmed': cleaned, 'configuration': config,
                   'created_utc': created_utc, 'finished_utc': datetime.now(timezone.utc).isoformat(),
                   'tools_sha256': tool_hashes, 'loaded_script_sha256': hashlib.sha256(source.encode()).hexdigest(),
+                  'repository_revision':revision,
                   'build': {k: v['sha256'] for k, v in info['modules'].items()},
                   'exclusivity': 'user confirmed; no inference from driver absence'}
         if byte_limit_reached:
@@ -282,7 +402,9 @@ def main(argv=None):
             print('CLEANUP_PENDING', flush=True)
     end = next((v for v in result['events'] if v.get('tag') == 'DONE'), {})
     print(json.dumps({'reason': end.get('reason'), 'counts': end.get('counts'),
-                      'matched': end.get('occurrence') is not None, 'cleanup_confirmed': cleaned}), flush=True)
+                      'matched': end.get('occurrence') is not None,
+                      'cl_origin_complete': (end.get('cl_origin') or {}).get('complete'),
+                      'cleanup_confirmed': cleaned}), flush=True)
     return 0 if cleaned and end else 1
 
 

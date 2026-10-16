@@ -20,8 +20,9 @@ Ver a lista completa no AGENTS.md da raiz. Para a curadoria documental, use espe
 - **`ro-ops`** só como referência: os campos de `scaffold-state` (STATE/HANDOFF) definem o que os
   pesquisadores entregam; ao integrar, preserve a classificação OBSERVADO/INFERIDO/HIPÓTESE/
   NÃO VERIFICADO/REFUTADO. O kit é read-only e não autoriza nada.
-Pendência registrada em `research/DOCUMENTADOR_BACKLOG.md`: citar o kit `ro-ops` em
-`docs/CODEX_WORKFLOW.md` quando consolidar.
+Concluído (2026-10-16): o kit `ro-ops` já está citado em `docs/CODEX_WORKFLOW.md` (seção
+*Kit operacional `ro-ops` e skills*). Consolidação: o antigo `docs/DOCUMENTATION_SOURCES.md` foi
+fundido em `docs/DOCUMENTATION_AUDIT.md` §10 (redirecionamento curto mantido no caminho antigo).
 
 ### Princípio fundamental
 

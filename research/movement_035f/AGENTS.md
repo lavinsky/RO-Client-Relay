@@ -29,6 +29,14 @@ uma única vez a rodada mais recente com os artefatos e o diff atual. Não assum
 §13.5 continua sendo a última rodada: procure títulos posteriores e seu trabalho em
 curso. Não execute uma sonda só porque você a escreveu em uma sessão anterior.
 
+**Estado atual (2026-10-16):** a última evidência é a **rodada 06b** — origem autônoma de `0x035F`
+ponta-a-ponta OBSERVADA **uma única vez** com o cliente vivo, disparada de um sítio de main-loop do
+`uaRO.exe` (HW exec BP `0x4dcba0`), fora do contexto `read`/wineserver (`docs/MOVEMENT_035F_PRECONDITIONS.md`
+§13.10; evidência M-11). Isto NÃO fecha a trilha: o disparo via callback de HW-BP ainda é contexto
+não-natural, não houve reprodução, e falta a comparação com a via de relay (merge pré-XOR no store do
+scrambler `gepard+0x18eff2`). O mecanismo dos crashes das rodadas 04/05 segue HIPÓTESE (reentrância
+Wine). Qualquer nova rodada ao vivo exige direção direta do responsável.
+
 Comece cada rodada com uma pergunta e um resultado capaz de distinguir rivais.
 Declare o que permanecerá controlado e o que mudará. Use evidência da versão realmente
 executada; teste posterior de outra versão não valida retroativamente uma coleta.

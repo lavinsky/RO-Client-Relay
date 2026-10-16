@@ -614,11 +614,11 @@ MATCH; checagem em runtime de `ret 0x34` em `0xd47e61`. Artefato: `/tmp/claude-0
 ### 13.6 Próximo experimento, mais discriminante (PREPARADO; exige janela exclusiva + destino validado)
 
 > **Nota de instrumentação (§13.7, 2026-10-15).** `loop_map.py` (Stalker) e o disparo por
-> `Interceptor.attach` no `--fire-at` **continuam válidos**. Pelo **relato do responsável** (NÃO
-> VERIFICADO por instrumento; ver §13.7), a verificação de integridade do Gepard seria **byte a byte**:
-> um hook inline só a dispararia se um byte patcheado coincidir com um byte verificado (azar pontual);
-> `Stalker` e **hardware breakpoints** não foram detectados nesta pesquisa. Como premissa operacional,
-> para um único ponto sensível um HW BP de execução reduz esse risco pontual. Ver §13.7.
+> `Interceptor.attach` no `--fire-at` **continuam válidos**. A verificação de integridade do Gepard é
+> **byte a byte** (FATO, confirmado pelo responsável; comportamento canônico do relay — ver §13.7):
+> um hook inline só a dispara se um byte patcheado coincidir com um byte verificado (azar pontual =
+> INFERIDO); `Stalker` e **hardware breakpoints** não são detectáveis por ela. Para um único ponto
+> sensível, um HW BP de execução elimina esse risco pontual. Ver §13.7.
 
 Objetivo: **explicar a falha mesmo que não ande.** Uma tentativa por condição, **sem retry
 automático**. Ferramentas preparadas (não executadas): `research/movement_035f/loop_map.py`
@@ -674,27 +674,29 @@ timeout curto; limpeza idempotente de BPs/hooks; `ydotoold` encerrado; relogin a
 
 **OBSERVADO (2026-10-15).** Durante a 1ª etapa de §13.6 (eleição do ponto pós-poll), rodei um probe de
 census NOVO, `elect_firesite.py`, que colocou **10 hooks `Interceptor.attach` inline em endereços de
-código do `uaRO.exe` de uma só vez**. **RELATO do responsável (não observado por instrumento meu):**
-logo em seguida veio **"Memory integrity test failed, gepard noted"** e o processo do cliente
-(PID 3286648) **encerrou**. Nenhuma chamada nativa chegou a ser disparada. O probe só registrou
-`frames`, `hits` e backtraces dos 10 sites — **nenhum evento identificou qual byte o Gepard lê** nem
-a colisão.
+código do `uaRO.exe` de uma só vez**. Logo em seguida o responsável reportou **"Memory integrity test
+failed, gepard noted"** e o processo do cliente (PID 3286648) **encerrou**. Nenhuma chamada nativa
+chegou a ser disparada. (O probe só registrou `frames`, `hits` e backtraces dos 10 sites; não
+identificou **por instrumento** qual byte o Gepard lê.)
 
-**RELATO do responsável (NÃO VERIFICADO por instrumento nesta pesquisa).** A verificação de
-integridade do Gepard seria **byte a byte**: leria byte(s) específicos do próprio código do cliente e
-compararia com o esperado. Nesse modelo, um hook inline (`Interceptor.attach`, que reescreve bytes no
-alvo) só dispara a verificação **se um dos bytes patcheados coincidir com um byte verificado** — azar
-num site específico, **não** uma propriedade de hooks inline em geral.
-- **INFERIDO (do relato + natureza byte-a-byte informada, não observado por instrumento):** com 10
-  hooks de uma vez, um caiu num byte verificado. A única base é o relato acima; o probe não capturou
-  evento que o comprove.
-- **`Stalker` e HW breakpoints não detectados aqui (RELATO/premissa operacional; NÃO VERIFICADO em
-  geral):** o `Stalker` executa uma **cópia relocada** do código (os bytes originais permanecem
-  intactos) e HW breakpoints (DR0–DR3) **não alteram byte algum** (footprint zero) — raciocínio
-  técnico plausível (INFERIDO) que sustenta por que não dispariam uma checagem byte-a-byte, **sem**
-  prova instrumental de não-detectabilidade em geral neste build.
-- O projeto **`gepardbypass`** (GitHub) trata de verificações desse tipo (referência externa, não
-  verificada contra este build).
+**FATO (confirmado pelo responsável; comportamento canônico do relay).** A verificação de integridade
+do Gepard é **byte a byte**: lê byte(s) específicos do próprio código do cliente e compara com o
+esperado. Um hook inline (`Interceptor.attach`, que reescreve bytes no alvo) só dispara a verificação
+**se um dos bytes patcheados coincidir com um byte verificado** — azar num site específico, **não**
+uma propriedade de hooks inline em geral. Isto está consolidado no caminho de **produção** do relay:
+o merge do 035f usa um **breakpoint de EXECUÇÃO em registrador de depuração (DR0)** sobre o store do
+scrambler e roda no cliente do responsável sem disparar o check — ver a função de scramble em
+`agent/relay_hook_linux.js:224-233` e `:518`, `relay/writeback.py:4-6`, e `relay_capture.conf:99-111`
+(`scramble-bp=18eff2`). Memória do projeto: [[gepard-integrity-check-bytes]].
+- **INFERIDO:** com 10 hooks de uma vez, um caiu num byte verificado. O instrumento não identificou o
+  byte; a base direta é o relato + a natureza byte-a-byte canônica.
+- **`Stalker` NÃO é detectável** por esse check: executa uma **cópia relocada** do código, deixando os
+  bytes originais intactos (o checksum do original passa).
+- **Hardware breakpoints (DR0–DR3) NÃO alteram byte algum** (footprint zero) e são o mecanismo do
+  próprio merge de produção. **Caveat de código:** o comentário em `agent/relay_hook_linux.js:232`
+  registra que um registrador de depuração "may be detected" em geral — por isso o uso fica restrito
+  ao cliente do responsável; na prática o caminho DR0 do merge não dispara a checagem byte-a-byte.
+- O projeto **`gepardbypass`** (GitHub) trata de verificações desse tipo (referência externa).
 
 **Não detectado (contraste).** O ensaio estabelecido `dispatcher_trial13.py` (§13.5) rodou **sem**
 flag: observa por `th.setHardwareBreakpoint` (HW BP, sem patch) e só faz `Interceptor.attach` em
@@ -728,9 +730,13 @@ como "texto claro" está **REFUTADA**. O que as sondas de movimento chamam `stor
 O cliente monta o 035F em `scramble-range=2632000-2730000`, cifra ali e envia. Isso **liga** o
 `store_035f` desta investigação ao scrambler estudado em `CIPHER_INVESTIGATION.md`.
 
-**VALIDADO (relay, `relay/writeback.py`, `relay/sendwatch.py`).** A injeção de andar pelo relay =
-substituir o corpo **antes do XOR** nesse store (BP exec DR0), deixando o cliente cifrar+enviar — é
-o caminho conhecido-correto do merge reativo (`inject=true`/`inject-call=true`).
+**VALIDADO (relay, `relay/writeback.py:4-6`, `relay/sendwatch.py`; função de scramble do agente em
+`agent/relay_hook_linux.js:224-233` e `:518`).** A injeção de andar pelo relay = substituir o corpo
+**antes do XOR** nesse store (BP exec DR0), deixando o cliente cifrar+enviar — é o caminho
+conhecido-correto do merge reativo (`inject=true`/`inject-call=true`). A transformação FINAL do 035F
+é um **XOR in-place byte a byte** (FATO/OBSERVADO na implementação do relay); as operações que
+**antecedem** o XOR (fluxo de chave, estado, inicialização) continuam essencialmente **DESCONHECIDAS**
+(ver `CIPHER_INVESTIGATION.md`).
 
 ### 13.9 Rodada 04/05 — dependência de fase de execução (OBSERVADO)
 

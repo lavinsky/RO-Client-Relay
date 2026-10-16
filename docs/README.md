@@ -36,8 +36,9 @@ ficam em `HISTORY/`; os caminhos anteriores na raiz redirecionam para esta docum
   mapas, ABI, sondas, resultados e cautelas. Consulte para proveniência, com precedência do estado atual.
 - [HISTORY/GEPARD_LEGACY.md](HISTORY/GEPARD_LEGACY.md): modelo 2016, constantes, offsets,
   hipóteses antigas e candidatos de perícia. Sanitizado; não é especificação do build atual.
-- [DOCUMENTATION_SOURCES.md](DOCUMENTATION_SOURCES.md): inventário recursivo versionado,
-  procedência e mapa por família de código/testes/configuração; ponto de entrada de auditores.
+- Inventário recursivo versionado, procedência e mapa por família de código/testes/configuração:
+  fundido em [DOCUMENTATION_AUDIT.md §10](DOCUMENTATION_AUDIT.md#10-inventário-de-fontes-da-consolidação-migrado-de-documentation_sourcesmd)
+  (2026-10-16). O caminho antigo [DOCUMENTATION_SOURCES.md](DOCUMENTATION_SOURCES.md) é um redirecionamento.
 - [README da raiz](../README.md) e [AGENTS.md](../AGENTS.md) continuam como entrada e regras.
 - `research/`, `relay/`, `agent/`, `tests/`, `scripts/`, `data/` e configurações continuam nos
   caminhos funcionais. `.agents/`, `.codex/` e `.claude/` mantêm estrutura e espelhos.

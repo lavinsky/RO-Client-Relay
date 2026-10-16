@@ -350,3 +350,156 @@ não associa as ocorrências desta pesquisa a `0x035F` nem fornece fronteira da 
 Os arquivos de movimento foram preservados. Em uma coleta futura de vetores, essa
 descoberta pode orientar observação independente de bytes tentados/aceitos pelo transporte,
 após nova coordenação de exclusividade; não foi usada para preencher campos ausentes.
+
+## Retomada após consolidação — origem executada de CL
+
+Referência inicial: `3349b57eb174c487b8359ce6896c8a10a24b9be6`, em 2026-10-15.
+O responsável confirmou novamente exclusividade, personagem no mapa e observação
+passiva limitada, com movimentos naturais quando solicitado. O cliente atual foi
+descoberto novamente: um alvo/listener, hashes iguais aos documentados. Reinícios
+do trabalho de movimento invalidam qualquer continuidade presumida com as rodadas
+anteriores; nenhum endereço de heap ou estado criptográfico antigo foi reutilizado.
+
+**OBSERVADO — origem imediata de CL:** `cl-round-1/chain-capture.json` em
+`/tmp/ro-cipher-20261015T174618Z/` confirmou a sequência abaixo. O arquivo contém
+os endereços/valores privados; este documento registra somente instruções e relações.
+
+```text
++0x1C7502 mov ecx, dword ptr [ecx]   endereço original salvo antes da sobrescrita
++0x1C7504 xor ebx, 0x47d61b9
++0x1C750A sub eax, esi
++0x1C750C add esi, ebp
++0x1C750E mov eax, 0xa
++0x1C7513 xor eax, 0x80
++0x1C7518 mov eax, ebx
++0x1C751A mov eax, 0x200
++0x1C751F or eax, 0x1f
++0x1C7524 mov esi, dword ptr [esi]   slot do ponteiro salvo antes da sobrescrita
++0x1C7526 and eax, 4
++0x1C752B mov byte ptr [esi], cl
++0x1C752D                           observação posterior ao store
+```
+
+Método: duas inspeções somente de código, limitadas a 64 bytes, com alternativas
+de decodificação preservadas; depois breakpoint de execução rotativo por 13 pontos.
+Um teste inicial de até 200 ms terminou sem acerto, com limpeza. Na rodada principal,
+houve três segundos de preparação e movimentos naturais do responsável; espera de
+1.303 ms, sequência de 9 ms, 13 visitas, zero perdas de ordem/contexto e zero erros
+de leitura. Armação e limpeza foram confirmadas. Isso é evidência viva; os doubles
+e os testes Python apenas verificam a ferramenta offline.
+
+Comparações registradas: a dword anterior à carga coincidiu com ECX posterior;
+ECX permaneceu igual em todos os pontos seguintes; a carga do ponteiro de ESI e o
+destino do store coincidiram; o byte posterior ao store foi igual a `ECX & 255`.
+O endereço de origem correspondeu a `EBP+0x36` nessa ocorrência, em mapeamento
+anônimo RWX distinto do que continha ESP. A dword carregada não estava restrita a
+um byte. **Não** tratar seus outros bytes como estado criptográfico demonstrado.
+
+**INFERIDO:** a última definição de CL nesse trecho é a carga em `+0x1C7502`;
+as instruções seguintes não redefinem ECX e sua estabilidade foi medida, sem
+deduzir execução por proximidade. Os XOR em EAX/EBX não demonstram XOR no byte
+transportado por CL nem uma operação da cifra. O papel criptográfico, identidade
+de pacote, direção, inicialização e fronteira de F continuam **NÃO VERIFICADOS**.
+As associações históricas com `+0x1B223C`/`+0x18EFF2` continuam em suas próprias
+ocorrências, sem fusão de valores desta retomada com capturas anteriores.
+
+Os avanços de movimento foram incorporados pelo método: `sendmsg` e recepção
+possuem canais independentes, mas o retorno de cinco bytes não identifica o pacote;
+trap pré-store não prova conclusão de escrita. A repetição com 13 dwords também
+congelou, sem excluir toda exceção ou isolar preparação/contexto. Esses ensaios não
+foram reutilizados. A presença confirmada de VMProtect/Themida na build não atribui
+este trecho a funções virtualizadas nem explica automaticamente os desvios.
+
+Ferramentas atuais: `--mechanism cl-origin`, inspeção `--inspect-cl-origin` e
+revalidação de cada instrução. O analisador offline recalcula a carga e a cópia do
+byte baixo, sem exportar valores; a classificação da cifra permanece C. O próximo
+passo delimitado é observar o escritor do byte baixo da posição efetivamente lida
+antes de uma nova carga, com endereço, ordem e contexto preservados na mesma captura.
+Novos artefatos ficam no diretório privado acima (0700/0600); nenhuma captura real
+foi adicionada aos fixtures ou ao Git. A continuação abaixo distingue os resultados
+vivos das mudanças posteriores verificadas somente offline.
+
+### Nova instância e primeiro escritor aritmético observado
+
+Durante a coordenação do watchpoint, o processo da primeira captura terminou. O
+responsável confirmou reinício, exclusividade e personagem no mapa. A tentativa
+`cl-writer-preflight/` abortou no inventário do host, antes de conectar ou armar
+instrumentos. `host-inventory-2.json` registra uma nova instância com os mesmos
+hashes de módulos; nenhuma continuidade criptográfica ou endereço antigo foi
+presumido. Duas inspeções de código e o teste de 200 ms foram repetidos somente
+para revalidar a instrumentação atual.
+
+| Artefato privado na mesma raiz | Observação e cobertura | Limite de interpretação |
+|---|---|---|
+| `session2-cl-round-1/chain-capture.json` | 13 pontos, 320 ms incluindo espera, sequência de 9 ms; carga e store conferidos; origem novamente `EBP+0x36` | Ocorrência independente da primeira instância |
+| `session2-cl-writer-preflight/chain-capture.json` | Em 166 ms, 15 escritas retidas e uma exceção cuja única decodificação predecessora foi `+0x2689FB xor dword ptr [ecx],edx` | A decodificação isolada não prova a instrução executada nem seus operandos anteriores |
+| `session2-cl-transform-preflight-2/chain-capture.json` | Teste de 202 ms, sem acertos, armação e desarme confirmados | Timeout sem evidência de ausência global |
+| `session2-cl-transform-round-1/chain-capture.json` | Antes/depois do XOR confirmados; 490 ms totais, 28 ms após entrar no trecho; 36 traps e 33 escritas retidas; depois parou em candidata `+0x256B66 add byte ptr [ebx],al` | Não alcançou a carga de CL; 17 escritas posteriores ao XOR impedem atribuir diretamente seu resultado ao consumidor |
+| `session2-cl-writer-round-1/chain-capture.json` | Teto de 64 escritas em 397 ms, 63 retidas, sem alcançar a carga; mesmo EBP da origem revalidada | Janela incompleta por limite; não confirma último escritor nem exclui uma carga posterior |
+| `session2-cl-writer256-round-1/chain-capture.json` | Após autorização explícita de até 256 escritas: 129 escritas, 142 traps, 13 pontos da cadeia, 349 ms totais e 10 ms de sequência; sem perdas/erros | Última escrita com única candidata `+0x1C70DC pop dword ptr [edx]`, ainda sem execução antes/depois dessa instrução |
+
+**OBSERVADO:** breakpoint de execução antes e depois de `+0x2689FB` preservou ECX
+como endereço do operando, EDX e a dword anterior/posterior. O endereço coincidiu
+com `EBP+0x36`, offset observado zero dentro do operando; EDX não era zero e houve
+mudança do valor. O pós-valor coincidiu com `antes XOR EDX`, mantendo ECX, EDX, ESP,
+EBP e thread. Essa é uma transformação local de quatro bytes efetivamente
+executada, com escrita na posição investigada. **NÃO VERIFICADO:** que esse XOR
+seja cifragem de pacote, geração de fluxo ou atualização de estado criptográfico.
+A própria captura contém escritas posteriores, sem uma carga consumidora retida.
+
+A região de código desse XOR era executável anônima. A primeira checagem a recusou
+por exigir associação direta ao arquivo; duas inspeções de diagnóstico e aquela
+tentativa terminaram antes da armação. A implementação passou a conferir os
+cabeçalhos DOS/PE32 e `SizeOfImage` da base identificada, os limites da imagem, a
+permissão de execução e a instrução exata. O teste vivo acima ocorreu somente
+após essas verificações. Os diagnósticos privados não contêm stack completa.
+
+O inventário de escritores aceita somente famílias já encontradas neste recorte
+(`mov`, `pop`, `xor`, `add`), preservando alternativas de decodificação e sem
+promovê-las a caminho executado. A prova antes/depois do XOR é separada da
+associação com CL no analisador. Todas as tentativas desta subseção terminaram
+com limpeza confirmada; não houve chamadas nativas nem alteração do relay.
+
+**OBSERVADO — associação por watchpoint:** na rodada de 256, o byte da última
+escrita observada coincidiu com o byte baixo carregado e posteriormente escrito
+por CL; thread e EBP coincidiram. O arquivo tem 72.449 bytes, abaixo do teto de
+256 KiB. O teto anterior impedia alcançar o consumidor; a ampliação foi autorizada
+somente após demonstrar esse impedimento, mantendo 10 s e 1.000 eventos.
+**INFERIDO:** `+0x1C70DC pop dword ptr [edx]` é o escritor candidato relevante nessa
+ocorrência. **NÃO VERIFICADO:** a transferência antes/depois do POP e a origem
+anterior do operando na pilha; a candidata reversa não equivale a execução provada.
+
+Próximo experimento preparado: `--mechanism cl-producer`, com breakpoint antes e
+depois do POP, EDX preservado como endereço de destino, somente a dword em ESP como
+operando e validação de ESP posterior (`ESP+4`), seguido da carga→CL→store. Sem
+watchpoint de stack, sem stack completa, sem chamadas nativas. O teste vivo de
+200 ms (`session2-cl-producer-preflight/`) armou/desarmou com sucesso, sem acertos;
+as revisões seguintes de diagnóstico ainda só possuem teste offline. Uma inspeção
+reversa limitada encontrou alternativas antes do POP; nenhuma virou caminho executado.
+
+A manutenção habitual de `docs/` passa ao Documentador conforme
+`research/COORDINATION.md`. Continuação operacional, limites e evidências novas
+ficam em `research/cipher/STATE.md` e `research/cipher/HANDOFF.md`; não substituir
+este resultado por observações ainda não integradas. A limpeza das rodadas acima
+foi confirmada. O checkpoint offline desta transferência é registrado no handoff.
+
+## Transformação final do 035F = XOR in-place byte a byte (registro canônico)
+
+**FATO/OBSERVADO na implementação do relay (decisão do responsável, 2026-10-15).** A transformação
+**final** aplicada ao corpo do `035F` antes do envio é um **XOR in-place, byte a byte**, no store do
+scrambler do cliente (`gepard+0x18eff2`). O relay já depende desse comportamento: a função de scramble
+substitui o corpo do `035F` pelo pacote do consumidor **antes do XOR** e deixa o próprio cliente
+cifrar e enviar. Fontes no código: `agent/relay_hook_linux.js:224-233` e a escrita em `:518`
+(`bodyp.writeByteArray(body)` — "overwrite plaintext; the in-place XOR encrypts ours");
+`relay/writeback.py:4-6` (merge no ponto de cifragem, "antes do XOR em memória, no breakpoint de
+execução DR0"); `relay_capture.conf:99-111` (`scramble-bp=18eff2`, `scramble-range=2632000-2730000`,
+`scramble-id=035f`). Conecta-se ao `store_035f` da trilha de movimento em
+[MOVEMENT_035F_PRECONDITIONS §13.8](MOVEMENT_035F_PRECONDITIONS.md).
+
+**Limite explícito — o que continua DESCONHECIDO.** Saber que a operação final é um XOR byte a byte
+**não** resolve a cifra. A função geradora e tudo o que **antecede** o XOR permanecem essencialmente
+desconhecidos: **fluxo de chave / keystream**, **estado criptográfico** e sua evolução,
+**inicialização / seeds**, direção, identidade e fronteira do pacote, e os vetores independentes. O
+XOR observado dinamicamente em `+0x2689FB` (seção *Nova instância*) é uma transformação local de quatro
+bytes **não atribuída** a essa cifra final — não confundir cópia/transporte de byte nem um XOR local
+com a operação geradora do keystream. A classificação da cifra permanece **C** (não reconstruída).

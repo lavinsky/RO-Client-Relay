@@ -15,7 +15,7 @@
 |---|---|---:|---|---|---|
 | `SC_GEPARD_INIT` / ID atual não confirmado | servidor → cliente (no build 2016) | desconhecido no uaRO | estabelecimento de estado de sessão/cifra | **DOCUMENTADO PARA 2016**: investigação §3.1 | ID atual, fase, campos, condições de reinicialização |
 | `CS_GEPARD_INIT_ACK` / ID atual não confirmado | cliente → servidor (no build 2016) | desconhecido no uaRO | confirmação de inicialização | **DOCUMENTADO PARA 2016**: investigação §3.2 | ID atual, dependências, conteúdo, transição de estado |
-| `0x8280` | cliente → servidor (hipótese) | 128 na tabela uaRO | heartbeat/sincronização | **TAMANHO OBSERVADO NA TABELA**; papel **INFERIDO**: investigação §3.3 | confirmação de direção e cadência, comparação de sessões, comportamento de timeout |
+| `0x8280` | **Gepard → servidor** (não construído pelo cliente, OBSERVADO 2026-10-16) | 128 (tabela uaRO; egress periódico de 128 B observado, ~a cada 3,6 s) | heartbeat/sync Gepard-origin, **periódico** (não preâmbulo por-ação do cliente); papel de **gate** das ações ainda HIPÓTESE ([ficha abaixo](#0x8280--syncanti-cheat-gepard-origin-periódico-fase-1-observada-papel-de-gate-ainda-hipótese)) | **origem e periodicidade OBSERVADAS**; papel de gate **HIPÓTESE** | identidade binária 128B≡`0x8280`; se `control_value` varia; se gateia a ação no servidor |
 | `0x8285` (build 2016) | cliente → servidor | não estabelecido aqui | heartbeat histórico | **DOCUMENTADO PARA 2016**: investigação §3.3 | não assumir correspondência binária com `0x8280` |
 | `0x4754`, `0x5395`, `0xC392` | não estabelecida | variável (`-1` na tabela) | desconhecido | **LISTADOS** em `data/uaro_recvpackets.txt` | verificar origem e se são realmente pacotes de controle |
 | `0x035F`, `0x0437`, `0x0438`, `0x0AF4` | cliente → servidor | consultar fonte do protocolo | pacotes de ação, **não confundir com heartbeat** | **DOCUMENTADOS** em `docs/HISTORY/ARCHITECTURE_LEGACY.md` §§5–6; origem por code do dispatcher `0xd473b0` **OBSERVADA** em 2026-10-16 ([mapa abaixo](#mapa-dispatcher--pacote-de-ação-act-20261016-01)) | comportamento no build atual e requisitos do OpenKore |
@@ -119,6 +119,64 @@ em `.text` do uaRO onde um `call` termina exatamente em `V`: `V-5 == E8` ou `FF 
 
 **Limite de recursos:** o modo `--move-dispatch` do relay ocupa os quatro DRs; o STATE da trilha
 admite sobreposição DR0/DR1 com outras sondas — este experimento **não** valida coexistência de sondas.
+
+## `0x8280` — sync/anti-cheat Gepard-origin, periódico (Fase 1 OBSERVADA; papel de gate ainda HIPÓTESE)
+
+**Procedência.** RELATO do responsável, **2026-10-16**, confirmado ao vivo por ele em logs e teste
+(servidor próprio): **um `0x8280` sai IMEDIATAMENTE ANTES de todo `0x0437`/`0x0438`/`0x0AF4`** (e
+**não** antes do `0x035F`); comandos do consumidor (OpenKore) também provocam o envio de `0x8280`.
+Não reproduzido independentemente por sonda ainda (ver "Teste" abaixo).
+
+**Analogia (NÃO prova para este build).** No fonte Gepard 2016, `CS_GEPARD_SYNC` (`0x8285` lá)
+carrega um `control_value` de 4 bytes cifrado por uma unidade **`sync_crypt` separada** das de
+recv/send; ao decodificar `0xDDCCBBAA` o servidor faz `sync_tick = gepard_get_tick()`
+(`relay/resources/Gepard-SRC-LGP-master/src/common/socket.cpp:411-426`). Em
+`relay/resources/Gepard-SRC-LGP-master/src/map/clif.cpp:79-85`, `clif_gepard_process_packet` calcula
+`diff_time = gettick() - sync_tick` e, se `> 40000`, chama `clif_authfail_fd` (rejeita/derruba). As
+ações (`cs_packet_request_move`/`action_request`/`use_skill_to_id`/`use_skill_to_ground`) são
+decifradas com `recv_crypt`. **A equivalência build-2016 × uaRO não está demonstrada** (AGENTS.md §6.2).
+
+**Hipótese de trabalho (não confirmada).** `0x8280` é o sync/anti-cheat do uaRO e **gateia** as ações:
+injeção crua de `0437/0438` (REFUTADA em ACT-20261016-01) e disparo do dispatcher fora de contexto
+falham por **não** virem acompanhados do `8280` natural. Isso explicaria por que o `INSERT→ataque`
+(merge sobre um `0437` que o próprio cliente montou pela entrada natural, **com** o `8280`) **executou**
+— ver [MOVEMENT_035F_PRECONDITIONS §13.13](MOVEMENT_035F_PRECONDITIONS.md) e o mapa acima.
+
+**Resultado da Fase 1 (OBSERVADO — build atual, 2026-10-16, pid 3752762, 20 ações; sonda
+`research/action_0437_0438/observe_8280.py`, HW exec BP na `SendPacket` uaRO+0x816640 + Interceptor
+`sendmsg`):**
+
+- **`0x8280` NÃO é construído pelo cliente.** Em 20 ações (6× `0437`, 10× `0438`, 4× `0AF4`), o
+  cliente emitiu em claro na `SendPacket` os ids `0437/0438/0AF4/0360/0368` — e **nenhum `0x8280`**
+  (contador `is_sync` = 0). → `0x8280` é **Gepard-origin** (INFERIDO), não um pacote montado pelo
+  cliente na via de envio natural.
+- **Egress periódico de 128 B.** O `sendmsg` mostra uma escrita de **128 B recorrente (25× em 90 s ≈
+  a cada 3,6 s)**, independente do ritmo das ações — candidato ao heartbeat/sync (coerente com o
+  tamanho 128 da tabela uaRO). Logo o `0x8280` é **periódico** (timer), **não** um preâmbulo por-ação
+  construído pelo cliente. (INFERIDO; conteúdo cifrado não decodificado — a identidade exata
+  128B ≡ `0x8280` é NÃO VERIFICADA.)
+- **Reconciliação com o RELATO.** O relato "um `0x8280` sai imediatamente antes de toda ação" é
+  compatível com uma observação **no fio** (onde o egress periódico de 128 B se intercala com a ação),
+  **não** com construção do `8280` pelo cliente — que a sonda refuta. A classificação do RELATO passa
+  de HIPÓTESE a **parcialmente reconciliada**: o `8280` existe e é Gepard-side, mas não precede
+  causalmente cada ação como pacote do cliente.
+- **Consequência para o merge (favorável).** Como o `8280` é do Gepard e não do cliente, o merge
+  **não precisa sintetizá-lo**: ao deixar o cliente disparar uma ação **real** (via entrada natural),
+  qualquer sync que o Gepard exija ocorre sozinho — exatamente o que o `INSERT→ataque` já mostrava.
+- **Buffers das ações (OBSERVADO; insumo para `scramble-range`).** `buf` da `SendPacket` é **estável**
+  por id e todos caem **dentro da `scramble-range` do `035F` já configurada** (`0x2632000–0x2730000`):
+  `0x0437`→`0x271eb78`, `0x0438`→`0x27218cc`, `0x0AF4`→`0x27218fc` (e `0360`/`0368`→`0x272f37c`).
+- **Corpos decodificados (em claro).** `0437` = `3704|GID|07` (ataque); `0438` =
+  `3804|nível(2)|skill(2)|GID(4)`; `0AF4` = `f40a|0100|skill(2)|x(2)|y(2)` — **o `0AF4` carrega
+  skill+x+y no corpo**, confirmando o desenho "clique fixo + merge reescreve x,y".
+
+**Lacunas remanescentes (NÃO VERIFICADO):** que o store `gepard+0x18eff2` intercepta o buffer de ação
+no **envio natural** de `0438`/`0AF4` (só o `0437` tem o indício `INSERT→ataque`); a identidade
+binária do egress de 128 B com `0x8280`; se o `control_value` varia. Captura crua (gitignored):
+`research/action_0437_0438/captures/obs8280_20261016/`.
+
+**Spike de isolamento** para dirigir a ação por input sintético escondido:
+[`research/action_0437_0438/ISOLATION_SPIKE.md`](../research/action_0437_0438/ISOLATION_SPIKE.md).
 
 ## Ficha obrigatória para novas descobertas
 

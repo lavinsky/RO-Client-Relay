@@ -103,13 +103,16 @@ def sendcall_msg(rva=None, module='uaRO.exe', cast_ms=800):
     return {'type': 'sendcall', 'rva': rva, 'module': module, 'castMs': int(cast_ms)}
 
 
-def move_dispatch_msg(x=None, y=None, arm=False, disarm=False, dispatcher=None, site=None):
+def move_dispatch_msg(x=None, y=None, arm=False, disarm=False, recapture=False, dispatcher=None, site=None):
     """Native-dispatch (PoC 035f): arm the passive capture of the movement dispatcher's `this`
-    (arm=True, optional dispatcher/site as hex strings), disarm, or request a walk to (x, y). The
+    (arm=True, optional dispatcher/site as hex strings), disarm, recapture (reset a stale `this`
+    after a reconnect/relogin and re-arm the passive capture), or request a walk to (x, y). The
     client itself then builds, encrypts and sends its own 035f; the relay never forges a body."""
     m = {'type': 'native-dispatch'}
     if disarm:
         m['disarm'] = True
+    elif recapture:
+        m['recapture'] = True
     elif arm:
         m.update(arm=True, recipe='walk-035f')
         if dispatcher:

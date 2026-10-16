@@ -334,3 +334,37 @@ por coletas sem erro, causalidade NÃO VERIFICADA. SLICE-11 foi **invalidada** p
 exclusividade (outro agente; relato do responsável) e deixou limpeza pendente restrita àquela
 instância. Não fundir ocorrências de instâncias diferentes.
 [Detalhes](CIPHER_INVESTIGATION.md#integração-documental--cifra-stack-04--slice-12).
+
+## Direção ativa — ações via gatilho natural + merge (2026-10-16)
+
+**Decisão (responsável, plan aprovado):** resolver ataque/perícia (`0437`/`0438`/`0AF4`) pelo mesmo
+princípio do walk — **não fabricar**; deixar o cliente montar/cifrar/enviar o pacote natural (que já
+emite o `0x8280`, ver [GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md#0x8280--candidato-a-syncanti-cheat-que-precede-as-ações-hipótese-em-teste))
+e apenas **reescrever o corpo (GID/skill/coords) pré-XOR** no store do scrambler. Gatilho = **input
+sintético híbrido** (uinput, passa no Gepard), com o cliente **isolado** para não atrapalhar o uso
+real. Abandonadas para ações: injeção crua por `SendPacket` (REFUTADA, A-01) e disparo do dispatcher
+fora de contexto (inócuo/instável, A-01/§13.13).
+
+**Estado por fase:**
+- **Fase 2 (roteamento, código) — FEITO, offline:** flag `--action-merge` (default OFF) roteia
+  `0437/0438/0AF4` do consumidor para o merge quando há scrambler armado (modo combinado
+  `--inject-call`). `relay/cli.py` (`--action-merge`), `relay/writeback.py` (`ACTION_MERGE_IDS`;
+  ramo em `_on_inbound_split`), `tests/test_writeback.py` ("action-merge routing ok"). `035F`,
+  `--move-dispatch` e `relay_capture.conf` inalterados. Verificado: `test-offline.sh` ALL PASS,
+  `node --check` PASS, validadores PASS. **Sem commit.**
+- **Fase 1 (caracterização do `8280`) — EXECUTADA ao vivo (2026-10-16, pid 3752762, 20 ações;
+  read-only, HW BP + `sendmsg`):** OBSERVADO — o cliente **não** constrói `0x8280` (0 na `SendPacket`
+  em 20 ações); há egress **periódico de 128 B** (~a cada 3,6 s) = o `8280` é **Gepard-origin e
+  periódico**, não preâmbulo por-ação. Buffers de ação estáveis e **já dentro** da `scramble-range`
+  do `035F` (`0x2632000–0x2730000`): `0437`@`0x271eb78`, `0438`@`0x27218cc`, `0AF4`@`0x27218fc`.
+  `0AF4` carrega skill+x+y no corpo. **Consequência:** o merge não precisa sintetizar `8280` — basta
+  o cliente disparar a ação real. Detalhe e classificação em
+  [GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md) (ficha `0x8280`). Captura crua gitignored em
+  `research/action_0437_0438/captures/obs8280_20261016/`.
+- **Fase 0 (isolamento) — runbook pronto, spike PENDENTE:**
+  `research/action_0437_0438/ISOLATION_SPIKE.md`. Maior risco: GPU única em Wayland/KDE sem `seatd`
+  instalado; fallbacks (VM/2ª máquina; protótipo com interferência) documentados.
+
+**Limites:** o merge só reescreve **corpo de mesmo id/tamanho** que o cliente montou → gatilho casado
+por família. Não está confirmado ao vivo que `0438/0AF4` passam pelo mesmo store do `035F` (o `0437`
+tem indício no `INSERT→ataque`). A cifra **continua não compreendida**; este caminho a contorna.

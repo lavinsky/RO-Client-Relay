@@ -218,4 +218,93 @@ off = FakeMove(move_dispatch=False)                                  # sem a fla
 off._on_inbound_split(b'\x5f\x03' + pack_move(150, 187), 'S')
 assert off.posted == [] and len(off.scrambled) == 1
 print('move-dispatch routing ok')
+
+
+class FakeAct(FakeMove):
+    def __init__(self, action_merge, armed=True):
+        FakeMove.__init__(self, move_dispatch=False)
+        self.opts = SimpleNamespace(move_dispatch=False, inject_call=True, action_merge=action_merge)
+        self._scramble_armed = armed
+    ACTION_MERGE_IDS = Capture.ACTION_MERGE_IDS
+
+
+acts = [b'\x37\x04' + b'\x01\x02\x03\x04\x07', b'\x38\x04' + b'\x05\x00\x1c\x00\x01\x02\x03\x04']
+on = FakeAct(True)
+for a in acts:
+    on._on_inbound_split(a, 'S')
+assert on.scrambled == acts and on.sendcalled == [], (on.scrambled, on.sendcalled)
+off = FakeAct(False)
+for a in acts:
+    off._on_inbound_split(a, 'S')
+assert off.sendcalled == acts and off.scrambled == [], (off.scrambled, off.sendcalled)
+un = FakeAct(True, armed=False)                                      # flag sem scramble armado: SendPacket
+un._on_inbound_split(acts[0], 'S')
+assert un.sendcalled == [acts[0]] and un.scrambled == []
+# end-to-end real: 0437/0438 com a flag geram scramble_set_msg e nao sendcall_emit_msg
+real = FakeAct(True)
+real.opts.action_merge = True
+real._on_inbound_scramble = lambda p, t: Capture._on_inbound_scramble(real, p, t)
+real._on_inbound_split(acts[0], 'S'); real._on_inbound_split(acts[1], 'S')
+assert real.posted == [scramble_set_msg(0x437, acts[0][2:].hex()), scramble_set_msg(0x438, acts[1][2:].hex())], real.posted
+assert not any(m == sendcall_emit_msg(a.hex()) for m in real.posted for a in acts)
+print('action-merge routing ok')
+
+
+# --- egress queue (--egress-queue): FIFO serializado, nada se atropela ---------------------------
+import queue as _q           # noqa: E402
+import threading as _t       # noqa: E402
+import time as _tm           # noqa: E402
+
+
+class FakeEgress(FakeMove):
+    def __init__(self):
+        FakeMove.__init__(self, move_dispatch=True)
+        self.opts = SimpleNamespace(move_dispatch=True, inject_call=True, action_merge=True)
+        self._scramble_armed = True
+        self.dispatched = []
+        self._egress_interval = 0.0
+        self._egress_action_gap = 0.0
+        self._egress_max_age = 10.0                        # alto: nada expira no teste de ordem
+        self._egress_q = _q.Queue()
+
+    ACTION_MERGE_IDS = Capture.ACTION_MERGE_IDS
+    _egress_enqueue = Capture._egress_enqueue
+    _egress_drain = Capture._egress_drain
+
+    def _on_inbound_split(self, payload, typ):             # registra só a ORDEM de despacho
+        self.dispatched.append(payload)
+
+
+eg = FakeEgress()
+frames = [b'\x5f\x03' + pack_move(10, 20),                  # 035f andar
+          b'\x37\x04\x01\x02\x03\x04\x07',                  # 0437 ataque (ação)
+          b'\x5f\x03' + pack_move(11, 21)]                  # 035f andar
+eg._egress_enqueue(b'\x86\x00recv', 'R')                    # quadro 'R' (recv espelhado): NÃO entra na fila
+eg._egress_enqueue(b'\x5f', 'S')                            # 'S' curto demais p/ ter id: ignorado
+for f in frames:
+    eg._egress_enqueue(f, 'S')
+_t.Thread(target=eg._egress_drain, daemon=True).start()
+for _ in range(200):
+    if len(eg.dispatched) == len(frames):
+        break
+    _tm.sleep(0.005)
+assert eg.dispatched == frames, eg.dispatched               # ordem de chegada preservada, um por vez
+print('egress-queue FIFO ok')
+
+# descarte por idade (--egress-max-age-ms): um quadro que esperou demais é dropado, o fresco passa
+st = FakeEgress()
+st._egress_max_age = 0.8
+old = b'\x5f\x03' + pack_move(1, 1)                         # andar p/ coord velha (deve ser dropado)
+new = b'\x5f\x03' + pack_move(9, 9)
+st._egress_q.put((_tm.monotonic() - 2.0, old, 'S'))         # chegou há 2s > 0.8s
+st._egress_q.put((_tm.monotonic(), new, 'S'))
+_t.Thread(target=st._egress_drain, daemon=True).start()
+for _ in range(200):
+    if st.dispatched:
+        break
+    _tm.sleep(0.005)
+_tm.sleep(0.02)
+assert st.dispatched == [new], st.dispatched                # só o fresco despachou; o velho foi dropado
+print('egress-queue stale-drop ok')
+
 print('ALL PASS')

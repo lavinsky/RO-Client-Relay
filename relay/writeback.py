@@ -9,7 +9,9 @@ Também mora aqui a autodescoberta do ponto de cifragem e o rastreio com Stalker
 
 É um mixin de Capture (runtime.py): usa o estado de Capture (self.post, self.opts, self.relay,
 self.scramble, self.sendwatch, self.gepard_base, self._queue_range, self._disc_lock)."""
+import queue
 import threading
+import time
 
 from .packets import unpack_move
 from .protocol import (move_dispatch_msg, scramble_msg, scramble_set_msg, sendcall_emit_msg, sendcall_msg,
@@ -28,6 +30,7 @@ class WriteBack:
     CAST_IDS = (0x0438, 0x0af4)                         # perícias com tempo de cast (alvo e chão): um novo
     #                                                    cast cancela o anterior, então o consumidor não
     #                                                    pode repeti-las em rajada (ver _on_inbound_sendcall).
+    ACTION_MERGE_IDS = (0x0437, 0x0438, 0x0af4)         # ações com alvo roteáveis ao merge (--action-merge)
     SKIP_IDS = (0x0368, 0x0369, 0x0193, 0x0094, 0x0360)   # tagarelice que o cliente já emite sozinho
     #                                                    (pedido de nome por GID / tick): não reinjetamos
     #                                                    a do consumidor, senão floda o servidor (gepard).
@@ -102,9 +105,27 @@ class WriteBack:
             # PoC: 035f -> dispatcher nativo de movimento (o cliente cifra o proprio). Os DEMAIS
             # pacotes "S" do consumidor so chegam ao cliente pela SendPacket (--inject-call); sem ela
             # caem no ramo de drop de _on_inbound_split e o OpenKore nao sincroniza/loga.
-            relay.on_inbound = self._on_inbound_split
+            relay.on_connect = self.recapture_move_dispatch   # reconexão/relogin -> recaptura o `this` (anti-freeze)
             if getattr(opts, 'inject_call', False):
                 self.sendcall_rva = int(opts.sendpacket_rva, 16)   # demais acoes -> client SendPacket (DR1)
+            # Fila de egresso (opt-in): no cliente real/xKore o movimento e as ações saem por UM fluxo
+            # ordenado (a máquina de estado do cliente serializa); nossa PoC abre CADA id num caminho
+            # assíncrono distinto (035f -> dispatcher nativo no main-loop; 0437/0438 -> corpo armado +
+            # tecla sintética fora de banda), que CORREM em paralelo — um 035f contínuo mantém o char
+            # andando e a tecla do ataque cai no meio do passo. A fila reintroduz a serialização: drena
+            # um pacote por vez, na ordem de chegada, com --egress-interval-ms entre eles e um gap maior
+            # (--egress-action-gap-ms) após uma ação, p/ a tecla sintética cair com o char assentado.
+            if getattr(opts, 'egress_queue', False):
+                self._egress_interval = max(0, int(getattr(opts, 'egress_interval_ms', 100))) / 1000.0
+                self._egress_action_gap = max(0, int(getattr(opts, 'egress_action_gap_ms', 400))) / 1000.0
+                self._egress_max_age = max(0, int(getattr(opts, 'egress_max_age_ms', 800))) / 1000.0
+                self._egress_q = queue.Queue()
+                threading.Thread(target=self._egress_drain, name='egress-drain', daemon=True).start()
+                relay.on_inbound = self._egress_enqueue
+                print(f'[*] --egress-queue: FIFO serializada; {int(self._egress_interval*1000)}ms entre '
+                      f'pacotes, +{int(self._egress_action_gap*1000)}ms após ação (ordem preservada)')
+            else:
+                relay.on_inbound = self._on_inbound_split
             print(f'[*] --move-dispatch: 035f from the consumer -> native movement dispatcher '
                   f'(client builds/encrypts its own 035f); original 035f is DROPPED'
                   + ('' if getattr(opts, 'inject_call', False)
@@ -202,6 +223,14 @@ class WriteBack:
                                         site=getattr(self.opts, 'move_dispatch_site', None)))
             print('[*] --move-dispatch: walk once in-client so the dispatcher `this` is captured (passive)')
 
+    def recapture_move_dispatch(self):
+        """Pós reconexão/relogin: o `this` capturado do dispatcher aponta para objeto de mapa já
+        liberado; firá-lo congela o cliente. Zera e re-arma a captura passiva (DR2) para recapturar
+        no próximo passo in-client. Ligado em relay.on_connect (só dispara em RE-conexão)."""
+        if getattr(self.opts, 'move_dispatch', False) and self.relay is not None:
+            self.post(move_dispatch_msg(recapture=True))
+            print('[*] --move-dispatch: reconexão detectada; `this` zerado — ande uma vez p/ recapturar')
+
     def post_move_dispatch(self, x, y):
         self.post(move_dispatch_msg(x, y))
 
@@ -233,6 +262,41 @@ class WriteBack:
               f"{payload[:16].hex()}")
         self.post(scramble_set_msg(pid, body.hex()))
 
+    def _egress_enqueue(self, payload, typ):
+        """relay.on_inbound sob --egress-queue: enfileira o quadro do consumidor com o instante de
+        chegada, em ordem. O dreno (_egress_drain) despacha um por vez, com espaço, para 035f e
+        0437/0438 não se atropelarem, e DESCARTA o que esperou demais (--egress-max-age-ms).
+        SÓ quadros 'S' (cliente->servidor, o que injetamos) entram: os 'R' (recv que o consumidor
+        espelha) não são injeção e, em massa, afogariam a FIFO e atrasariam/expulsariam as ações."""
+        if typ != 'S' or len(payload) < 2:
+            return
+        self._egress_q.put((time.monotonic(), payload, typ))
+
+    def _egress_drain(self):
+        """Worker único: tira um quadro da fila FIFO. Se ele já esperou mais de --egress-max-age-ms
+        (fila atolada -> pedido de andar com coordenada velha), DROPA sem despachar nem pacear (drena
+        rápido até o fresco). Senão despacha pela rota normal (_on_inbound_split) e dorme
+        --egress-interval-ms (ou --egress-action-gap-ms após uma ação). Preserva a ordem de chegada."""
+        while True:
+            ts, payload, typ = self._egress_q.get()
+            age = time.monotonic() - ts
+            if self._egress_max_age > 0 and age > self._egress_max_age:
+                pid = (payload[0] | payload[1] << 8) if (typ == 'S' and len(payload) >= 2) else None
+                idtxt = f'0x{pid:04x}' if pid is not None else f'typ={typ!r}'
+                print(f'[egress] drop {idtxt} (esperou {age*1000:.0f}ms > {int(self._egress_max_age*1000)}ms)')
+                continue
+            try:
+                self._on_inbound_split(payload, typ)
+            except Exception as e:
+                print(f'[egress] dispatch error: {type(e).__name__}: {e}')
+            gap = self._egress_interval
+            if typ == 'S' and len(payload) >= 2:
+                pid = payload[0] | payload[1] << 8
+                if pid in WriteBack.ACTION_MERGE_IDS:
+                    gap = self._egress_action_gap
+            if gap > 0:
+                time.sleep(gap)
+
     def _on_inbound_split(self, payload, typ):
         """Roteia por id: 035f pelo merge (uso único), demais ações pela SendPacket."""
         if typ != 'S' or len(payload) < 2:
@@ -249,6 +313,9 @@ class WriteBack:
             self.post_move_dispatch(x, y)              # o cliente monta/cifra o proprio; nada e reenviado
         elif pid == self.WALK_ID:
             self._on_inbound_scramble(payload, typ)
+        elif (getattr(getattr(self, 'opts', None), 'action_merge', False) and pid in WriteBack.ACTION_MERGE_IDS
+              and getattr(self, '_scramble_armed', False)):
+            self._on_inbound_scramble(payload, typ)    # --action-merge: ação com alvo -> merge, não SendPacket
         elif md and not getattr(self.opts, 'inject_call', False):
             print(f'[inject] id=0x{pid:04x}: no handler under --move-dispatch without --inject-call; dropped')
         else:

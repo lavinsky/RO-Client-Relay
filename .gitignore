@@ -9,6 +9,9 @@ relay_log.jsonl
 *.out
 *.bin
 
+# Capturas cruas de pesquisa (corpos de pacote em claro; nao versionar)
+research/**/captures/
+
 # Local snapshots (git is the history now)
 backup_*/
 

@@ -35,6 +35,8 @@ class Relay:
         self.sent = self.dropped = 0
         self.dump = None                               # optional file: every framed byte sent (--feed-dump)
         self.on_inbound = None                         # callback(payload, typ) for what the consumer sends
+        self.on_connect = None                         # callback() on RE-connect only (not the first connect)
+        self._connected_once = False                   # distinguishes the initial connect from reconnects
         self._in = b''                                 # reassembly buffer for inbound frames
         threading.Thread(target=self._connect_loop, name='relay-connect', daemon=True).start()
 
@@ -68,6 +70,13 @@ class Relay:
             if self.aligner:
                 self.aligner.reset()                   # each consumer starts from a fresh boundary
         print(f'[relay] connected to {self.host}:{self.port} ({self.fmt}{", aligned" if self.align else ""})')
+        reconnect = self._connected_once               # the consumer dropped and came back (map/login trip)
+        self._connected_once = True
+        if reconnect and self.on_connect is not None:
+            try:
+                self.on_connect()                      # e.g. recapture a stale native-dispatch `this`
+            except Exception as e:                     # a callback must never kill the connect loop
+                print(f'[relay] on_connect error: {e}')
 
     def _check_dead(self):
         s = self.sock

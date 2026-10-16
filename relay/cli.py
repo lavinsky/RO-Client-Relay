@@ -82,6 +82,10 @@ def parse_args(argv=None):
                          'action (0437 attack / 0438 skill). OFF by default: the action already carries the '
                          'GID and the extra 0368 breaks the action on this build (observed live). Enable only '
                          'if some build needs the click-mimic.')
+    ap.add_argument('--action-merge', action=argparse.BooleanOptionalAction, default=False,
+                    help='--inject-call + --scramble-bp: route consumer 0437/0438/0af4 to the scrambler '
+                         'merge (one-shot body map, like 035f) instead of the client SendPacket. OFF by '
+                         'default. Routing only; the client must itself build that id for it to be sent.')
     ap.add_argument('--move-dispatch', action=argparse.BooleanOptionalAction, default=False,
                     help='PoC (needs --inject): on a consumer 035f, fire the client\'s native movement '
                          'dispatcher (frame 0x11) from a main-loop PE site so the CLIENT builds, encrypts '
@@ -92,6 +96,21 @@ def parse_args(argv=None):
                     help='--inject + --scramble-bp: keep each consumer packet and replace EVERY matching '
                          'client action of that id (persistent hijack), instead of one-shot per packet. '
                          'Clear by stopping the driver or sending an empty body.')
+    ap.add_argument('--egress-queue', action=argparse.BooleanOptionalAction, default=False,
+                    help='--move-dispatch: serialize consumer packets through one FIFO drain so a 035f '
+                         'native dispatch never overlaps a 0437/0438 action (the real-client/xKore ordered '
+                         'stream does this for free; our PoC fans each id into an async client-side path). '
+                         'Preserves arrival order; paces by --egress-interval-ms and holds longer after an '
+                         'action (--egress-action-gap-ms) so the synthetic key lands on a settled char. OFF.')
+    ap.add_argument('--egress-interval-ms', type=int, default=400,
+                    help='--egress-queue: milliseconds between consecutive dispatched packets (default 400).')
+    ap.add_argument('--egress-action-gap-ms', type=int, default=400,
+                    help='--egress-queue: extra settle gap after dispatching an action (0437/0438/0af4), so '
+                         'the client commits it before the next 035f walk resumes (default 400).')
+    ap.add_argument('--egress-max-age-ms', type=int, default=800,
+                    help='--egress-queue: drop a queued packet instead of dispatching it once it has waited '
+                         'longer than this (stale walk requests to old coords pile up when the queue backs '
+                         'up). 0 disables the drop (default 800).')
     ap.add_argument('--cast-throttle', type=float, default=0.8,
                     help='--inject-call: minimum seconds between injected cast-time skills (0438/0af4). '
                          'The consumer retries a skill many times; without this they flush back-to-back '

@@ -713,6 +713,17 @@ function onNativeDispatch(m) {
         if (m.disarm) {
             if (md !== null) { mdUnarm(2); mdUnarm(3); }
             md = null;
+        } else if (m.recapture) {
+            // Reconexao/relogin: o `this` capturado aponta para objeto de mapa JA LIBERADO; firar com
+            // ele toca memoria invalida e CONGELA o cliente (fila entope com 'queue full'). Zera o
+            // `this`, descarta a fila pendente e re-arma a captura passiva (DR2) para recapturar fresco
+            // no proximo dispatch in-client (andar uma vez). Nunca firar (DR3) sem `this` valido.
+            if (md !== null && !md.busy) {
+                md.thisp = null; md.queue.length = 0;
+                if (md.fireArmed) { mdUnarm(3); md.fireArmed = false; }
+                if (!md.capArmed) { try { md.th.setHardwareBreakpoint(2, md.disp); md.capArmed = true; } catch (e) {} }
+                send({tag: 'MOVE-DISPATCH', hit: 'recapture', e: 'this reset; walk once to re-capture'});
+            }
         } else if (m.arm) {
             var rec = MD_RECIPES[m.recipe];
             var base = peBase(m.module || 'uaRO.exe');

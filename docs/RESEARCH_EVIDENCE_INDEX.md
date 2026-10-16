@@ -14,6 +14,9 @@
 | C-02 | **OBSERVADO independente** | Watchpoint do byte consumido + escritor `+0x1C752B mov [esi],cl` confirmado em rodada isolada | Mesmo build; recortes não fundidos indevidamente | [Cifra §Evidências e limites](CIPHER_INVESTIGATION.md) | Última definição de CL e conexão com recorte consumidor não concluídas numa só rodada |
 | C-03 | **OBSERVADO** | 26 rodadas, contagem de matches/timeouts/exceções e limpeza | Capturas reportadas em 2026-10-15, observação por thread | [Cifra §Rodadas](CIPHER_INVESTIGATION.md); `research/cipher/chain_audit.py` | Timeout ≠ ausência global de escrita; alguns observadores incompletos |
 | C-04 | **NÃO VERIFICADO** | Auditoria de onze fontes: nenhuma chamada P/C/estado completa; ferramenta retorna `C_INSUFFICIENT` | Escopos variados, não unir sessões por nome/tempo | [Cifra §§Auditoria/Ferramenta](CIPHER_INVESTIGATION.md); `research/cipher/analyze.py` | Sem identidade de F, estado, inicialização, pacote ou cifragem independente |
+| C-05 | **OBSERVADO** | Origem de CL: carga de dword em `+0x1C7502`, ECX estável até store `+0x1C752B`; 13 pontos/9 ms e byte posterior conferido | Mesmo build, nova instância descoberta e janela exclusiva; origem `EBP+0x36` nessa ocorrência | [Cifra — retomada](CIPHER_INVESTIGATION.md#retomada-após-consolidação--origem-executada-de-cl); `cl-round-1/chain-capture.json:161` em `/tmp/ro-cipher-20261015T174618Z/` | Não demonstra escritor da origem, operação da cifra ou continuidade com sessões anteriores |
+| C-06 | **OBSERVADO** | XOR de dword `+0x2689FB`, operandos e resultado antes/depois conferidos; 17 escritas seguintes | Nova instância, mesma build, janela exclusiva | [Cifra — nova instância](CIPHER_INVESTIGATION.md#nova-instância-e-primeiro-escritor-aritmético-observado); `session2-cl-transform-round-1/chain-capture.json`, evento `DONE.cl_transformation`, na mesma raiz privada de C-05 | Não associado ao consumidor de CL; papel criptográfico desconhecido |
+| C-07 | **OBSERVADO / INFERIDO** | 129 escritas, depois 13 pontos de carga→CL→store; última escrita com candidata única `+0x1C70DC pop [edx]`, byte correspondente | Mesma instância de C-06; teto de 256 autorizado; observação em uma thread | [Cifra — nova instância](CIPHER_INVESTIGATION.md#nova-instância-e-primeiro-escritor-aritmético-observado); `session2-cl-writer256-round-1/chain-capture.json`, `DONE.cl_preceding_write` | POP ainda sem prova antes/depois; sem origem do operando, cifra, inicialização ou identidade de pacote |
 | G-01 | **OBSERVADO apenas na tabela** | IDs `8280 128`, `4754 -1`, `5395 -1`, `C392 -1` | Tabela do repositório, não captura de sessão | [Controle](GEPARD_CONTROL_PACKETS.md); `data/uaro_recvpackets.txt` | Tamanho tabelado não determina direção, função ou handshake |
 | G-02 | **DOCUMENTADO apenas para 2016** | `SC_GEPARD_INIT`, `CS_GEPARD_INIT_ACK`, `CS_GEPARD_SYNC`, estados históricos | Fonte Gepard 2016, não equivalência do uaRO atual | [Controle](GEPARD_CONTROL_PACKETS.md); [investigação histórica](HISTORY/GEPARD_LEGACY.md) | Necessário revalidar IDs/algoritmo/direção no build atual |
 | R-01 | **OBSERVADO no código/configuração** | `inject = true`, `inject-call = true`; separar merge stack do `SendPacket` fila; frames XKore | Revisão de código publicada em 2026-10-15 | `relay_capture.conf`; `relay/writeback.py`; [arquitetura](ARCHITECTURE.md) | Verificação estática não prova cliente/servidor funcionando agora |
@@ -63,3 +66,39 @@ observados durante a chamada; cliente congelou. **REFUTADO no recorte:** discrep
 outra dependência de contexto/estado. Trap de execução não prova escrita concluída;
 ausência de exceção reportada não exclui toda falha fora da cobertura. H2/H3 não isoladas.
 A publicação não executou a sonda. Arquivo-fonte incluído no commit `7a64581`.
+
+## M-10 — dependência de fase (rodadas 04/05), âncora `read` do wineserver
+
+**Origem:** HANDOFFs MOVER-20261015-04 e -05 (`research/movement_035f/HANDOFF.md`);
+[pré-condições §13.9](MOVEMENT_035F_PRECONDITIONS.md). **Correção associada (§13.8):** o `035F` é
+cifrado e o `store_035f` em `gepard+0x18eff2` é o byte-store do scrambler
+(`relay_capture.conf:99-111`); leituras de `035F` como "texto claro" estão REFUTADAS.
+**OBSERVADO:** cliente Wine, main thread drena o wineserver por `read`/`writev` (poll quase ausente
+na main); âncora corrigida para `read` onLeave. Rodada 04 (delay 700 ms) **retornou** e o scrambler
+cifrou o corpo injetado, mas o cliente **congelou após o retorno**, sem `sendmsg`/`recv_0087`.
+Rodada 05 (delay 2 s) **abortou durante a chamada** (SIGABRT, `pc=vdso`), também após cifrar o corpo.
+Dependência de fase/contexto = OBSERVADA; manifestações distintas (freeze × abort). **HIPÓTESE
+LÍDER (não provada):** reentrância Wine. **Artefatos privados (caminhos, não conteúdo; não
+versionados):** rodada 04 `/tmp/claude-035f-20261015-160152-read-anchor/` (trial.json + manifesto
+de 3 sondas); rodada 05 diretório `…-resume04/` na mesma convenção `/tmp/claude-035f-*`.
+**Limite:** disparo no `onLeave` de um `read` é contexto não-natural; mecanismo do crash não
+demonstrado; `sendmsg` lado-UNIX da fronteira Wine não observável por hook de export libc.
+
+## M-11 — rodada 06b: origem autônoma ponta-a-ponta (MARCO, cliente vivo)
+
+**Origem:** HANDOFF MOVER-20261015-06 (`research/movement_035f/HANDOFF.md`);
+[pré-condições §13.10](MOVEMENT_035F_PRECONDITIONS.md). Sonda `dispatcher_trial_pesite.py`
+(`--fire-site 0x4dcba0 --construct-frame --dest-x 273 --dest-y 313 --delay-ms 700`). PID 3338296,
+build MATCH por hash. **OBSERVADO (uma única vez):** dispatcher 0x11 disparado de um sítio de
+main-loop do `uaRO.exe` (HW exec BP `0x4dcba0`, base `0x400000`), fora do contexto do `read` do
+wineserver → `emit_call` dest `[273,313]` → `sendmsg` fd195 5 B during_call → `emit_return`
+retval=215959 (sem exceção) → `recv_0087` src `[273,314]` dst `[273,313]` (= destino injetado) →
+cliente state S, vivo/estável. **4 critérios:** retorno/envio/resposta dst=destino/responsivo = SIM
+→ PASSOU. **Diagnóstico da 06 (não disparou):** bug de guard (`capFrame` null de propósito em
+`--construct-frame`); corrigido — não era slot/threading de HW BP. **Artefato privado (caminho, não
+conteúdo; não versionado):** `/tmp/claude-035f-20261015-170143-round06b/trial.json`.
+**Limite:** disparo via callback de HW-BP é contexto não-natural; sustenta que o contexto
+read/wineserver causava os crashes 04/05, **não** "reentrância resolvida em geral". Os 4 HW BP foram
+desarmados em `doFire`, então o `store_035f` do scrambler **não** foi observado during_call;
+origem+cifra+envio provados **funcionalmente** por `sendmsg` 5 B + `recv_0087` dst=injetado.
+**Não reproduzida**; comparação com a via de relay (merge pré-XOR em `gepard+0x18eff2`) pendente.

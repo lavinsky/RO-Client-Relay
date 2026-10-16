@@ -1,18 +1,31 @@
 # Pré-condições de preparação do movimento 0x035F
 
-> **Leitura atual (pós-524b0f0):** §§1–12 registram etapas anteriores. §13 foi **corrigida** e
-> **testada ao vivo** (§13.5). O disasm de `uaRO.exe` mostra `0xd473b0` como `__thiscall` comum que
-> termina em `ret 0x34` (13 dwords) — logo "VM que não retorna" está **REFUTADA quanto ao
-> mecanismo estático**. Mas a chamada com a **ABI correta de 13 dwords também trava** (sem retorno
-> observado, **sem exceção registrada**, sem envio), então **a correção de ABI não bastou** e o
-> desequilíbrio de 8 bytes **não explica sozinho** o resultado — sem refutar que a pilha importe.
-> Exceção nativa **não está refutada** (o handler pode não ter rodado). Um corpo `035f` para o
-> destino pedido aparece no **trap pré-store**; montagem completa e transmissão **continuam não
-> demonstradas**. A chamada sai no **`onEnter` de `poll/select` (antes do poll)**, então a hipótese
-> é **dependência de contexto/fase de execução do laço** (reentrância é só um caso, sem evidência
-> direta). H1 refutada no recorte 6.4; exclusões de §12 restritas à cobertura; o ensaio **não** isola
-> H2 de H3. Próximo passo preparado em §13.6 (ponto pós-poll + diagnóstico de falha independente),
-> nova janela exclusiva a combinar.
+> **Leitura atual (pós-rodada 06b, 2026-10-15):** §§1–12 registram etapas anteriores; §13 cobre os
+> ensaios nativos do dispatcher 0x11. O disasm de `uaRO.exe` mostra `0xd473b0` como `__thiscall`
+> comum que termina em `ret 0x34` (13 dwords) — "VM que não retorna" está **REFUTADA quanto ao
+> mecanismo estático**. A **ABI de 13 dwords ainda travava** quando disparada no `onEnter` de
+> `poll/select` / pré-poll (§13.5): a correção de ABI não bastou e o desequilíbrio de 8 bytes **não
+> explica sozinho** o resultado, sem refutar que a pilha importe.
+>
+> **Correção factual (§13.8, FATO, `relay_capture.conf:99-111`):** o `035F` é **CIFRADO** — XOR-scramble
+> byte-a-byte em memória **antes** do envio. O `store_035f` em `gepard+0x18eff2` que estas sondas
+> observam **é o byte-store in-place do scrambler** (`scramble-bp=18eff2`, `scramble-range=2632000-2730000`,
+> `scramble-id=035f`). Qualquer leitura de `035F` como "texto claro" está **REFUTADA**.
+>
+> **Dependência de fase/contexto — OBSERVADA (§13.9):** disparando no `onLeave` de um `read` do
+> wineserver, a chamada 04 **retornou** e chegou ao scrambler, mas congelou após o retorno; a 05
+> **abortou durante a chamada** (SIGABRT). Em ambas o scrambler cifrou o corpo injetado, mas não houve
+> envio. **Mecanismo do crash = HIPÓTESE, líder = reentrância Wine** (não demonstrada).
+>
+> **Marco (§13.10, OBSERVADO, cliente vivo):** disparando o dispatcher de um **sítio de main-loop do
+> `uaRO.exe` (HW exec BP `0x4dcba0`), fora do contexto do `read`**, a chamada 06b **retornou, enviou 5 B
+> (`sendmsg`), recebeu `recv_0087` com dst = destino injetado e manteve o cliente responsivo** — 1ª
+> origem autônoma de `035F` ponta-a-ponta. Sustenta que o **contexto read/wineserver era a causa** dos
+> crashes 04/05, mas **NÃO** prova "reentrância resolvida em geral" (o callback de HW-BP ainda é
+> contexto não-natural) e foi observada **uma única vez, sem reprodução**. H2/H3 seguem **não
+> isoladas**; exclusões de §12 restritas à cobertura. Lacunas: reprodução (determinismo) e comparação
+> delimitada com a via de relay (merge pré-XOR em `gepard+0x18eff2`). Nova execução ao vivo exige
+> direção direta do responsável.
 
 > **Procedência histórica:** PIDs, FDs, portas de instrumentação em loopback e caminhos externos abaixo identificam os ensaios originais; não descrevem processos vivos agora nem garantem disponibilidade dos artefatos. Nenhuma captura privada foi aberta nesta consolidação.
 
@@ -601,10 +614,11 @@ MATCH; checagem em runtime de `ret 0x34` em `0xd47e61`. Artefato: `/tmp/claude-0
 ### 13.6 Próximo experimento, mais discriminante (PREPARADO; exige janela exclusiva + destino validado)
 
 > **Nota de instrumentação (§13.7, 2026-10-15).** `loop_map.py` (Stalker) e o disparo por
-> `Interceptor.attach` no `--fire-at` **continuam válidos**. A verificação de integridade do Gepard é
-> **byte a byte**: um hook inline só a dispara se um byte patcheado coincidir com um byte verificado
-> (azar pontual); `Stalker` e **hardware breakpoints** não são detectáveis. Para um único ponto
-> sensível, um HW BP de execução elimina esse risco pontual. Ver §13.7.
+> `Interceptor.attach` no `--fire-at` **continuam válidos**. Pelo **relato do responsável** (NÃO
+> VERIFICADO por instrumento; ver §13.7), a verificação de integridade do Gepard seria **byte a byte**:
+> um hook inline só a dispararia se um byte patcheado coincidir com um byte verificado (azar pontual);
+> `Stalker` e **hardware breakpoints** não foram detectados nesta pesquisa. Como premissa operacional,
+> para um único ponto sensível um HW BP de execução reduz esse risco pontual. Ver §13.7.
 
 Objetivo: **explicar a falha mesmo que não ande.** Uma tentativa por condição, **sem retry
 automático**. Ferramentas preparadas (não executadas): `research/movement_035f/loop_map.py`
@@ -660,19 +674,27 @@ timeout curto; limpeza idempotente de BPs/hooks; `ydotoold` encerrado; relogin a
 
 **OBSERVADO (2026-10-15).** Durante a 1ª etapa de §13.6 (eleição do ponto pós-poll), rodei um probe de
 census NOVO, `elect_firesite.py`, que colocou **10 hooks `Interceptor.attach` inline em endereços de
-código do `uaRO.exe` de uma só vez**. Logo em seguida o responsável reportou **"Memory integrity test
-failed, gepard noted"** e o processo do cliente (PID 3286648) **encerrou**. Nenhuma chamada nativa
-chegou a ser disparada.
+código do `uaRO.exe` de uma só vez**. **RELATO do responsável (não observado por instrumento meu):**
+logo em seguida veio **"Memory integrity test failed, gepard noted"** e o processo do cliente
+(PID 3286648) **encerrou**. Nenhuma chamada nativa chegou a ser disparada. O probe só registrou
+`frames`, `hits` e backtraces dos 10 sites — **nenhum evento identificou qual byte o Gepard lê** nem
+a colisão.
 
-**FATO (confirmado pelo responsável).** A verificação de integridade do Gepard é **byte a byte**: lê
-byte(s) específicos do próprio código do cliente e compara com o esperado. Um hook inline
-(`Interceptor.attach`, que reescreve bytes no alvo) só dispara a verificação **se um dos bytes
-patcheados coincidir com um byte verificado** — azar num site específico, **não** uma propriedade de
-hooks inline em geral. Com 10 hooks de uma vez, um caiu num byte verificado (INFERIDO).
-- **`Stalker` NÃO é detectável** e já foi usado amplamente aqui: executa uma **cópia relocada** do
-  código; os bytes originais permanecem intactos, então o checksum do original passa.
-- **Hardware breakpoints (DR0–DR3) NÃO são verificados** e não alteram byte algum (footprint zero).
-- O projeto **`gepardbypass`** (GitHub) trata exatamente dessas verificações.
+**RELATO do responsável (NÃO VERIFICADO por instrumento nesta pesquisa).** A verificação de
+integridade do Gepard seria **byte a byte**: leria byte(s) específicos do próprio código do cliente e
+compararia com o esperado. Nesse modelo, um hook inline (`Interceptor.attach`, que reescreve bytes no
+alvo) só dispara a verificação **se um dos bytes patcheados coincidir com um byte verificado** — azar
+num site específico, **não** uma propriedade de hooks inline em geral.
+- **INFERIDO (do relato + natureza byte-a-byte informada, não observado por instrumento):** com 10
+  hooks de uma vez, um caiu num byte verificado. A única base é o relato acima; o probe não capturou
+  evento que o comprove.
+- **`Stalker` e HW breakpoints não detectados aqui (RELATO/premissa operacional; NÃO VERIFICADO em
+  geral):** o `Stalker` executa uma **cópia relocada** do código (os bytes originais permanecem
+  intactos) e HW breakpoints (DR0–DR3) **não alteram byte algum** (footprint zero) — raciocínio
+  técnico plausível (INFERIDO) que sustenta por que não dispariam uma checagem byte-a-byte, **sem**
+  prova instrumental de não-detectabilidade em geral neste build.
+- O projeto **`gepardbypass`** (GitHub) trata de verificações desse tipo (referência externa, não
+  verificada contra este build).
 
 **Não detectado (contraste).** O ensaio estabelecido `dispatcher_trial13.py` (§13.5) rodou **sem**
 flag: observa por `th.setHardwareBreakpoint` (HW BP, sem patch) e só faz `Interceptor.attach` em
@@ -696,3 +718,72 @@ de poll via export da libc) **mantém-se válido como OBSERVADO** — aquele mé
 **Pendências humanas antes do próximo vivo:** relogin do cliente (novo PID); confirmação de que o
 evento "noted" não penalizou a conta/servidor do responsável; janela exclusiva; destino validado na
 nova posição (o `(278,316)` combinado antes vale só se o personagem ainda estiver em `(274,316)`).
+
+### 13.8 CORREÇÃO: o 035F é CIFRADO; `store_035f` = byte-store do scrambler
+
+**FATO (confirmado pelo responsável; validado por `relay_capture.conf:99-111`).** O 035F é
+**cifrado** por um XOR-scramble byte-a-byte em memória **antes** do envio; qualquer leitura de 035F
+como "texto claro" está **REFUTADA**. O que as sondas de movimento chamam `store_035f` em
+`gepard+0x18eff2` (`mov byte [ecx],bl`) **é o byte-store in-place do scrambler** (= `scramble-bp=18eff2`).
+O cliente monta o 035F em `scramble-range=2632000-2730000`, cifra ali e envia. Isso **liga** o
+`store_035f` desta investigação ao scrambler estudado em `CIPHER_INVESTIGATION.md`.
+
+**VALIDADO (relay, `relay/writeback.py`, `relay/sendwatch.py`).** A injeção de andar pelo relay =
+substituir o corpo **antes do XOR** nesse store (BP exec DR0), deixando o cliente cifrar+enviar — é
+o caminho conhecido-correto do merge reativo (`inject=true`/`inject-call=true`).
+
+### 13.9 Rodada 04/05 — dependência de fase de execução (OBSERVADO)
+
+**Correção de âncora (OBSERVADO, census read-only 5 s).** O cliente é **Wine**: a main thread drena
+o wineserver por `read` (~1308/5 s) e `writev`, quase não usa libc `poll` (2/5 s). A âncora `poll`
+nunca disparava por isso; corrigida para `read` onLeave (fronteira pós-espera real da main loop).
+
+**Rodada 04 (delay 700 ms, `read` onLeave).** A chamada 13-dword **RETORNOU** (`emit_return`
+retval=1010077) e chegou ao scrambler (`store_035f` id=0x35F, dest injetado, during_call), mas
+**sem** `sendmsg`/`recv_0087` e o cliente **congelou após o retorno**. Contraste com §13.5 (poll
+onEnter / pré-poll: congelava DENTRO, sem retorno).
+
+**Rodada 05 (delay 2 s, `read` onLeave).** Modo de falha diferente: `native_exception type="abort"`
+(SIGABRT, `pc=vdso`) **durante** a chamada, também após o scrambler cifrar o corpo. Manifestações
+distintas (freeze × abort), **causa provável a mesma**.
+
+**Classificação.** Dependência de fase/contexto = OBSERVADA. **Mecanismo do crash = HIPÓTESE,
+líder = reentrância Wine** (chamada de lógica PE de dentro do `onLeave` de um `read` = pump do
+wineserver); flush pós-dispatcher pulado é alternativa. Não demonstrado como mecanismo.
+
+### 13.10 Rodada 06b — MARCO: origem autônoma ponta-a-ponta (OBSERVADO, cliente vivo)
+
+**Primeira demonstração completa** de um 035F originado autonomamente que retorna, transmite, recebe
+resposta do servidor e mantém o cliente vivo. PID 3338296; artefato privado
+`/tmp/claude-035f-20261015-170143-round06b/trial.json` (não versionado).
+
+**Disparo.** Dispatcher 0x11 a partir de um **sítio de main-loop do `uaRO.exe`** (HW exec BP em
+`0x4dcba0`, base fixa `0x400000`), **fora** do contexto do `read` do wineserver.
+
+**Trace OBSERVADO.** `disp_captured` passivo (code120, `this_ecx=0x28c7b158`) → `emit_call`
+dest `[273,313]`, frame `[0,17,0,273,0,313,0×7]` → **`sendmsg` fd195, 5 B, during_call** →
+**`emit_return` retval=215959 (sem exceção)** → **`recv_0087` src `[273,314]` dst `[273,313]` =
+destino injetado** → cliente state S, vivo/estável.
+
+**4 critérios:** retorno SIM / envio 5 B SIM / `recv_0087` dst=destino SIM / responsivo SIM → **PASSOU.**
+
+**Diagnóstico da 06 (que não disparou):** bug de guard (no modo `--construct-frame` o `capFrame` é
+`null` de propósito; o guard exigia `!=null`). Corrigido. **Não** era slot/threading de HW BP.
+
+**Classificação (limite preservado).** Sustenta que **o contexto read/wineserver era a causa** dos
+crashes de §13.9 (r04 freeze, r05 abort). **NÃO** se afirma "reentrância resolvida em geral": o
+callback de HW-BP ainda é contexto não-natural. **Cobertura/perda:** os BPs foram desarmados em
+`doFire`, então o `store_035f` do scrambler **não** foi observado during_call nesta rodada —
+origem+cifra+envio ficam provados **funcionalmente** pelo `sendmsg` 5 B + `recv_0087` dst=injetado
+(servidor aceitou, cliente seguiu vivo), não pela observação do store.
+
+**Consequência.** Existe agora uma **primitiva nativa de andar autônomo** disparável de um sítio de
+main-loop — relevante ao objetivo xKore 0. **Lacunas abertas:** reprodução (determinismo, 1×) e
+comparação delimitada com a via de relay (merge pré-XOR em `gepard+0x18eff2`, §13.8). Ambas exigem
+direção direta do responsável para nova execução ao vivo.
+
+---
+
+_Integração §13.8–§13.10 incorporada a partir dos HANDOFFs MOVER-20261015-01..07
+(`research/movement_035f/HANDOFF.md`) e do `research/DOCUMENTADOR_BACKLOG.md`. Fonte viva nos
+artefatos privados citados; classificação segundo `docs/AGENTS.md` §3.2._

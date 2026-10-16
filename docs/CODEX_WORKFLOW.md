@@ -19,6 +19,22 @@ Use `/model` para confirmar disponibilidade de `gpt-6.1-sol`, `gpt-6-luna` e `gp
 - Não forneça a transcrição integral, logs extensos ou múltiplos documentos históricos se bastar um trecho com `arquivo:linha`.
 - Não presuma que instruções são isolamento de filesystem; subagentes herdam permissões.
 
+## Kit operacional `ro-ops` e skills
+Skills do projeto em `.agents/skills/` (descobertas por Codex e Claude): `ro-ops`, `repo-evidence`,
+`research-handoff`. Ver AGENTS.md da raiz para quando usar cada uma. Para tarefas recorrentes,
+prefira o kit a reescrever shell:
+```bash
+python3 -m ro_ops discover        # PID/porta do gadget + main_tid (read-only)
+python3 -m ro_ops env-check       # pré-requisitos e estado de limpeza (read-only)
+python3 -m ro_ops sample-thread --pid P --tid T
+python3 -m ro_ops new-artifact --dir D [--pid P] [--probe F]   # dir privado 0700 + PROVENANCE
+python3 -m ro_ops scaffold-state --dir research/<trilha> --role R --id ID
+```
+Saída JSON `{cmd,status,data,caveats}`; exit codes 0 verified / 10 unverified / 20 undetermined /
+1 erro de uso. `undetermined` nunca vira positivo — leia `caveats`. **O kit é read-only por padrão
+e não autoriza experimento**; `env-check` **não** prova exclusividade da janela (ausência de lock
+≠ autorização; a janela é combinada com o responsável e o `research/COORDINATION.md`).
+
 ## Validação
 ```bash
 python3 scripts/validate-codex.py

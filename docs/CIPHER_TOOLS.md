@@ -118,23 +118,53 @@ Frida é importado apenas ao executar a coleta. Usar o ambiente existente com Fr
 | `load` | Confirmar `mov al,[eax]` e seis instruções contíguas; acrescentar `--load-capture` com o grafo limitado |
 | `byte-writer` | Mover o watchpoint para a origem realmente lida por EAX; acrescentar `--value-capture` |
 | `byte-producer` | Confirmar antes/depois de `mov [esi],cl`; acrescentar `--byte-producer-capture` |
+| `cl-origin` | Confirmar `mov ecx,[ecx]` em `+0x1C7502` e o trecho contíguo até depois de `mov [esi],cl`; exige `--cl-code-input` para cada inspeção de código |
+| `cl-writer` | Observar escrita de 1 byte na origem de CL e a carga consumidora na mesma rodada; acrescentar `--cl-source-capture` de um `cl-origin` completo |
+| `cl-transform` | Observar antes/depois de `xor dword ptr [ecx],edx`, seguido de carga→CL→store; acrescentar `--cl-writer-capture` com o único predecessor candidato do watchpoint, da mesma instância |
+| `cl-producer` | Confirmar `pop dword ptr [edx]` antes/depois e a cadeia consumidora; acrescentar `--cl-writer-capture` completo com essa única candidata de última escrita |
 
 Todos os modos requerem `--inventory ARQUIVO --out DIRETORIO --exclusive-confirmed`.
 Modos com breakpoint exigem `--selection any-chain`: não atribuem identidade de pacote.
 Os modos posteriores também exigem as entradas das etapas anteriores. São recortes
 específicos das instruções observadas neste build, não um tracer genérico ou cifra.
 Um endereço observado anteriormente só é usado após validar build, código e mapeamento.
+Os modos `cl-origin`/`cl-writer`/`cl-transform`/`cl-producer` usam o inventário atual e inspeções explícitas do
+mesmo processo/build, sem depender das capturas das oito etapas antigas. Isso não
+estabelece continuidade de sessão criptográfica. Antes de definir CL pela carga,
+ECX é salvo como endereço efetivo; ESI também é preservado antes de carregar o
+ponteiro de destino. O caminho candidato é revalidado e cada instrução é observada.
 Watchpoints são recusados se a região contiver ESP de qualquer thread enumerada ou
 se faltar o contexto necessário para essa verificação. Isso não identifica estado criptográfico.
 
 `--inspect-only` lê metadados de código e não arma instrumentos. Seu resultado
 `code_only` não é prova de execução. O grafo reverso considera no máximo 32 arestas,
 64 bytes e 200 ms, interrompendo ao atingir limites; alternativas não são caminhos executados.
+`--inspect-cl-origin` requer `--inspect-only` e examina predecessores de
+`+0x1C752B`. `--cl-code-anchor-rva` permite retomar uma fronteira encontrada dentro
+dos mesmos 64 bytes anteriores, sem ampliar a região; no máximo quatro arquivos
+de código entram por `--cl-code-input`. Capturas conflitantes são rejeitadas.
+`cl-writer` recusa regiões de stack, aguarda uma escrita na posição comprovada e
+associa somente a próxima carga correspondente na mesma captura. Leituras anteriores
+sem escritor observado são contadas separadamente. O watchpoint vê só o byte baixo,
+sem demonstrar quem escreveu os outros três bytes da dword ou excluir outras threads.
+`cl-transform` revalida cabeçalhos/limites PE, região executável e instrução exata;
+uma seção executável anônima só é aceita dentro da imagem identificada. Preserva
+ECX como endereço, EDX e quatro bytes do operando antes/depois do XOR. A região do
+operando também precisa estar fora dos mapeamentos de ESP enumerados na preparação.
+O watchpoint continua limitado a um byte e uma thread. Uma escrita posterior antes
+da carga impede atribuir o byte carregado ao XOR observado. Sem associação completa,
+o analisador conserva a prova local da operação separada da cadeia consumidora;
+um XOR de memória não identifica por si só cifragem, fluxo ou estado criptográfico.
+`cl-producer` preserva EDX antes da escrita e lê somente a dword em ESP usada pelo
+POP. Confere a cópia, EDX e ESP posterior (`ESP+4`), sem watchpoint de stack. Uma
+inspeção limitada de predecessores do escritor permanece separada da prova viva.
 `--producer-only`, exclusivo de `byte-producer`, encerra após a escrita confirmada,
 sem associá-la a uma leitura posterior. Observações parciais são preservadas separadamente.
 
-Limites: sequência até 500 ms, espera até 10 s, até 1.000 traps/visitas, até 64 escritas
+Limites: sequência até 500 ms, espera até 10 s, até 1.000 traps/visitas, padrão de 64 escritas
 e arquivo até 256 KiB. O evento que alcança o teto interrompe a completude da coleta.
+`--cl-write-cap` permite até 256 em modos CL com watchpoint; ampliar o padrão exige
+escopo humano confirmado. A possibilidade no CLI não constitui autorização.
 Os timers não são de tempo real; os tempos efetivos ficam no artefato. Cada trap retoma
 a thread, sem suspendê-la pela duração da janela. A preparação (`--start-delay-ms`, até 5 s)
 ocorre antes da armação. Timeout/erro/interrupção desarmam somente os recursos próprios.

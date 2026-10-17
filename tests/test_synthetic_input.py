@@ -1,9 +1,10 @@
 """Offline input readiness and session cancellation; never touches the desktop."""
 import threading
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 import _boot
-from relay.synthetic_input import KEYCODES, SynthActuator, build_actuator
+from relay.synthetic_input import KEYCODES, SynthActuator, build_actuator, focus
 from relay.client_dispatch import ClientDispatcher
 
 
@@ -59,6 +60,26 @@ class InputTests(unittest.TestCase):
         self.assertTrue(done.wait(1))
         self.assertEqual((errors[0]['token'], errors[0]['hit']), (5,'error'))
         self.assertIsNone(build_actuator(SimpleNamespace(synth_input=False)))
+
+    def test_focus_is_verified_before_synthetic_key(self):
+        calls = []
+        def fake_run(args, dry, env=None):
+            calls.append(args)
+            if args[1] == 'getwindowfocus':
+                return (0, '0x05200001', '')
+            return (0, '', '')
+        with patch('relay.synthetic_input._run', side_effect=fake_run):
+            focus('0x05200001', False)
+        self.assertEqual([x[1] for x in calls], ['windowactivate', 'getwindowfocus'])
+
+    def test_wrong_focus_aborts_before_sending_key(self):
+        def fake_run(args, dry, env=None):
+            if args[1] == 'getwindowfocus':
+                return (0, '0x04000001', '')
+            return (0, '', '')
+        with patch('relay.synthetic_input._run', side_effect=fake_run):
+            with self.assertRaisesRegex(RuntimeError, 'focused window differs'):
+                focus('0x05200001', False)
 
     def test_same_epoch_map_reset_cancels_input_already_focusing(self):
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()

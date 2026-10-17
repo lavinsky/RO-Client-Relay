@@ -107,6 +107,16 @@ pacotes não-`035F` do consumidor e o OpenKore não sincroniza. Sequência: rela
 
 ## Diagnóstico e cuidados
 
+- **Login sem coordenadas ou entidades:** o default de `--drop-ids` é
+  `4754,5395,09fd,09ff` (`relay/cli.py`). Os controles Gepard `4754`/`5395` ficam com
+  o cliente; encaminhá-los a uma tabela RO que não reconhece esses IDs faz o OpenKore
+  descartar também pacotes seguintes do mesmo bloco, inclusive a resposta de login `0AC4`.
+  `debugPacket_exclude` apenas oculta avisos no consumidor, não descarta bytes.
+  Uma lista explícita em config/CLI **substitui** os defaults: mantenha `4754,5395`
+  nela. `09fd`/`09ff` continuam sendo recuperados quando `ActorDecrypt` verifica a cópia;
+  sem verificação, são descartados. Regressão: `tests/test_packets.py` cobre fragmentação,
+  preservação de `0AC4`/`02EB` e offsets dos atores cifrados. Após perder o login inicial,
+  faça login completo com o relay corrigido ativo para reconstruir o estado do consumidor.
 - **Nenhum pacote decifrado fabricado:** para `09fd`/`09ff` sem evidência de cópia válida, o pipeline descarta o item em vez de gerar bytes conjecturais.
 - **Sem laços de retorno:** o modo de escrita desativa o feed de send do cliente para evitar duplicação recursiva.
 - **Privacidade:** `relay/safety.py` implementa sanitização de credenciais e HTTP; nunca salvar em docs capturas reais, tokens, endpoints privados de conta ou dumps brutos.

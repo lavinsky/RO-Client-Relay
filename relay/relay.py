@@ -36,6 +36,7 @@ class Relay:
         self.dump = None                               # optional file: every framed byte sent (--feed-dump)
         self.on_inbound = None                         # callback(payload, typ) for what the consumer sends
         self.on_connect = None                         # callback() on RE-connect only (not the first connect)
+        self.on_disconnect = None                      # callback() once after a consumer socket is lost
         self._connected_once = False                   # distinguishes the initial connect from reconnects
         self._in = b''                                 # reassembly buffer for inbound frames
         threading.Thread(target=self._connect_loop, name='relay-connect', daemon=True).start()
@@ -133,9 +134,16 @@ class Relay:
             s.close()
         except OSError:
             pass
+        dropped = False
         with self.lock:
             if self.sock is s:
                 self.sock = None
+                dropped = True
+        if dropped and self.on_disconnect is not None:
+            try:
+                self.on_disconnect()
+            except Exception as e:
+                print(f'[relay] on_disconnect error: {e}')
 
     # ---- feeding ----------------------------------------------------------------------------
     def feed(self, data):

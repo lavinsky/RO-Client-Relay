@@ -677,13 +677,40 @@ var md = null;      // {recipe, disp, site, fn, thisp, receiver, queue:[args], t
 
 function mdUnarm(slot) { if (md !== null && md.th !== null) { try { md.th.unsetHardwareBreakpoint(slot); } catch (e) {} } }
 
-function mdReceiverReady() {                    // guarda de prontidao do receptor (rodada 06b)
+function mdContext() {                          // identidade do objeto receptor nesta sessao
     try {
-        if (MD_MGR.add(0x58).readU32() !== 1) return false;
+        if (MD_MGR.add(0x58).readU32() !== 1) return null;
         var obj = MD_MGR.add(4).readPointer();
+        if (obj.isNull()) return null;
         var rcv = obj.readPointer().add(0x18).readPointer();
-        return getGepard() !== null && rcv.equals(g.add(0x10a90));
-    } catch (e) { return false; }
+        var gep = getGepard();
+        if (gep === null || !rcv.equals(gep.add(0x10a90))) return null;
+        return obj;
+    } catch (e) { return null; }
+}
+
+function mdInvalidate(why) {
+    if (md === null) return;
+    md.thisp = null;
+    md.receiver = null;
+    md.queue.length = 0;
+    mdUnarm(3); md.fireArmed = false;
+    // A captura so e aceita quando o receptor estiver novamente pronto.
+    if (!md.capArmed && md.th !== null) {
+        try { md.th.setHardwareBreakpoint(2, md.disp); md.capArmed = true; }
+        catch (e) { send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'recapture arm: ' + e.message}); }
+    }
+    send({tag: 'MOVE-DISPATCH', hit: 'invalidated', e: why});
+}
+
+function mdTrusted() {
+    var obj = mdContext();
+    if (md === null || md.thisp === null || md.receiver === null ||
+        obj === null || !obj.equals(md.receiver)) {
+        if (md !== null && md.thisp !== null) mdInvalidate('receiver unavailable/changed');
+        return false;
+    }
+    return true;
 }
 
 function mdTrap(ctx) {                          // devolve true se tratou o breakpoint
@@ -691,19 +718,22 @@ function mdTrap(ctx) {                          // devolve true se tratou o brea
     if (md.capArmed && ctx.pc.equals(md.disp)) {                   // captura passiva do `this` (construct mode)
         if (md.thisp === null && !md.busy) {
             var lo = ctx.esp.add(8).readU32(), hi = ctx.esp.add(12).readU32();
-            if (hi === 0 && lo <= 0x95) {
-                md.thisp = ctx.ecx; md.capArmed = false; mdUnarm(2);
+            var receiver = mdContext();
+            if (hi === 0 && lo <= 0x95 && receiver !== null && !ctx.ecx.isNull()) {
+                md.thisp = ctx.ecx; md.receiver = receiver;
+                md.capArmed = false; mdUnarm(2);
                 send({tag: 'MOVE-DISPATCH', hit: 'captured', 'this': ctx.ecx.toString(), code: lo});
             }
         }
         return true;
     }
     if (md.fireArmed && ctx.pc.equals(md.site)) {                  // sitio PE do main-loop
-        if (Process.getCurrentThreadId() !== md.tid || md.thisp === null || md.queue.length === 0 || md.busy) return true;
+        if (Process.getCurrentThreadId() !== md.tid || md.busy) return true;
+        if (!mdTrusted() || md.queue.length === 0) return true;
         var a = md.queue.shift();
         md.fireArmed = false; mdUnarm(3); md.capArmed = false; mdUnarm(2);   // sem BP aninhado
         var r = {tag: 'MOVE-DISPATCH', hit: 'fired', x: a.x, y: a.y, 'this': md.thisp.toString()};
-        if (!mdReceiverReady()) { r.hit = 'abort'; r.e = 'receiver not ready/changed'; send(r); }
+        if (!mdTrusted()) { r.hit = 'abort'; r.e = 'receiver not ready/changed'; send(r); }
         else {
             try {
                 md.busy = true;
@@ -716,7 +746,7 @@ function mdTrap(ctx) {                          // devolve true se tratou o brea
             md.busy = false;
             send(r);
         }
-        if (md.queue.length) { try { md.th.setHardwareBreakpoint(3, md.site); md.fireArmed = true; } catch (e) {} }
+        if (md.queue.length && mdTrusted()) { try { md.th.setHardwareBreakpoint(3, md.site); md.fireArmed = true; } catch (e) {} }
         return true;
     }
     return false;
@@ -732,12 +762,7 @@ function onNativeDispatch(m) {
             // ele toca memoria invalida e CONGELA o cliente (fila entope com 'queue full'). Zera o
             // `this`, descarta a fila pendente e re-arma a captura passiva (DR2) para recapturar fresco
             // no proximo dispatch in-client (andar uma vez). Nunca firar (DR3) sem `this` valido.
-            if (md !== null && !md.busy) {
-                md.thisp = null; md.queue.length = 0;
-                if (md.fireArmed) { mdUnarm(3); md.fireArmed = false; }
-                if (!md.capArmed) { try { md.th.setHardwareBreakpoint(2, md.disp); md.capArmed = true; } catch (e) {} }
-                send({tag: 'MOVE-DISPATCH', hit: 'recapture', e: 'this reset; walk once to re-capture'});
-            }
+            if (md !== null) mdInvalidate('session reset; walk once to re-capture');
         } else if (m.arm) {
             var rec = MD_RECIPES[m.recipe];
             var base = peBase(m.module || 'uaRO.exe');
@@ -753,7 +778,7 @@ function onNativeDispatch(m) {
                 else {
                     var th = Process.enumerateThreads().filter(function (t) { return t.id === Process.id; })[0];
                     var types = ['pointer']; for (var i = 0; i < 13; i++) types.push('uint32');
-                    md = {recipe: rec, disp: disp, site: site, thisp: null, queue: [], th: th || null, tid: Process.id,
+                    md = {recipe: rec, disp: disp, site: site, thisp: null, receiver: null, queue: [], th: th || null, tid: Process.id,
                           capArmed: false, fireArmed: false, busy: false,
                           fn: new NativeFunction(disp, 'uint', types, {abi: 'thiscall', exceptions: 'propagate'})};
                     if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
@@ -763,7 +788,7 @@ function onNativeDispatch(m) {
                 }
             }
         } else if (m.args && md !== null) {
-            if (md.thisp === null) send({tag: 'MOVE-DISPATCH', hit: 'dropped', e: 'dispThis not captured yet (walk once in-client)', x: m.args.x, y: m.args.y});
+            if (!mdTrusted()) send({tag: 'MOVE-DISPATCH', hit: 'dropped', e: 'dispatcher context untrusted (walk once in-client)', x: m.args.x, y: m.args.y});
             else if (md.queue.length >= 8) send({tag: 'MOVE-DISPATCH', hit: 'dropped', e: 'queue full'});
             else {
                 md.queue.push(m.args);

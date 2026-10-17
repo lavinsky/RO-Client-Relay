@@ -106,6 +106,7 @@ class WriteBack:
             # pacotes "S" do consumidor so chegam ao cliente pela SendPacket (--inject-call); sem ela
             # caem no ramo de drop de _on_inbound_split e o OpenKore nao sincroniza/loga.
             relay.on_connect = self.recapture_move_dispatch   # reconexão/relogin -> recaptura o `this` (anti-freeze)
+            relay.on_disconnect = self.recapture_move_dispatch  # fail closed ao perder consumidor
             if getattr(opts, 'inject_call', False):
                 self.sendcall_rva = int(opts.sendpacket_rva, 16)   # demais acoes -> client SendPacket (DR1)
             # Fila de egresso (opt-in): no cliente real/xKore o movimento e as ações saem por UM fluxo

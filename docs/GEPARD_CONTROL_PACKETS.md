@@ -69,15 +69,13 @@ Fatos que permanecem:
 - **`0437` sentar/levantar (GID=0):** OBSERVADO funcionando via client SendPacket.
 - **`0437` ataque (GID≠0) e `0438` perícia via SendPacket crua:** pacote sai, **ação não executa**
   (relato do responsável; mecanismo do servidor NÃO VERIFICADO).
-- **Throttle de cast:** `0438` sob `--cast-throttle` (default 0.8 s): um cast por janela, log
-  `cast 0x0438 pacejado (rajada evitada)` — política intencional de writeback.
+- **Throttle de cast (histórico):** removido da operação na refatoração; frequência e cooldown pertencem ao OpenKore. Ver [auditoria operacional](REFACTOR_REVIEW.md).
 
 **Relação com H-CIPHER-01:** a explicação alternativa "era o `0368`" foi retirada; H-CIPHER-01
 (rejeição por conteúdo/cifra) **volta a ser candidata**, ao lado de pré-condições de estado do
 cliente que a via natural monta (ver abaixo). Nenhuma das duas está demonstrada.
 
-**Teste offline:** `tests/test_writeback.py` cobre o roteamento (default sem `0368`; caso
-`target_select=True` com dedup por GID). Testa o código, não a execução da ação no servidor.
+**Teste offline atual:** `tests/test_writeback.py` cobre roteamento, bytes e omissões anti-duplicação. A seleção experimental foi removida; os resultados anteriores acima permanecem históricos. O teste não comprova execução no servidor.
 
 ## Mapa dispatcher → pacote de ação (ACT-20261016-01)
 

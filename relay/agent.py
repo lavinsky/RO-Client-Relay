@@ -7,6 +7,17 @@ import sys
 from . import ROOT
 
 AGENT_JS = os.path.join(ROOT, 'agent', 'relay_hook_linux.js')
+RESEARCH_JS = os.path.join(ROOT, 'agent', 'research_hooks.js')
+
+
+def agent_source(research=False):
+    """Operational hooks by default; experimental helpers require explicit opt-in."""
+    with open(AGENT_JS) as f:
+        source = f.read()
+    if research:
+        with open(RESEARCH_JS) as f:
+            source += '\n' + f.read()
+    return source
 GADGET_PORTS = range(27052, 27100)                 # frida-gadget-32.config: 27052, pick-next on conflict
 
 
@@ -47,7 +58,7 @@ class Agent:
     agent message (a dict; a binary attachment is in payload['data']) on Frida's thread, so
     it must only queue it."""
 
-    def __init__(self, port, on_message):
+    def __init__(self, port, on_message, *, research=False):
         import frida                                   # only needed at run time, not by the tests
         self._frida = frida
         self._on_message = on_message
@@ -55,8 +66,7 @@ class Agent:
         dev = frida.get_device_manager().add_remote_device(f'127.0.0.1:{port}')
         self.session = dev.attach('Gadget')
         self.session.on('detached', self._detached)
-        with open(AGENT_JS) as f:
-            self.script = self.session.create_script(f.read())
+        self.script = self.session.create_script(agent_source(research))
         self.script.on('message', self._message)
 
     def _message(self, msg, data):

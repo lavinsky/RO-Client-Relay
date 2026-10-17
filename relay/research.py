@@ -149,3 +149,42 @@ class ActorDiag:
                 i = blk.find(pkt[:4], i + 1)
             msg += f' region-copies={hits}'
         print(msg)
+
+
+def scramble_probe_config(opts):
+    """Optional read-only entry probe; operational configuration never imports this."""
+    pe, pa = getattr(opts, 'probe_entry', ''), getattr(opts, 'probe_at', '')
+    if pe or pa:
+        lo = hi = None
+        if getattr(opts, 'scramble_range', ''):
+            lo, hi = (int(x, 16) for x in opts.scramble_range.split('-'))
+        ids = [int(x, 16) for x in getattr(opts, 'probe_ids', '0437,0438').split(',') if x.strip()]
+        cfg = {'reg': 'auto', 'pid': int(opts.scramble_id, 16), 'body': None, 'dry': False,
+               'idoff': 0, 'lo': lo, 'hi': hi, 'persist': False, 'probe': True, 'entry': True,
+               'ids': ids}
+        if pa:
+            cfg['pc'] = int(pa, 16)
+            where = f"0x{cfg['pc']:x}"
+        else:
+            cfg['off'] = int(pe, 16)
+            where = f"gepard+0x{cfg['off']:x}"
+        gate = f' gated to a 0437/0438 copy into 0x{lo:x}-0x{hi:x}' if lo is not None else ' (first call)'
+        print(f'[*] --probe-entry: one-shot capture of args at {where}{gate}, read-only')
+        return cfg
+
+
+def arm_trace(capture):
+    """Rastreio com Stalker: teste de sobrevivência (--trace-test), uaRO->gepard (--trace-walk)
+    ou uaRO->uaRO (--trace-internal). Faixa do código uaRO 0x401000..0x1717000."""
+    from .protocol import trace_msg
+    w, t = getattr(capture.opts, 'trace_walk', 0), getattr(capture.opts, 'trace_test', 0)
+    ti = getattr(capture.opts, 'trace_internal', 0)
+    if ti:
+        print(f'[*] --trace-internal: Stalker por {ti}ms registrando chamadas uaRO->uaRO (ARRISCADO)')
+        capture.post(trace_msg(ti, 0x401000, 0x1717000, interno=True))
+    elif w:
+        print(f'[*] --trace-walk: Stalker por {w}ms registrando chamadas uaRO->gepard (ARRISCADO)')
+        capture.post(trace_msg(w, 0x401000, 0x1717000))
+    elif t:
+        print(f'[*] --trace-test: Stalker por {t}ms (teste de sobrevivencia, ARRISCADO)')
+        capture.post(trace_msg(t))

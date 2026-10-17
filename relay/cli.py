@@ -7,7 +7,7 @@ import sys
 from . import ROOT
 from .agent import Agent, pick_port, pid_of_port
 from .config import DEFAULT_CONFIG, load_config_defaults
-from .console import CaptureLog
+from .console import CaptureLog, configure
 from .packets import WireFilter, load_lengths
 from .relay import Relay
 from .runtime import Capture
@@ -20,6 +20,9 @@ def parse_args(argv=None):
     ap.add_argument('--config', default=DEFAULT_CONFIG,
                     help='INI file of default settings ([capture] section); CLI options override it. '
                          'Missing file = built-in defaults.')
+    ap.add_argument('--verbose', action='store_true', help='eventos detalhados e tempos sanitizados')
+    ap.add_argument('--no-color', action='store_true', help='desabilitar cores ANSI')
+    ap.add_argument('--wait', action='store_true', help='aguardar sinais sem depender do stdin')
     ap.add_argument('--name', default='uaRO.exe')
     ap.add_argument('--port', type=int)
     ap.add_argument('--out', default=os.path.join(ROOT, 'relay_log.jsonl'))
@@ -77,12 +80,6 @@ def parse_args(argv=None):
                          '(default 0x816640, discovered for this uaRO build). Resolved against --sendpacket-module.')
     ap.add_argument('--sendpacket-module', default='uaRO.exe',
                     help='--inject-call: the module whose base --sendpacket-rva is relative to.')
-    ap.add_argument('--target-select', action=argparse.BooleanOptionalAction, default=False,
-                    help='emit a 0368 (CZ_REQNAME_BYGID) select-by-GID before a targeted action (0437 '
-                         'attack / 0438 skill), on BOTH the client-SendPacket path and the --action-merge '
-                         'path (the 0368 goes out via SendPacket, the action by its own route). Dedup by '
-                         'GID. OFF by default: the action already carries the GID and live tests fired with '
-                         'and without the 0368 (refuted as a fix). Enable to re-try the click-mimic.')
     ap.add_argument('--action-merge', action=argparse.BooleanOptionalAction, default=False,
                     help='--inject-call + --scramble-bp: route consumer 0437/0438/0af4 to the scrambler '
                          'merge (one-shot body map, like 035f) instead of the client SendPacket. OFF by '
@@ -91,7 +88,7 @@ def parse_args(argv=None):
                     help='atuador de tecla sintética integrado ao relay (OFF por padrão): quando uma '
                          'ação do consumidor (0437/0438/0af4) é armada no merge, injeta a tecla '
                          '(uinput/ydotool, passa no Gepard) que faz o CLIENTE montar o carrier, que o '
-                         'scrambler reescreve. Substitui o sidecar action_trigger.py. Requer ydotoold '
+                         'scrambler reescreve. Requer ydotoold '
                          'rodando e a janela do cliente focável; efeito colateral = input real no seat0.')
     ap.add_argument('--synth-wid', default='',
                     help='--synth-input: id (hex wmctrl) da janela do cliente a focar; vazio = autodetecta '
@@ -103,9 +100,6 @@ def parse_args(argv=None):
                          'cima (KEY_9=10), NÃO o do numpad.')
     ap.add_argument('--synth-key-0af4', default='F2',
                     help='--synth-input: tecla para o 0af4 (perícia no chão). Default F2.')
-    ap.add_argument('--synth-debounce-ms', type=int, default=500,
-                    help='--synth-input: intervalo mínimo entre disparos da MESMA ação (anti-repetição '
-                         'quando o consumidor re-arma o mesmo id em rajada). Default 500.')
     ap.add_argument('--synth-dry', action=argparse.BooleanOptionalAction, default=False,
                     help='--synth-input: não injeta a tecla; só registra o que faria (teste).')
     ap.add_argument('--move-dispatch', action=argparse.BooleanOptionalAction, default=False,
@@ -114,29 +108,6 @@ def parse_args(argv=None):
                          'and sends its own 035f. Uses DR2/DR3; keep --no-send-watch.')
     ap.add_argument('--move-dispatch-ptr', default='0xd473b0', help='--move-dispatch: dispatcher address (hex)')
     ap.add_argument('--move-dispatch-site', default='0x4dcba0', help='--move-dispatch: PE main-loop fire site (hex)')
-    ap.add_argument('--inject-persist', action=argparse.BooleanOptionalAction, default=False,
-                    help='--inject + --scramble-bp: keep each consumer packet and replace EVERY matching '
-                         'client action of that id (persistent hijack), instead of one-shot per packet. '
-                         'Clear by stopping the driver or sending an empty body.')
-    ap.add_argument('--egress-queue', action=argparse.BooleanOptionalAction, default=False,
-                    help='--move-dispatch: serialize consumer packets through one FIFO drain so a 035f '
-                         'native dispatch never overlaps a 0437/0438 action (the real-client/xKore ordered '
-                         'stream does this for free; our PoC fans each id into an async client-side path). '
-                         'Preserves arrival order; paces by --egress-interval-ms and holds longer after an '
-                         'action (--egress-action-gap-ms) so the synthetic key lands on a settled char. OFF.')
-    ap.add_argument('--egress-interval-ms', type=int, default=400,
-                    help='--egress-queue: milliseconds between consecutive dispatched packets (default 400).')
-    ap.add_argument('--egress-action-gap-ms', type=int, default=400,
-                    help='--egress-queue: extra settle gap after dispatching an action (0437/0438/0af4), so '
-                         'the client commits it before the next 035f walk resumes (default 400).')
-    ap.add_argument('--egress-max-age-ms', type=int, default=800,
-                    help='--egress-queue: drop a queued packet instead of dispatching it once it has waited '
-                         'longer than this (stale walk requests to old coords pile up when the queue backs '
-                         'up). 0 disables the drop (default 800).')
-    ap.add_argument('--cast-throttle', type=float, default=0.8,
-                    help='--inject-call: minimum seconds between injected cast-time skills (0438/0af4). '
-                         'The consumer retries a skill many times; without this they flush back-to-back '
-                         'and each cast cancels the previous. 0 disables (default 0.8).')
     ap.add_argument('--send-probe', action='store_true',
                     help='--inject research (read-only): instead of injecting, arm a one-shot breakpoint '
                          'on the scrambler store and, on the first 0437/0438 send, capture the registers '
@@ -233,7 +204,7 @@ def build_feed(a, drop):
     host = host or '127.0.0.1'
     lengths = read_lengths(a.recvpackets, required=True)
     wire = WireFilter(lengths, drop)
-    relay = Relay(host, int(port), a.relay_format)       # unaligned: the filter tokenizes
+    relay = Relay(host, int(port), a.relay_format, autostart=False)       # unaligned: the filter tokenizes
     print('[*] feeding cleartext wire bytes, per-connection tokenized')
     if a.feed_dump:
         relay.dump = open(a.feed_dump, 'wb')
@@ -245,6 +216,9 @@ def build_feed(a, drop):
 
 def main(argv=None):
     a = parse_args(argv)
+    if a.inject and a.relay_format != 'xkore1':
+        sys.exit('[!] command injection requires XKore 1 packet frames; raw is observation only')
+    configure(a)
     relay, wire = build_feed(a, parse_ids(a.drop_ids))
 
     port = a.port or pick_port(a.name)
@@ -257,9 +231,15 @@ def main(argv=None):
     capture = None
 
     def on_message(payload):                           # Frida's thread: queue only
+        import time
+        payload['observed_ns'] = time.monotonic_ns()
         capture.work.put(payload)
 
-    agent = Agent(port, on_message)
+    research = any(getattr(a, k, False) for k in
+                   ('send_probe', 'probe_entry', 'probe_at', 'trace_test', 'trace_walk',
+                    'trace_internal', 'scramble_trace')) or bool(a.scramble_bp and not a.inject) or \
+                   bool(a.send_watch and not (a.scramble_bp or a.inject_call))
+    agent = Agent(port, on_message, research=research)
     capture = Capture(a, pid, relay, wire, log, agent.post)
     capture.start()
     agent.load()                                       # messages start flowing here
@@ -267,7 +247,13 @@ def main(argv=None):
     capture.arm_scramble()                             # exec breakpoint at gepard+off, if --scramble-bp
     capture.arm_move_dispatch()                        # native movement dispatcher, if --move-dispatch
     capture.arm_sendcall()                             # capture SendPacket `this`, if --inject-call
-    capture.arm_trace()                                # Stalker trace, if --trace-test / --trace-walk
+    def arm_trace():
+        if a.trace_test or a.trace_walk or a.trace_internal:
+            from .research import arm_trace as trace
+            trace(capture)
+    arm_trace()
+    if relay:
+        relay.start()
     if capture.send_watch_waiting:
         print('[*] send watch: waiting for the recv ring to locate the send queue')
     print(f'[*] capturing -> {a.out}  (Ctrl-C to stop)')
@@ -276,13 +262,19 @@ def main(argv=None):
         raise KeyboardInterrupt                         # so the finally still runs agent.unload() ->
     signal.signal(signal.SIGTERM, _on_term)             # dispose() clears the debug registers
 
-    def _on_usr1(signum, frame):                       # re-arma o trace sob demanda (abrir a janela
-        capture.arm_trace()                             # na hora de clicar; repetir sem reiniciar)
+    def _on_usr1(signum, frame):                       # optional research trace rearm
+        arm_trace()
     signal.signal(signal.SIGUSR1, _on_usr1)
 
     try:
-        sys.stdin.read()                               # hold stdin open (tail -f /dev/null | ...)
+        if a.wait:
+            while True:
+                signal.pause()
+        else:
+            sys.stdin.read()
     except KeyboardInterrupt:
         pass
     finally:
+        capture.suspend_commands()
         agent.unload()
+        log.close()

@@ -11,7 +11,8 @@ Modules, in the order data flows through them:
   safety       credential redaction and the one HTTP check
   console      sanitized JSONL log + console lines
   research     --probe-actors / --actor-diag tools
-  writeback    WRITE path: merge (035f) + client SendPacket (0437/0438) + Stalker trace
+  commands     bounded readiness, session cancellation and local measurements
+  writeback    dispatcher movement, natural action merge and generic native fallback
   runtime      Capture: builds the components and routes agent messages
   config       loads the INI config as argparse defaults
   cli          options, wiring, threads

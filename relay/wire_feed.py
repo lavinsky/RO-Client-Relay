@@ -10,6 +10,7 @@ feeds each as an "S" frame immediately; those need no ordering buffer."""
 import collections
 import threading
 import time
+from contextlib import nullcontext
 
 from .actors import ActorDecrypt
 from .protocol import conn_of, ring_msg
@@ -48,6 +49,21 @@ class WireFeed:
         self.cond = threading.Condition()              # guards pending (and each chunk's snaps/closed)
         self.game_socks = set()                        # sockets the agent should snapshot the ring for
         self.ring_span = {}                            # sock -> ring bytes the agent copies
+        self.epoch = 0
+        self.revision = 0
+        self.generation = 0
+        self.on_timing = None
+
+    def reset_session(self, epoch, generation=0):
+        with self.cond:
+            self.epoch = epoch
+            self.revision += 1
+            self.generation = generation
+            self.pending.clear()
+            self.wire.conns.clear()
+            self.game_socks.clear()
+            self.ring_span.clear()
+            self.cond.notify_all()
 
     # ---- worker thread ----------------------------------------------------------------------
     def on_recv(self, m):
@@ -78,6 +94,11 @@ class WireFeed:
         else:
             items, cstart, d = [('B', self.wire.push(conn, C))], 0, None
         e = new_chunk(sock, conn, items, cstart, d)
+        e['epoch'] = self.epoch
+        e['revision'] = self.revision
+        e['generation'] = self.generation if hasattr(self.relay, 'generation') else None
+        e['decoder'] = dec
+        e['mono_ns'] = m.get('observed_ns', time.monotonic_ns())
         if e['enc']:
             dec.before(e, pre)
         closed_at = m.get('ts') or time.time() * 1000
@@ -139,7 +160,8 @@ class WireFeed:
                     self.cond.wait(self.IDLE_WAIT)
                 held = [e for e in self.pending if e['enc'] and e['res'] is None]
             for e in held:                             # poll every held chunk's slots, not just the head
-                e['res'] = self.dec.settle(e, time.time(), self.delay)
+                if e.get('epoch', self.epoch) == self.epoch:
+                    e['res'] = e.get('decoder', self.dec).settle(e, time.time(), self.delay)
             if self._feed_ready():
                 time.sleep(self.POLL)                  # head chunk still waiting for its evidence
             if self.report_stats and time.time() - last_stats > self.STATS_EVERY:
@@ -159,7 +181,19 @@ class WireFeed:
             data = b''.join(it[1] if it[0] == 'B' else (e['res'].get(i) or b'')
                             for i, it in enumerate(e['items']))
             if data:
-                self.relay.feed(data)
+                # Guard under Relay.lock: a popped chunk must not reach a new socket.
+                with getattr(self.relay, 'lock', nullcontext()):
+                    if e.get('revision', self.revision) != self.revision or e.get('epoch', self.epoch) != self.epoch:
+                        continue
+                    generation = e.get('generation')
+                    ready_ns = time.monotonic_ns()
+                    if generation is None:
+                        self.relay.feed(data)  # legacy offline fixtures
+                    else:
+                        self.relay.feed(data, generation=generation)
+                if self.on_timing and 'mono_ns' in e:
+                    self.on_timing('receive_ready_ms', (ready_ns - e['mono_ns']) / 1e6)
+                    self.on_timing('consumer_send_call_ms', (time.monotonic_ns() - ready_ns) / 1e6)
 
 
 class ClientSendFeed:
@@ -168,7 +202,7 @@ class ClientSendFeed:
     def __init__(self, relay, feed_send, sendwatch=None):
         self.relay, self.feed_send, self.sendwatch = relay, feed_send, sendwatch
 
-    def on_send(self, m):
+    def on_send(self, m, emit=True):
         W = m.pop('W', None)
         sock = m['sock']
         if not is_game_sock(sock):
@@ -177,4 +211,6 @@ class ClientSendFeed:
         if P and self.sendwatch and not is_login_sock(sock):
             P = self.sendwatch.resolve(m, P, W)        # encrypted ids: plaintext or dropped
         if P and self.relay and self.feed_send:
-            self.relay.feed_send(P)
+            if emit:
+                self.relay.feed_send(P)
+            return P

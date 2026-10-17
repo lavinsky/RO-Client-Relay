@@ -94,13 +94,13 @@ def scramble_set_msg(pid, body=None):
     return {'type': 'scramble-set', 'id': pid, 'body': body}
 
 
-def sendcall_msg(rva=None, module='uaRO.exe', cast_ms=800):
+def sendcall_msg(rva=None, module='uaRO.exe'):
     """Call-based injection: arm (rva given) or disarm (rva=None) the client's SendPacket caller.
     rva is the offset from `module`'s base to SendPacket(this, len, buf); the agent resolves the base
     and captures `this` with a one-shot hardware breakpoint, then call-injects on the game thread."""
     if rva is None:
         return {'type': 'sendcall'}
-    return {'type': 'sendcall', 'rva': rva, 'module': module, 'castMs': int(cast_ms)}
+    return {'type': 'sendcall', 'rva': rva, 'module': module}
 
 
 def move_dispatch_msg(x=None, y=None, arm=False, disarm=False, recapture=False, dispatcher=None, site=None):

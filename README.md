@@ -35,3 +35,5 @@ python3 scripts/validate-codex.py
 
 Testes offline não comprovam funcionamento em cliente real. Histórico e mapa de migração
 no [arquivo integral das auditorias](docs/HISTORY/STATUS_AND_AUDIT.md).
+
+Refatoração operacional: [arquitetura](docs/ARCHITECTURE.md), [operação](docs/OPERATIONS.md) e [auditoria/latência offline](docs/REFACTOR_REVIEW.md). `./run.sh --verbose` detalha o pipeline; não há FIFO temporizada de egresso.

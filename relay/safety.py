@@ -50,6 +50,12 @@ def _hex_head(h, n=8):
 def sanitize(m):
     """Strip credential-bearing bytes from a message before it is logged or printed.
     Login-socket sends and anything HTTP-shaped keep only their first 2 bytes."""
+    # Native acknowledgements have no trustworthy socket identity. Operational
+    # telemetry never needs bodies or captured native memory to describe progress.
+    if m.get('tag') in ('SENDCALL', 'COMMAND') or (m.get('tag') == 'SCRAMBLE' and
+            m.get('hit') in ('armed', 'consumed', 'wrote', 'cancelled', 'error')):
+        for key in ('body', 'wrote', 'data', 'C', 'P'):
+            m.pop(key, None)
     sensitive = is_login_sock(m.get('sock', '')) and m.get('tag', '').startswith('SEND')
     is_http = m.get('tag') == 'RECV-HTTP' or looks_like_http(_hex_head(m.get('C', '')))
     if sensitive or is_http:                     # HTTP: by content, not just by port

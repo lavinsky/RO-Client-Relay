@@ -1,5 +1,8 @@
 """The sanitized JSONL capture log and the one-line console view of each message."""
 import json
+import os
+import sys
+from copy import deepcopy
 
 from .safety import sanitize
 
@@ -9,7 +12,66 @@ def _pid(v):
     return f'0x{v:04x}' if isinstance(v, int) else '?'
 
 
+_mode = 'normal'
+_color = False
+
+
+def configure(opts):
+    """Configure human output independently from the sanitized JSONL capture."""
+    global _mode, _color
+    _mode = getattr(opts, 'console_mode', None) or ('verbose' if getattr(opts, 'verbose', False) else 'normal')
+    if _mode not in ('normal', 'verbose'):
+        raise ValueError('console_mode must be normal or verbose')
+    _color = not getattr(opts, 'no_color', False) and 'NO_COLOR' not in os.environ and sys.stdout.isatty()
+
+
+def event(message, level='info', verbose=False):
+    """Render an operator message; 'wire' means independently confirmed wire output."""
+    if verbose and _mode != 'verbose':
+        return
+    colors = {'info': '', 'stage': '36', 'warning': '33', 'error': '31', 'wire': '32'}
+    color = colors.get(level, '')
+    text = str(message)
+    if _color and color:
+        text = f"\033[{color}m{text}\033[0m"
+    print(text)
+
+
+def _metadata(m):
+    # ACKs may carry raw bodies: expose only correlation and timing fields.
+    fields = ('id', 'token', 'epoch', 'len', 'ms', 'elapsed_ms', 'queue_ms',
+              'dispatch_ms', 'wire_ms', 'local_elapsed_ms', 'mono_ms', 'active', 'pending', 'dropped', 'cancelled')
+    return ' '.join(f'{key}={m[key]}' for key in fields
+                    if key in m and isinstance(m[key], (int, float, bool)))
+
+
 def show(m):
+    m = sanitize(deepcopy(m))
+    tag, hit = m.get('tag', '?'), m.get('hit', '')
+    if tag in ('SESSION', 'LATENCY', 'COMMAND', 'SENDCALL', 'MOVE-DISPATCH') or (
+            tag == 'SCRAMBLE' and hit in ('armed', 'consumed', 'cancelled', 'error')):
+        if hit == 'throttled':
+            return
+        level = 'error' if hit == 'error' or m.get('exception') else 'stage'
+        detail = ''
+        if tag == 'LATENCY' and m.get('stages'):
+            detail = ' ' + json.dumps(m.get('stages', {}), separators=(',', ':'))
+        event(f"[{tag}] {hit} {_metadata(m)}{detail}".rstrip(), level)
+        return
+    if tag in ('WARNING', 'ERROR'):
+        known = {'SO_COOKIE_FALLBACK': 'identidade de conexão degradada: SO_COOKIE indisponível',
+                 'SOCKET_ID_CHANGED': 'bytes omitidos: identidade do socket mudou durante syscall'}
+        detail = known.get(m.get('code'), '')
+        event(f"[{tag}] {_metadata(m)} {detail}".rstrip(), tag.lower())
+        return
+    if _mode == 'normal':
+        if tag == 'RECV-LOST':
+            event(f"[{tag}] id={m.get('id', '?')} len={m.get('len', '?')}", 'warning')
+        return
+    _show_verbose(m)
+
+
+def _show_verbose(m):
     tag, i = m.get('tag'), m.get('id', '????')
     if tag == 'RECV-PLAIN':
         print(f"[<= PLAIN{'?' if m.get('uncertain') else ' '}] id=0x{i} len={m['len']:<4} @{m.get('dest','?')} C={m['C'][:32]}... P={m['P'][:48]}...")
@@ -62,8 +124,6 @@ def show(m):
             print(f"[sendcall] captured this={m.get('this')} @ {m.get('pc')} (call-inject armed)")
         elif hit == 'sent':
             print(f"[sendcall] SENT len={m.get('len')} {m.get('data','')[:48]}")
-        elif hit == 'throttled':
-            print(f"[sendcall] cast 0x{m.get('id', 0):04x} pacejado (rajada evitada)")
         else:
             print(f"[sendcall] {hit}: {m.get('e')}")
     elif tag == 'TRACE':
@@ -97,11 +157,17 @@ class CaptureLog:
 
     def __init__(self, path):
         self.path = path
-        self.f = open(path, 'w', buffering=1)          # line-buffered: survives os._exit on detach
+        self.f = open(path, 'w', buffering=65536)
 
     def write(self, m):
+        m = dict(m)
         m.pop('data', None)                            # binary attachments never go to the log
         m.pop('ptr', None)
         sanitize(m)
+        if _mode != 'verbose' and m.get('tag') in ('SEND', 'RECV-WIRE', 'RECV-RAW', 'RECV-HTTP'):
+            m = {k: v for k, v in m.items() if k not in ('C', 'P', 'W')}
         self.f.write(json.dumps(m) + '\n')
         show(m)
+
+    def close(self):
+        self.f.close()

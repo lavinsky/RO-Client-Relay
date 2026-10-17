@@ -1,31 +1,17 @@
-"""Atuador de entrada sintética — módulo do relay (antes: sidecar action_trigger.py).
+"""Agent readiness acknowledgements trigger natural action carriers through uinput.
 
-Quando o relay ARMA uma ação do consumidor no merge (0437/0438/0af4 -> corpo guardado em scr.bodies
-no ponto `_on_inbound_scramble`), este atuador injeta a tecla que faz o CLIENTE montar o carrier
-natural daquele id; o store do scrambler (gepard+0x18eff2) então reescreve o corpo pelo do consumidor
-e a ação executa. Antes isso vivia num 2º processo (research/action_0437_0438/action_trigger.py) que
-TAIL-ava o stdout do relay à procura da linha "[inject] inbound id=0x…"; agora é acionado DIRETO no
-ponto de arme (writeback._on_inbound_scramble -> SynthActuator.on_armed), sem log/pipe intermediário.
-
-Backend (memória `synthetic-movement-uaro-hybrid-input`): o Gepard FILTRA XTEST (xdotool/Xvfb como
-*input*), mas aceita eventos de **uinput** (ydotool/ydotoold), que chegam ao Wine como hardware. Logo:
-usa-se gerência de janela (wmctrl/xdotool) só para **focar** a janela do cliente, e o keystroke é
-injetado por `ydotool` (uinput). O evento é global ao seat0 — a janela precisa estar focada e isso
-atrapalha o uso real do desktop; o isolamento limpo (gamescope headless + uinput próprio) é o passo
-seguinte (ISOLATION_SPIKE.md).
-
-OFF por padrão (--synth-input). Pré-req ao vivo: `ydotoold` rodando com acesso a /dev/uinput e socket
-acessível ao usuário; janela do cliente focável. NÃO autoriza nada por si: a janela/alvo precisam
-estar no escopo autorizado do responsável (servidor próprio). O efeito colateral é input real no seat0.
-
-    sudo ydotoold -p /run/user/1000/.ydotool_socket -o 1000:1000 -P 0600 &
+XTEST input was filtered in the documented client. Window management uses
+xdotool only for synchronous activation; ydotool/ydotoold delivers key events.
+This affects the desktop seat and requires an explicitly authorized live round.
+The observed 120ms key duration is preserved. No opcode debounce or cooldown.
 """
 import os
 import queue
-import shlex
 import subprocess
 import threading
 import time
+
+from .console import event
 
 # Linux input-event-codes (subconjunto usado aqui).
 KEYCODES = {
@@ -42,7 +28,7 @@ WINDOW_MATCH = ('world of your dream', 'uaro', 'gepard shield', 'steam_app_')
 
 
 def _run(cmd, dry, env=None):
-    print('  $ ' + ' '.join(shlex.quote(c) for c in cmd), flush=True)
+    event('[synth] ' + ' '.join(cmd), verbose=True)
     if dry:
         return 0, '', ''
     p = subprocess.run(cmd, capture_output=True, text=True, env=env)
@@ -75,10 +61,9 @@ def focus(wid, dry):
     env = dict(os.environ)
     env.setdefault('DISPLAY', ':0')
     # Gerência de janela (não é XTEST input): ativa/levanta a janela XWayland do cliente.
-    _run(['wmctrl', '-i', '-a', wid], dry, env)
-    _run(['xdotool', 'windowactivate', wid], dry, env)
-    if not dry:
-        time.sleep(0.25)
+    rc, _, _ = _run(['xdotool', 'windowactivate', '--sync', wid], dry, env)
+    if rc:
+        raise RuntimeError('window activation failed')
 
 
 def ydotool_env():
@@ -87,7 +72,7 @@ def ydotool_env():
     return env
 
 
-def send_key(name, dry, hold_ms=120):
+def send_key(name, dry, hold_ms=120, cancelled=lambda: False):
     code = KEYCODES.get(name.upper())
     if code is None:
         raise ValueError('tecla desconhecida: %s (conhecidas: %s)' % (name, ','.join(sorted(KEYCODES))))
@@ -97,36 +82,43 @@ def send_key(name, dry, hold_ms=120):
         raise RuntimeError('socket ydotoold ausente: %s — inicie o ydotoold (ver cabeçalho)' % sock)
     # OBSERVADO (2026-10-16): press+release colados (0 ms) NÃO registram no cliente uaRO; é preciso
     # SEGURAR a tecla ~120 ms. Então: press, hold_ms, release (duas chamadas ydotool via uinput).
-    _run(['ydotool', 'key', '%d:1' % code], dry, env)
-    if not dry:
-        time.sleep(hold_ms / 1000.0)
-    rc, _, _ = _run(['ydotool', 'key', '%d:0' % code], dry, env)
+    if cancelled():
+        return 0
+    rc, _, _ = _run(['ydotool', 'key', '%d:1' % code], dry, env)
+    if rc:
+        raise RuntimeError('key press failed')
+    try:
+        if not dry:
+            # Required input duration observed in client; never a command rate limit.
+            time.sleep(hold_ms / 1000.0)
+    finally:
+        rc, _, _ = _run(['ydotool', 'key', '%d:0' % code], dry, env)
+    if rc:
+        raise RuntimeError('key release failed')
     return rc
 
 
 # ---- atuador integrado ----------------------------------------------------------------------
 class SynthActuator:
-    """Dispara a tecla sintética quando o relay arma uma ação com id mapeado.
+    """Event-driven carrier input. Each agent armed ACK generates exactly one key.
 
-    `on_armed(pid)` é chamado no caminho de arme (thread do worker/dreno do relay); ele NÃO bloqueia
-    — aplica o debounce por id e enfileira o disparo num worker próprio (focar a janela + segurar a
-    tecla leva ~0,4 s; não pode travar o relay). `focuser`/`sender` são injetáveis para teste offline."""
-
-    def __init__(self, keymap, wid=None, debounce_ms=500, dry=False, hold_ms=120,
-                 focuser=None, sender=None):
-        self._keymap = {int(k): v for k, v in keymap.items()}   # {pid:int -> nome da tecla:str}
+    The worker keeps input duration off the Frida/event thread. Session reset
+    cancels queued keys; a key already pressed is always released.
+    """
+    def __init__(self, keymap, wid=None, dry=False, hold_ms=120, focuser=None, sender=None):
+        self._keymap = {int(k): v for k, v in keymap.items()}
         self._wid_explicit = wid or None
         self._wid = None
         self._wid_resolved = False
-        self._debounce = max(0, int(debounce_ms)) / 1000.0
-        self._dry = bool(dry)
-        self._hold_ms = int(hold_ms)
-        self._focus = focuser or focus
-        self._send = sender or send_key
-        self._last_fire = {}
-        self._q = queue.Queue()
+        self._dry, self._hold_ms = bool(dry), int(hold_ms)
+        self._focus, self._send = focuser or focus, sender
+        self._q = queue.Queue(maxsize=64)
         self._lock = threading.Lock()
         self._started = False
+        self._state = (0, True)
+        self._revision = 0
+        self.on_error = None
+        self.on_finished = None
 
     def start(self):
         with self._lock:
@@ -135,46 +127,74 @@ class SynthActuator:
             self._started = True
         threading.Thread(target=self._worker, name='synth-actuator', daemon=True).start()
 
+    def reset(self, epoch, active):
+        self._revision += 1
+        self._state = (epoch, active)
+        self._wid_resolved = False
+        while True:
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                break
+
     def _resolve_wid(self):
-        if self._wid_resolved:
-            return self._wid
-        self._wid_resolved = True
-        self._wid = find_wid(self._wid_explicit)
-        if self._wid is None:
-            print('[synth] janela do cliente não encontrada (passe --synth-wid; '
-                  'synth_input --list) — tecla não injetada', flush=True)
-        else:
-            print('[synth] janela do cliente wid=%s' % self._wid, flush=True)
+        if not self._wid_resolved:
+            self._wid = find_wid(self._wid_explicit)
+            self._wid_resolved = True
         return self._wid
 
-    def on_armed(self, pid):
-        """Ponto de entrada do relay: se `pid` tem tecla mapeada e passou o debounce, enfileira o
-        disparo. Ids sem tecla (ex.: 035f andar) são ignorados. Não bloqueia o chamador."""
+    def on_armed(self, pid, epoch=None, token=None):
         key = self._keymap.get(int(pid))
-        if key is None:
-            return
-        now = time.monotonic()
-        with self._lock:
-            if now - self._last_fire.get(pid, 0.0) < self._debounce:
-                return
-            self._last_fire[pid] = now
+        epoch = self._state[0] if epoch is None else epoch
+        if key is None or self._state != (epoch, True):
+            return False
         if not self._started:
             self.start()
-        self._q.put((int(pid), key))
+        item = (int(pid), key, epoch, token, self._revision)
+        try:
+            self._q.put_nowait(item)
+        except queue.Full:
+            self._failure(item, RuntimeError('input capacity exhausted'))
+            return False
+        return True
+
+    def _failure(self, item, error):
+        pid, key, epoch, token, revision = item
+        event('[synth] carrier failed: ' + type(error).__name__, level='error')
+        if self.on_error:
+            self.on_error({'tag': 'SCRAMBLE', 'hit': 'error', 'id': pid,
+                           'epoch': epoch, 'token': token, 'e': type(error).__name__})
 
     def _worker(self):
         while True:
-            pid, key = self._q.get()
+            item = self._q.get()
+            pid, key, epoch, token, revision = item
+            cancelled = lambda: self._state != (epoch, True) or revision != self._revision
+            if cancelled():
+                continue
             try:
                 wid = self._resolve_wid()
                 if wid is None:
-                    continue
-                print('[synth] armed id=0x%04x -> tecla %s%s'
-                      % (pid, key, ' (DRY)' if self._dry else ''), flush=True)
+                    raise RuntimeError('client window not found')
+                began = time.monotonic_ns()
                 self._focus(wid, self._dry)
-                self._send(key, self._dry, self._hold_ms)
+                focused = time.monotonic_ns()
+                if cancelled():
+                    continue
+                if self._send:
+                    rc = self._send(key, self._dry, self._hold_ms)
+                else:
+                    rc = send_key(key, self._dry, self._hold_ms, cancelled)
+                if rc:
+                    raise RuntimeError('input failed')
+                event('[synth] token=%s focus_ms=%.3f key_ms=%.3f' %
+                      (token, (focused-began)/1e6, (time.monotonic_ns()-focused)/1e6), verbose=True)
             except Exception as e:
-                print('[synth] erro ao injetar %s: %s: %s' % (key, type(e).__name__, e), flush=True)
+                self._failure(item, e)
+            finally:
+                if self.on_finished:
+                    self.on_finished({'tag': 'INPUT', 'hit': 'released', 'id': pid,
+                                      'epoch': epoch, 'token': token})
 
 
 # ids de ação que o atuador mapeia (ataque / perícia em alvo / perícia no chão).
@@ -190,12 +210,11 @@ def build_actuator(opts):
         SKILL_0438: getattr(opts, 'synth_key_0438', '9'),
         GROUND_0AF4: getattr(opts, 'synth_key_0af4', 'F2'),
     }
-    debounce = int(getattr(opts, 'synth_debounce_ms', 500))
     dry = bool(getattr(opts, 'synth_dry', False))
     act = SynthActuator(keymap, wid=getattr(opts, 'synth_wid', '') or None,
-                        debounce_ms=debounce, dry=dry)
+                        dry=dry)
     act.start()
     shown = {('0x%04x' % k): v for k, v in keymap.items()}
     print('[*] --synth-input: atuador de tecla integrado ao relay (uinput/ydotool, passa no Gepard); '
-          'keymap=%s debounce=%dms%s' % (shown, debounce, ' DRY' if dry else ''))
+          'keymap=%s%s' % (shown, ' DRY' if dry else ''))
     return act

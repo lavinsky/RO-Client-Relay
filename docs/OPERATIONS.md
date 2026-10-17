@@ -1,149 +1,104 @@
-# Operação, configuração e validação — RO-Client-Relay
+# Operação e validação
 
-> Revisão documental: **2026-10-15**, `main@524b0f05fa61872e140f98ace9e503d12356641e`. Transcrição dos comandos publicados em [`../README.md`](../README.md), [`../ARCHITECTURE.md`](HISTORY/ARCHITECTURE_LEGACY.md), [`../relay_capture.conf`](../relay_capture.conf). **Não foram executados contra o cliente durante esta revisão.** Uso somente em ambientes com autorização explícita.
+## Inicialização
 
-## Pré-requisitos e instalação
-
-- Linux com cliente uaRO rodando sob **Wine/Proton 32 bits**.
-- **Frida Gadget de 32 bits** carregado no cliente (instalado pelo script do repositório); Python com `frida` em ambiente virtual (exemplo `~/.venv-frida`).
-- Acesso somente de leitura a `/proc/<pid>/mem` para observar cópias já decifradas.
-- OpenKore instalado **externamente**, usando seu modo xKore 1.
-
-Configuração publicada:
+O cliente autorizado precisa de Frida Gadget 32 bits sob Wine/Proton, Python com
+`frida`, acesso de leitura a `/proc/<pid>/mem` e OpenKore externo em xKore 1.
+Instalação existente: `./setup.sh` ou `./setup.sh /caminho/do/venv`; recursos
+baixados em `relay/resources/` são externos e não devem ser versionados.
 
 ```sh
-./setup.sh                   # ou ./setup.sh /caminho/do/venv
-# Opção de inicialização Steam indicada pelo script:
-# LD_PRELOAD=/caminho/absoluto/relay/resources/frida-gadget-32.so %command%
-```
-
-`./setup.sh --force-gadget` força baixar o Gadget compatível com a versão de Frida configurada. O Gadget/recurso gerado em `relay/resources/` não é material a versionar ou editar nesta tarefa. A ligação ocorre por Gadget/`LD_PRELOAD`, **não** via ptrace; a arquitetura histórica registra instabilidade no cliente via ptrace neste ambiente. Não presumir que tal observação valha para todos os Proton/builds.
-
-## OpenKore e enquadramento XKore
-
-Trecho de configuração do **consumidor**, não do relay (preencher informações de servidor/conta somente fora do repositório):
-
-```text
-master uaRO
-server 0
-XKore 1
-XKore_port 2350
-XKore_listenIp 127.0.0.1
-XKore_publicIp 127.0.0.1
-```
-
-O relay usa como padrão publicado `127.0.0.1:2350` e quadros `R` (servidor→consumidor) / `S` (cliente→consumidor), mantendo identidade de conexão internamente no pipeline. O frame XKore não possui ID de conexão: contém tipo, comprimento e payload (`relay/relay.py:14`). `relay/relay.py` cuida de reconexão/framing; `relay/protocol.py` define os campos agente-driver. OpenKore é o responsável pela lógica de ações e já contém a implementação xKore.
-
-## Execução
-
-```sh
-./run.sh                     # lê relay_capture.conf quando opções não sobrescritas
-./run.sh --no-inject         # exemplo: leitura apenas, ignorando escrita da config
-# Com stdin mantido aberto, como documentado:
-tail -f /dev/null | ~/.venv-frida/bin/python relay_capture_linux.py
-# Troca do ambiente virtual:
+./run.sh
+./run.sh --verbose
+./run.sh --no-color
+./run.sh --no-inject
 VENV=/caminho/do/venv ./run.sh
 ```
 
-A precedência declarada é **defaults internos CLI → `relay_capture.conf` → argumentos CLI**. O arquivo INI usa `[capture]`; `--config ARQUIVO` aponta alternativa. O driver encerra ao receber EOF no stdin; `run.sh` mantém stdin aberto. Encerramento normal por Ctrl-C/SIGTERM, liberando a instrumentação; evitar kill abrupto enquanto registradores de depuração permanecerem armados.
+`run.sh` executa diretamente o driver, com `--wait` para aguardar sinais sem
+pipe/sidecar ou launcher de pesquisa. Ctrl-C/SIGTERM suspende comandos e remove
+a instrumentação. CLI direta continua aceitando stdin como controle de duração.
+A precedência é defaults CLI → `relay_capture.conf` → argumentos CLI.
+`--config` escolhe outro INI. `--out` exige arquivo, não diretório.
 
-## Flags de pesquisa do CLI (fora da config; exigem autorização para uso live)
+A configuração principal preserva **inject=true e inject-call=true** e ativa
+movimento, merge de ações e atuador. `scramble-range` vazio reproduz a faixa
+sem restrição usada pelo launcher funcional anterior; não é endereço de sessão.
+Dispatcher/fire-site e offset de store continuam específicos do build conhecido.
+`--no-inject` desativa o recebimento de comandos para execução.
 
-**Status corrigido 2026-10-17:** operação funcional de movimento, ataque automático e skills automáticas de alvo/chão **confirmada pelo responsável**. A falha anterior foi causada pelo primeiro byte sobregravado no agente Frida, corrigido em `agent/relay_hook_linux.js:481-534`; não foi seleção de alvo. Única pesquisa aberta: cifra. A tabela abaixo registra parâmetros de CLI (OFF por padrão onde indicado); **não** instrui teste live.
+## Cliente, input e conexão
 
-Estas flags **não** estão em `relay_capture.conf` (entram pelo CLI; `relay_capture.conf` permanece
-inalterado). Uso live contra o cliente exige escopo explicitamente aprovado — validação offline por
-padrão.
+Configure o OpenKore externamente com `XKore 1`, `XKore_port 2350` e listener
+`127.0.0.1`. Não inclua credenciais em arquivos publicados. Inicie o pipeline
+antes do login para observar o stream completo. Entrar no meio de uma sessão
+não garante contexto de login/mapa ou delimitação inicial completa.
 
-| Flag | Default | Efeito |
-|---|---|---|
-| `--move-dispatch` | OFF | Roteia o `035F` (CZ_REQUEST_MOVE) do consumidor para o **dispatcher nativo de movimento do cliente** em vez do merge pré-XOR: o cliente monta/cifra/envia o próprio `035F` e o `035F` original é dropado. Usa **DR2+DR3**; requer `--no-send-watch`. Ref.: [MOVEMENT_035F_PRECONDITIONS §13.11](HISTORY/MOVEMENT_COMPLETE.md#source-docs-movement-035f-preconditions-md). |
-| `--move-dispatch-ptr` | `0xd473b0` | Endereço do dispatcher (hex); evita hardcode no agent. |
-| `--move-dispatch-site` | `0x4dcba0` | Fire-site de main-loop do `uaRO.exe` (hex). |
-| `--target-select` | OFF | Reativa o `0368` (seleção por GID) **antes** de ações com alvo (`0437` ataque / `0438` perícia). **Default OFF** (o cliente já emite o `0368` sozinho). A leitura de que o `0368` pré-ação bloqueava ataque/perícia foi **REFUTADA** pelo responsável em 2026-10-16: o `sendmsg` da ação sai com ou sem `0368`, e a ação continua **sem efeito** via SendPacket crua. Ligar/desligar a flag **não** resolve ataque/perícia (ver [GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md)). |
-| `--action-merge` | OFF | Arma corpo de `0437/0438/0AF4` do consumidor no store do scrambler, pré-XOR; requer carrier natural correspondente do cliente. Ações automáticas funcionais após `_fix0`. |
-| `--synth-input` | OFF | Atuador interno de entrada sintética via `uinput`/`ydotool`; precisa de ambiente autorizado, janela focável e `ydotoold`. |
-| `--synth-key-0437` / `--synth-key-0438` / `--synth-key-0af4` | `INSERT` / `9` / `F2` | Teclas padrão para produzir o carrier; `9` corresponde à fileira superior. |
-| `--synth-debounce-ms` / `--synth-dry` | `500` / OFF | Antirrepetição em milissegundos; modo `dry` registra sem enviar input. |
-| `--egress-queue` | OFF | FIFO para quadros de egresso `S` (não `R`); ordenação, **não** causa/correção do defeito de byte zero. |
-| `--egress-interval-ms` / `--egress-action-gap-ms` / `--egress-max-age-ms` | `400` / `400` / `800` | Intervalos e descarte de quadro envelhecido na FIFO; não garantem por si só término do movimento. |
+Movimento usa captura passiva de contexto: é necessário andar no cliente para
+capturar o `this`. SendPacket também requer um contexto natural. Após relogin,
+reconexão do consumidor ou troca da conexão de mapa, os ponteiros são invalidados
+e precisam de recaptura; ausência de contexto é erro explícito.
 
-**Orçamento de debug registers (x86 = 4 HW BP).** Com `--move-dispatch`, os 4 slots são:
-DR0 scramble (`--inject`) · DR1 SendPacket (`--inject-call`) · DR2 captura passiva do `this` do
-dispatcher · DR3 fire-site. Por isso **`--no-send-watch` é obrigatório** com `--move-dispatch`
-(send-watch usa os mesmos registradores).
+O atuador usa `ydotool/ydotoold` (uinput), com foco via
+`xdotool windowactivate --sync`. Esses programas devem estar disponíveis; o
+relay não inicia daemon privilegiado. Input afeta o desktop real e só pode ser
+executado numa rodada especificamente autorizada. Teclas padrão:
 
-**Invocação do PoC de movimento (OBSERVADA funcionando live 2026-10-16, rodada pelo responsável):**
+| Pacote | Tecla |
+|---|---|
+| `0437` | INSERT |
+| `0438` | 9 da fileira superior |
+| `0AF4` | F2 |
+
+`--synth-wid` define a janela; vazio procura o título conhecido. As opções
+`--synth-key-0437`, `--synth-key-0438`, `--synth-key-0af4` mudam as teclas.
+`--synth-dry` não gera input; não simula consumo do carrier nem prova ações.
+A duração de tecla de 120 ms permanece necessária conforme evidência anterior.
+Não há debounce ou espera fixa de foco. Próximo comando aguarda consumo/reparo
+e liberação da tecla, em qualquer ordem.
+
+OpenKore desconectado significa ponte suspensa. Não há buffer para executar
+comandos de sessão anterior. A reconexão limpa framing, pendências e contexto;
+a conexão legítima do cliente com o servidor pode permanecer aberta.
+
+## Console, tempos e falhas
+
+Normal é conciso; verbose detalha pacotes sanitizados e correlações locais.
+`NO_COLOR`, saída sem TTY e `--no-color` desabilitam ANSI. Arme/chamada nativa
+não aparecem como aceitação do servidor. JSONL normal guarda metadados e usa
+buffer de escrita; o encerramento normal fecha o log. Uma queda abrupta pode
+perder a cauda ainda em buffer.
+
+`LATENCY` resume mediana, p95, p99 e máximo de até 2048 amostras por etapa.
+O verbose discrimina foco e tecla. A recuperação de atores preserva os tempos
+de evidência; não foi reduzida para melhorar benchmark. Confira a
+[comparação reproduzível](REFACTOR_REVIEW.md#latência-reprodução-e-limites).
+
+Capacidade é 64 comandos incluindo o corrente. Excesso/falha não significa
+transmissão. Se o cliente não produzir o carrier, o comando permanece pendente
+e bloqueia os seguintes por prontidão; cancelar a sessão limpa esse estado.
+O caminho genérico usa SendPacket, sem alegação de cobertura funcional universal.
+Omissões anti-duplicação `0368/0369/0193/0094/0360` são registradas. A injeção em
+raw é rejeitada: o transporte de comandos precisa dos frames XKore 1.
+
+## Pesquisa e testes
+
+Stalker/probes são carregados somente quando flags de pesquisa forem pedidas;
+atores e captura operacional não dependem dessa extensão. Ferramentas de cifra,
+referências e históricos permanecem disponíveis. Nenhuma flag autoriza por si
+experimento ao vivo. Opções de FIFO, cast throttle, debounce, persistência e
+seleção experimental foram eliminadas, com seus testes substituídos por
+propriedades do novo contrato.
 
 ```sh
-mkdir -p <dir-saida>
-./run.sh --inject --inject-call --move-dispatch --no-send-watch --out <dir-saida>/relay_log.jsonl
-```
-
-`--out` exige **arquivo**, não diretório (passar um diretório gera `IsADirectoryError`). O
-`--move-dispatch` **soma** ao `--inject-call` (não o substitui): sem `--inject-call`, o relay dropa
-pacotes não-`035F` do consumidor e o OpenKore não sincroniza. Sequência: relay conecta no XKore 2350
-→ andar 1× no cliente captura o `this` do dispatcher → OpenKore emite walk → `035F → native dispatch`
-→ `recv_0087 dst=destino` → cliente vivo.
-
-## Configuração observada no checkout local
-
-| Chave | Valor em `relay_capture.conf` | Interpretação/conferência |
-|---|---|---|
-| `name` | `uaRO.exe` | Processo-alvo padrão |
-| `relay` | `127.0.0.1:2350` | Consumidor xKore 1 |
-| `relay-format` | `xkore1` | Enquadramento de quadros |
-| `out` | `relay_log.jsonl` | Saída de logs; sensibilidade deve ser conferida antes de publicar |
-| `inject` | **`true`** | **Decisão humana, não alterar** |
-| `inject-call` | **`true`** | **Decisão humana, não alterar** |
-| `inject-persist` | `false` | Merge reativo de uso único; evitar substituição persistente de todos os andares |
-| `cast-throttle` | `0.8` | 800 ms no dreno; casts dentro da janela são descartados, sem reenfileirar (arquitetura §11) |
-| `scramble-bp` | `18eff2` | Offset relativo à base Gepard validada na sessão; **não endereço universal** |
-| `scramble-reg` | `auto` | Identifica registro do ponteiro conforme heurística do agente |
-| `scramble-range` | `2632000-2730000` | Faixa de sessão da escrita reativa; **revalidar** em outra sessão |
-| `scramble-id` | `035f` | Alvo do merge reativo |
-
-**Não confundir** a config intencional com defaults internos do CLI. Não executar instrumentos de pesquisa ou modificar a configuração funcional para 'corrigir' a documentação.
-
-## Diagnóstico e cuidados
-
-- **Nenhum pacote decifrado fabricado:** para `09fd`/`09ff` sem evidência de cópia válida, o pipeline descarta o item em vez de gerar bytes conjecturais.
-- **Sem laços de retorno:** o modo de escrita desativa o feed de send do cliente para evitar duplicação recursiva.
-- **Privacidade:** `relay/safety.py` implementa sanitização de credenciais e HTTP; nunca salvar em docs capturas reais, tokens, endpoints privados de conta ou dumps brutos.
-- **Identidade da conexão:** reutilização de FD no Wine exige separar conexões/portas, não confundir char/mapa e login.
-- **Instrumentação:** registradores DR0/DR1 e acompanhamento de fila podem conflitar; experimentos de pesquisa dependem de janela exclusiva aprovada e limpeza explícita. Evitar varredura grande in-process e watchpoint de dados no slot de pilha de `0x035F`, conforme incidentes históricos.
-- **Sequência do `035f`:** `SendPacket` da fila não equivale à montagem natural na pilha; usar essa rota para andar foi associado a dessincronização na sessão documentada. O merge só é disparado após movimento originado pelo cliente.
-- **Observações temporais:** `sendmsg` e `recv_0087` precisam ser analisados independentemente do store; comprimento efetivamente enviado não prova conteúdo sem bytes/proveniência observados.
-- **Falhas:** distinguir ausência de instrumento, truncamento/perda de eventos, falha de captura, cliente desconectado e falha real do protocolo. Não elevar um timeout local à rejeição de servidor.
-
-## Testes offline e o que comprovam
-
-```sh
+bash scripts/test-offline.sh
 python3 scripts/validate-research.py
 python3 scripts/validate-codex.py
-bash scripts/test-offline.sh
-git diff --check
+python3 scripts/benchmark-relay.py
 ```
 
-`validate-research.py` valida **marcadores e tamanhos tabelados**, não a hipótese criptográfica; `validate-codex.py` valida **estrutura de agentes/configurações**, não disponibilidade de modelos. A suíte `test-offline.sh` roda `tests/test_*.py` sequencialmente; inclui `test_cipher_research.py`, `test_movement_preconditions.py` e os testes operacionais. `test_integration.py` pode usar sockets loopback locais: sua falha por permissão em alguns sandboxes **não** caracteriza falha do cliente. Nenhum teste offline prova envio/recepção aceitos pelo servidor.
-
-**Status desta revisão local:** comandos e resultados efetivamente executados em [DOCUMENTATION_AUDIT.md](HISTORY/STATUS_AND_AUDIT.md#source-docs-documentation-audit-md). Nenhuma instalação ou coleta viva foi realizada.
-
-## Operação e pesquisa são escopos diferentes
-
-Atualizar documentação não concede autorização para executar o cliente, probes, `Frida`, CEServer, alterar `relay/`/`agent/` ou provocar tráfego de servidor. Para detalhes especializados de experimento offline, consulte `research/cipher/README.md` (instruções locais) e `research/movement_035f/` (fontes), além de [RESEARCH_STATUS](RESEARCH_STATUS.md) e [índice de evidências](RESEARCH_STATUS.md#evidências-essenciais).
-
-## Detalhes de instalação e configuração preservados
-
-O Gadget usa a faixa de descoberta `27052–27100`; `setup.sh` cria listener em `127.0.0.1:27052`
-com `on_port_conflict=pick-next` e `on_load=resume`. O driver procura o processo `uaRO.exe`.
-INI aceita chaves com hífen/underscore e booleanos true/false, yes/no, on/off, 1/0;
-arquivo ausente deixa os defaults internos. A localização do arquivo padrão é resolvida
-pelo driver; caminhos em comandos deste manual são relativos à raiz.
-
-O cliente deve entrar na sessão desde o início com relay e OpenKore prontos, para que o
-consumidor receba login, mapa e nascimento de atores. O crash de consumidor ao entrar no
-meio da sessão foi diagnóstico histórico, não prova de ausência de outros defeitos.
-Cuidados históricos completos (incluindo espera de ~6 s após SIGTERM, falsos positivos de
-`pgrep`, sondas e registradores) em [arquitetura histórica §§8–11](HISTORY/ARCHITECTURE_LEGACY.md).
-“Seguro” nesses registros significa apenas sobrevivência no recorte, sem garantia geral.
+A suíte inclui sockets exclusivamente locais, mocks de Frida/input e fixtures
+sintéticas. Testes offline não demonstram sobrevivência do cliente, aceitação
+pelo servidor, RTT ou equivalência funcional ao vivo. O PR permanece Draft até
+revisão e rodadas especificamente autorizadas. Detalhes em
+[ARCHITECTURE](ARCHITECTURE.md) e [REFACTOR_REVIEW](REFACTOR_REVIEW.md).

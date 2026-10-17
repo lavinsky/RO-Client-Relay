@@ -73,6 +73,9 @@ def parse_args(argv=None):
                          'SendPacket(this,len,buf) with each consumer "S" packet, so the client builds, '
                          'encrypts and sends it through its normal path. Captures `this` once via a '
                          'hardware breakpoint and calls on the game thread. For a client you own.')
+    ap.add_argument('--sendcall-demand', action=argparse.BooleanOptionalAction, default=False,
+                    help='EXPERIMENTAL: schedule an immediate SendPacket drain on the captured game thread. '
+                         'Disabled by default; --no-sendcall-demand restores existing socket-event drain.')
     ap.add_argument('--sendpacket-rva', default='816640',
                     help='--inject-call: hex RVA of SendPacket(this,len,buf) from the client EXE base '
                          '(default 0x816640, discovered for this uaRO build). Resolved against --sendpacket-module.')

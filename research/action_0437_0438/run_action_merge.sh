@@ -18,26 +18,32 @@
 # (on_connect -> recapture); basta andar uma vez de novo. DRs: DR0=scramble, DR1=sendcall,
 # DR2+DR3=move-dispatch (orçamento cheio — esperado).
 #
-# LIVE, no servidor próprio autorizado. Requer: gadget na porta (default 27053), ydotoold rodando
-# (ver relay/synth_input.py), janela do cliente focável. NÃO edita a conf (inject/inject-call/faixa).
+# LIVE, no servidor próprio autorizado. Detecta automaticamente a porta do Gadget
+# (config inicial 27052, seleciona próxima livre). --port permite override explícito.
+# Requer ydotoold rodando e janela do cliente focável. NÃO edita a conf (inject/inject-call/faixa).
 #
 # Uso:
-#   research/action_0437_0438/run_action_merge.sh [--port 27053] [--wid 0x05200001] [--dry] [--target-select]
+#   research/action_0437_0438/run_action_merge.sh [--port PORT] [--wid 0x05200001] [--dry] [--target-select]
 #   --target-select: EXPERIMENTO — emite um 0368 (seleção por GID) ANTES do 0437/0438. OFF por padrão
 #   (não altera a configuração atual); ligue só para testar a hipótese do pré-select.
 # Pare com Ctrl-C.
 set -euo pipefail
 
-PORT=27053
+# Without --port, let relay/agent.py find the uaRO Gadget's actual listen port
+# (frida-gadget-32.config starts at 27052 and picks the next free port).
+PORT=""
 WID=0x05200001
 DRY=""
 TSEL=""
+DEMAND=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) PORT="$2"; shift 2;;
     --wid)  WID="$2";  shift 2;;
     --dry)  DRY="--dry"; shift;;
     --target-select) TSEL="--target-select"; shift;;
+    --sendcall-demand) DEMAND="--sendcall-demand"; shift;;
+    --no-sendcall-demand) DEMAND="--no-sendcall-demand"; shift;;
     *) echo "arg desconhecido: $1" >&2; exit 2;;
   esac
 done
@@ -48,8 +54,10 @@ PY="${FRIDA_PY:-$HOME/.venv-frida/bin/python}"
 
 SYNTH_DRY=""
 [ -n "$DRY" ] && SYNTH_DRY="--synth-dry"
+PORT_ARGS=()
+[ -n "$PORT" ] && PORT_ARGS=(--port "$PORT")
 
-echo "[run] relay: --move-dispatch --action-merge --egress-queue --synth-input $TSEL --scramble-range '' (resto da conf), port=$PORT, wid=$WID"
+echo "[run] relay: --move-dispatch --action-merge --egress-queue --synth-input $TSEL --scramble-range '' (resto da conf), port=${PORT:-auto}, wid=$WID"
 echo "[run] atuador de tecla integrado ao relay: 0437→INSERT 0438→9(fileira de cima) 0af4→F2 $SYNTH_DRY"
 [ -n "$TSEL" ] && echo "[run] EXPERIMENTO --target-select: 0368 (seleção por GID) emitido antes de 0437/0438"
 # UM processo só: o atuador de tecla agora é um módulo do relay (--synth-input), disparado direto no
@@ -57,6 +65,6 @@ echo "[run] atuador de tecla integrado ao relay: 0437→INSERT 0438→9(fileira 
 # stdin aberto (senão o driver recebe EOF via `tail -f /dev/null`). -u: stdout UNBUFFERED p/ ver ao vivo.
 # --egress-queue: serializa o despacho (FIFO, 400ms entre pacotes, +400ms após ação) p/ o 035f do
 # move-dispatch não atropelar o 0437/0438 — no cliente real/xKore o fluxo ordenado já faz isso.
-tail -f /dev/null | "$PY" -u "$ROOT/relay_capture_linux.py" --port "$PORT" \
-    --move-dispatch --action-merge --egress-queue --egress-interval-ms 400 \
-    --synth-input --synth-wid "$WID" $SYNTH_DRY $TSEL --scramble-range ''
+tail -f /dev/null | "$PY" -u "$ROOT/relay_capture_linux.py" "${PORT_ARGS[@]}" \
+    --move-dispatch --action-merge \
+    --synth-input --synth-wid "$WID" $SYNTH_DRY $TSEL $DEMAND --scramble-range ''

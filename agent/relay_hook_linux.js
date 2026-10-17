@@ -234,34 +234,78 @@ recv('sendwatch', onSendWatch);
 var scr = null;                                 // {pc, reg, id, body(array)|null, dry} or null
 var scrThread = null, scrHandler = false;
 var scrCall = null;                              // sendcall: {pc} do ponto de captura do `this`, em DR1
+// Session-scoped allocator: never overwrite a slot owned by another hook.
+// Hardware API reports whether a candidate slot is actually available.
+var hwOwners = {};
+function hwSet(owner, th, pc) {
+    var old = hwOwners[owner];
+    if (old) { hwClear(owner); }
+    var used = {};
+    Object.keys(hwOwners).forEach(function (k) { if (hwOwners[k].th.id === th.id) used[hwOwners[k].slot] = true; });
+    var errors = [];
+    for (var i = 0; i < 4; i++) {
+        if (used[i]) continue;
+        try { th.setHardwareBreakpoint(i, pc); hwOwners[owner] = {th: th, slot: i}; return i; }
+        catch (e) { errors.push(i + ':' + e.message); }
+    }
+    throw new Error('no free hardware breakpoint: ' + errors.join(','));
+}
+function hwClear(owner) {
+    var a = hwOwners[owner]; if (!a) return;
+    delete hwOwners[owner];
+    try { a.th.unsetHardwareBreakpoint(a.slot); } catch (_) {}
+}
+var sessionBlockedUntil = 0, sessionGeneration = 0;
+function sessionReady() { return Date.now() >= sessionBlockedUntil; }
+function resetNativeSession(reason, delayMs) {
+    if (delayMs === undefined) delayMs = 5000;
+    sessionGeneration++;
+    sessionBlockedUntil = Date.now() + delayMs;
+    if (scSend !== null) {
+        scSend.queue.length = 0; scSend.fn = null; scSend['this'] = null;
+        scSend.tid = null; scSend.awaitRecapture = true;
+    }
+    scrCall = null; hwClear('sendcall');
+    if (md !== null) {
+        md.thisp = null; md.receiver = null; md.queue.length = 0;
+        md.capArmed = false; md.fireArmed = false;
+        hwClear('move-cap'); hwClear('move-fire');
+    }
+    var epoch = sessionGeneration;
+    send({tag:'NATIVE-SESSION', hit:'invalidated', reason:reason, ts:Date.now(), wait_ms:delayMs, generation:epoch});
+    setTimeout(function () {
+        if (epoch !== sessionGeneration) return;
+        if (scSend !== null) {
+            scrCall = {pc: scSend.pc};
+            try { scrCallArm(); } catch(e) { send({tag:'SENDCALL',hit:'error',e:'delayed arm: '+e.message}); }
+        }
+        if (md !== null && md.th !== null) {
+            try { hwSet('move-cap', md.th, md.disp); md.capArmed = true; }
+            catch(e) { send({tag:'MOVE-DISPATCH',hit:'error',e:'delayed arm: '+e.message}); }
+        }
+        send({tag:'NATIVE-SESSION',hit:'recapture-armed',generation:epoch,ts:Date.now()});
+    }, delayMs);
+}
+
 var GP = ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp'];
 var SCR_IDOFFS = [-2, 0];                        // reg='auto': try id just before the body pointer, then at it
 
-function scrDisarm() {
-    if (scrThread !== null) { try { scrThread.unsetHardwareBreakpoint(0); } catch (e) {} }
-}
-
+function scrDisarm() { hwClear('scramble'); }
 function scrArm() {
-    scrDisarm();
-    if (scr === null) return;
+    scrDisarm(); if (scr === null) return;
     scrThread = Process.enumerateThreads().filter(function (t) { return t.id === Process.id; })[0] || null;
-    if (scrThread === null) { send({tag: 'SENDWATCH-ERR', e: 'scramble: main thread not found'}); return; }
-    try { scrThread.setHardwareBreakpoint(0, scr.pc); }      // DR0 as an execution breakpoint
-    catch (e) { scr = null; send({tag: 'SENDWATCH-ERR', e: 'scramble bp: ' + e.message}); }
+    if (scrThread === null) { send({tag:'SENDWATCH-ERR',e:'scramble: main thread not found'}); return; }
+    try { hwSet('scramble',scrThread,scr.pc); }
+    catch(e) { scr=null; send({tag:'SENDWATCH-ERR',e:'scramble bp: '+e.message}); }
 }
-
-// sendcall: captura do `this` num slot de debug proprio (DR1), para o merge de 035f (DR0) seguir intacto.
-function scrCallDisarm() {
-    if (scrThread !== null) { try { scrThread.unsetHardwareBreakpoint(1); } catch (e) {} }
-}
-
+function scrCallDisarm() { hwClear('sendcall'); }
 function scrCallArm() {
     scrCallDisarm();
-    if (scrCall === null) return;
-    scrThread = scrThread || Process.enumerateThreads().filter(function (t) { return t.id === Process.id; })[0] || null;
-    if (scrThread === null) { send({tag: 'SENDCALL', hit: 'error', e: 'main thread not found'}); return; }
-    try { scrThread.setHardwareBreakpoint(1, scrCall.pc); }   // DR1 as an execution breakpoint
-    catch (e) { scrCall = null; send({tag: 'SENDCALL', hit: 'error', e: 'bp: ' + e.message}); }
+    if (scrCall === null || !sessionReady()) return;
+    scrThread = scrThread || Process.enumerateThreads().filter(function(t){return t.id === Process.id;})[0] || null;
+    if (scrThread === null) { send({tag:'SENDCALL',hit:'error',e:'main thread not found'}); return; }
+    try { hwSet('sendcall',scrThread,scrCall.pc); }
+    catch(e) { send({tag:'SENDCALL',hit:'error',e:'bp: '+e.message}); }
 }
 
 function slotFrom(ctx, reg) {                     // the slot pointer: a register, or 'sN' = [esp + 4*N]
@@ -439,6 +483,7 @@ function scrTrap(d) {
         try {
             scSend['this'] = ctx.ecx;
             scSend.tid = Process.getCurrentThreadId();   // a thread em que a SendPacket roda; drenar so nela
+            scSend.awaitRecapture = false;
             scSend.fn = new NativeFunction(scrCall.pc, 'void', ['pointer', 'int', 'pointer'], 'thiscall');
             send({tag: 'SENDCALL', hit: 'ready', 'this': ctx.ecx.toString(), pc: scrCall.pc.toString(), tid: scSend.tid});
         } catch (e) { send({tag: 'SENDCALL', hit: 'error', e: 'arm: ' + e.message}); }
@@ -595,12 +640,37 @@ function hexToBytes(h) {
 // the call is made on the GAME thread (drained from the recv/send hooks), never from the JS thread.
 var scSend = null;                              // {pc, fn, this, queue:[[bytes]]}
 var scDraining = false;                         // re-entrancy guard
+var scDemand = false, scDemandScheduled = false, scDemandUnavailable = false;
+function requestSendCallDrain() {
+    if (!scDemand || scDemandUnavailable || scDemandScheduled || scSend === null ||
+        scSend.fn === null || scSend['this'] === null || !scSend.tid || !scSend.queue.length) return;
+    if (typeof Process.runOnThread !== 'function') {
+        scDemandUnavailable = true;
+        send({tag:'SENDCALL', hit:'demand-disabled', e:'runOnThread unavailable'});
+        return;
+    }
+    scDemandScheduled = true;
+    // Experimental: Frida interrupts the captured game thread, even when it is
+    // not at a known safe point. The original event-driven drain remains active.
+    Process.runOnThread(scSend.tid, function () { drainSendCall(); }).then(function () {
+        scDemandScheduled = false;
+        // Work arrived while the callback was running: schedule another pass.
+        if (scSend !== null && scSend.queue.length) requestSendCallDrain();
+    }, function (e) {
+        scDemandScheduled = false;
+        scDemandUnavailable = true; // fail closed to the existing safe-point drain
+        send({tag:'SENDCALL', hit:'demand-disabled', e:String(e)});
+    });
+}
 var scCastMs = 800;                             // janela de paceamento dos casts (0 desliga)
 var scLastCast = 0;                             // Date.now() do ultimo cast realmente enviado
 var CAST_IDS = {0x0438: 1, 0x0af4: 1};          // pericias com tempo de cast: so uma por janela
 
 function onSendCall(m) {
-    if (m.rva === undefined && m.pc === undefined) {                 // disarm
+    if (m.recapture) {
+        resetNativeSession(m.reason || 'session transition', m.delayMs);
+    } else if (m.rva === undefined && m.pc === undefined) {          // disarm
+        scDemand = false;
         scSend = null;
         scrCall = null; scrCallDisarm();
     } else {
@@ -611,6 +681,9 @@ function onSendCall(m) {
             send({tag: 'SENDCALL', hit: 'error', e: 'could not resolve ' + (m.module || 'uaRO.exe') + ' base'});
         } else {
             scSend = {pc: pc, fn: null, 'this': null, queue: []};
+            scDemand = !!m.demand;
+            scDemandUnavailable = false;
+            scDemandScheduled = false;
             if (m.castMs !== undefined) scCastMs = m.castMs;
             scrCall = {pc: pc};                              // DR1, independente do merge de 035f (DR0)
             if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
@@ -624,13 +697,23 @@ recv('sendcall', onSendCall);
 
 function onSendEmit(m) {
     if (scSend === null) send({tag: 'SENDCALL', hit: 'error', e: 'emit with no sendcall armed'});
-    else if (m.data) scSend.queue.push(Array.from(hexToBytes(m.data)));
+    else if (!sessionReady() || scSend.awaitRecapture) {
+        send({tag: 'SENDCALL', hit: 'stale-drop', e: 'waiting for a fresh SendPacket object', ts: Date.now()});
+    } else if (m.data) {
+        var queued = Array.from(hexToBytes(m.data));
+        scSend.queue.push(queued);
+        requestSendCallDrain();             // opt-in, immediate; old hook drain is fallback
+        // Stage 2a: relay's own queue, NOT the encrypted client queue.
+        if (queued.length === 8 && queued[0] === 0x39 && queued[1] === 0x04)
+            send({tag: 'ITEMUSE-STAGE', stage: 'relay-queue', ts: Date.now(),
+                  item_index: queued[2] | (queued[3] << 8), queue_len: scSend.queue.length});
+    }
     recv('sendcall-emit', onSendEmit);
 }
 recv('sendcall-emit', onSendEmit);
 
 function drainSendCall() {                       // only runs on the game thread (SendPacket must)
-    if (scDraining || scSend === null || scSend.fn === null || scSend['this'] === null) return;
+    if (!sessionReady() || scDraining || scSend === null || scSend.fn === null || scSend['this'] === null) return;
     if (scSend.queue.length === 0) return;
     if (scSend.tid && Process.getCurrentThreadId() !== scSend.tid) return;   // so na thread que roda a SendPacket
     scDraining = true;
@@ -649,8 +732,30 @@ function drainSendCall() {                       // only runs on the game thread
             try {
                 var buf = Memory.alloc(pk.length < 8 ? 8 : pk.length);
                 buf.writeByteArray(pk);
+                if (id === 0x0439 && pk.length === 8)
+                    send({tag: 'ITEMUSE-STAGE', stage: 'sendpacket-entry', ts: Date.now(),
+                          item_index: buf.add(2).readU16(), tid: Process.getCurrentThreadId()});
                 scSend.fn(scSend['this'], pk.length, buf);           // client builds+encrypts+sends it
-                send({tag: 'SENDCALL', hit: 'sent', len: pk.length, data: hexOf(new Uint8Array(pk))});
+                // Post-call snapshot is the INPUT buffer, not the native send queue.
+                // If the native method copies into its own queue, this snapshot alone
+                // cannot observe that allocation or its subsequent transformations.
+                if (id === 0x0439 && pk.length === 8) {
+                    try {
+                        var after = new Uint8Array(buf.readByteArray(8));
+                        send({tag: 'ITEMUSE-STAGE', stage: 'sendpacket-return-buffer', ts: Date.now(),
+                              item_index: after[2] | (after[3] << 8),
+                              changed: after[2] !== pk[2] || after[3] !== pk[3]});
+                    } catch (e) {
+                        send({tag: 'ITEMUSE-STAGE', stage: 'sendpacket-return-buffer', ts: Date.now(),
+                              error: e.message});
+                    }
+                }
+                // Record only non-sensitive metadata for use-item diagnosis: the slot
+                // requested BEFORE SendPacket, not the potentially transformed wire slot.
+                var sent = {tag: 'SENDCALL', hit: 'sent', len: pk.length, id: id, ts: Date.now()};
+                if (id === 0x0439 && pk.length === 8)
+                    sent.item_index = pk[2] | (pk[3] << 8);
+                send(sent);
             } catch (e) {
                 send({tag: 'SENDCALL', hit: 'error', e: 'call: ' + e.message});
             }
@@ -675,7 +780,7 @@ var MD_RECIPES = {
 };
 var md = null;      // {recipe, disp, site, fn, thisp, receiver, queue:[args], th, capArmed, fireArmed, busy}
 
-function mdUnarm(slot) { if (md !== null && md.th !== null) { try { md.th.unsetHardwareBreakpoint(slot); } catch (e) {} } }
+function mdUnarm(slot) { hwClear(slot === 2 ? 'move-cap' : 'move-fire'); }
 
 function mdContext() {                          // identidade do objeto receptor nesta sessao
     try {
@@ -697,7 +802,7 @@ function mdInvalidate(why) {
     mdUnarm(3); md.fireArmed = false;
     // A captura so e aceita quando o receptor estiver novamente pronto.
     if (!md.capArmed && md.th !== null) {
-        try { md.th.setHardwareBreakpoint(2, md.disp); md.capArmed = true; }
+        try { if (sessionReady()) { hwSet('move-cap',md.th,md.disp); md.capArmed = true; } }
         catch (e) { send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'recapture arm: ' + e.message}); }
     }
     send({tag: 'MOVE-DISPATCH', hit: 'invalidated', e: why});
@@ -716,7 +821,7 @@ function mdTrusted() {
 function mdTrap(ctx) {                          // devolve true se tratou o breakpoint
     if (md === null) return false;
     if (md.capArmed && ctx.pc.equals(md.disp)) {                   // captura passiva do `this` (construct mode)
-        if (md.thisp === null && !md.busy) {
+        if (sessionReady() && md.thisp === null && !md.busy) {
             var lo = ctx.esp.add(8).readU32(), hi = ctx.esp.add(12).readU32();
             var receiver = mdContext();
             if (hi === 0 && lo <= 0x95 && receiver !== null && !ctx.ecx.isNull()) {
@@ -746,7 +851,7 @@ function mdTrap(ctx) {                          // devolve true se tratou o brea
             md.busy = false;
             send(r);
         }
-        if (md.queue.length && mdTrusted()) { try { md.th.setHardwareBreakpoint(3, md.site); md.fireArmed = true; } catch (e) {} }
+        if (md.queue.length && mdTrusted()) { try { if (sessionReady()) { hwSet('move-fire',md.th,md.site); md.fireArmed = true; } } catch (e) {} }
         return true;
     }
     return false;
@@ -762,7 +867,7 @@ function onNativeDispatch(m) {
             // ele toca memoria invalida e CONGELA o cliente (fila entope com 'queue full'). Zera o
             // `this`, descarta a fila pendente e re-arma a captura passiva (DR2) para recapturar fresco
             // no proximo dispatch in-client (andar uma vez). Nunca firar (DR3) sem `this` valido.
-            if (md !== null) mdInvalidate('session reset; walk once to re-capture');
+            resetNativeSession('move recapture', m.delayMs);
         } else if (m.arm) {
             var rec = MD_RECIPES[m.recipe];
             var base = peBase(m.module || 'uaRO.exe');
@@ -783,16 +888,18 @@ function onNativeDispatch(m) {
                           fn: new NativeFunction(disp, 'uint', types, {abi: 'thiscall', exceptions: 'propagate'})};
                     if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
                     if (md.th === null) { send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'main thread not found'}); md = null; }
-                    else { md.th.setHardwareBreakpoint(2, disp); md.capArmed = true;     // DR2: captura passiva
+                    else { hwSet('move-cap',md.th,disp); md.capArmed = true;     // dynamically allocated capture slot
                            send({tag: 'MOVE-DISPATCH', hit: 'armed', disp: disp.toString(), site: site.toString()}); }
                 }
             }
         } else if (m.args && md !== null) {
+            if (!sessionReady()) { send({tag:'MOVE-DISPATCH',hit:'dropped',e:'map settle delay'}); }
+            else
             if (!mdTrusted()) send({tag: 'MOVE-DISPATCH', hit: 'dropped', e: 'dispatcher context untrusted (walk once in-client)', x: m.args.x, y: m.args.y});
             else if (md.queue.length >= 8) send({tag: 'MOVE-DISPATCH', hit: 'dropped', e: 'queue full'});
             else {
                 md.queue.push(m.args);
-                if (!md.fireArmed) { md.th.setHardwareBreakpoint(3, md.site); md.fireArmed = true; }   // DR3: sitio de disparo
+                if (!md.fireArmed) { if (sessionReady()) { hwSet('move-fire',md.th,md.site); md.fireArmed = true; } }   // dynamically allocated fire slot
                 send({tag: 'MOVE-DISPATCH', hit: 'queued', x: m.args.x, y: m.args.y});
             }
         } else if (m.args) send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'native-dispatch with no arm'});
@@ -871,6 +978,16 @@ hookAll(['__sendmsg64', 'sendmsg'], {
         }
         var chunks = iovs(this.msg, n), h = chunks.map(function (v) { return toHex(v[0], v[1]) || ''; }).join('');
         var m = {tag: 'SEND', sock: peer, conn: connCache[this.fd], len: n, id: pktId(h), C: h, seq: seq++, ts: Date.now()};
+        // Stage 3: actual socket boundary; scan complete 8-byte 0439 records in
+        // this buffer only. Do not assume the whole sendmsg is a single packet.
+        if (h.length >= 16 && h.slice(0, 4) === '3904') {
+            for (var off = 0; off + 16 <= h.length; off += 16) {
+                if (h.slice(off, off + 4) !== '3904') break;
+                var itemIndex = parseInt(h.slice(off + 6, off + 8) + h.slice(off + 4, off + 6), 16);
+                send({tag: 'ITEMUSE-STAGE', stage: 'socket-send', ts: m.ts,
+                      item_index: itemIndex, chunk_len: n, byte_offset: off / 2});
+            }
+        }
         if (sw !== null && chunks.length && sw.ports.indexOf(parseInt(peer.split(':')[1], 10)) >= 0) {
             var buf = chunks[0][0], tid = Process.getCurrentThreadId();
             if (buf.compare(sw.lo) >= 0 && buf.compare(sw.hi) < 0) {

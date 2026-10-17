@@ -51,7 +51,7 @@ class Capture(WriteBack):
                 print(f'[*] --decrypt-actors: 09fd/09ff bodies from the client recv ring (hold <= {opts.actor_delay*1000:.0f}ms)')
                 self.dec.on_ring = self._on_ring_found
             self.moves = MoveTracker(log)              # decodifica o destino do 0087 (texto claro)
-            recv_cbs = ([probe.on_packet] if probe else []) + [self.moves.on_recv_packet]
+            recv_cbs = ([probe.on_packet] if probe else []) + [self.moves.on_recv_packet, self.on_map_boundary]
             wire.on_packet = recv_cbs[0] if len(recv_cbs) == 1 else \
                 (lambda c, p, o, k: [cb(c, p, o, k) for cb in recv_cbs])
             print('[*] walk logging: decoding the server 0087 move destination (MOVE-CHECK)')

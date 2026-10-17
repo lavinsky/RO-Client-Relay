@@ -1,5 +1,6 @@
 """The sanitized JSONL capture log and the one-line console view of each message."""
 import json
+import time
 
 from .safety import sanitize
 
@@ -11,6 +12,10 @@ def _pid(v):
 
 def show(m):
     tag, i = m.get('tag'), m.get('id', '????')
+    if tag == 'ITEMUSE-STAGE':
+        print(f"[itemuse] {m.get('ts')} {m.get('stage')} item_index={m.get('item_index')} "
+              f"queue_len={m.get('queue_len', '-')} chunk_len={m.get('chunk_len', '-')}")
+        return
     if tag == 'RECV-PLAIN':
         print(f"[<= PLAIN{'?' if m.get('uncertain') else ' '}] id=0x{i} len={m['len']:<4} @{m.get('dest','?')} C={m['C'][:32]}... P={m['P'][:48]}...")
     elif tag == 'SEND':
@@ -56,12 +61,21 @@ def show(m):
     elif tag == 'MOVE-DISPATCH':
         print(f"[move-dispatch] {m.get('hit')} " + ' '.join(f"{k}={m[k]}" for k in
               ('x', 'y', 'this', 'retval', 'exception', 'e') if m.get(k) is not None))
+    elif tag == 'ITEMUSE-STAGE':
+        print(f"[0439-stage] ts={m.get('ts')} stage={m.get('stage')} "
+              f"index={m.get('item_index', '?')} changed={m.get('changed', '?')} "
+              f"offset={m.get('byte_offset', '?')} error={m.get('error', '-')}")
     elif tag == 'SENDCALL':
         hit = m.get('hit')
         if hit == 'ready':
             print(f"[sendcall] captured this={m.get('this')} @ {m.get('pc')} (call-inject armed)")
         elif hit == 'sent':
-            print(f"[sendcall] SENT len={m.get('len')} {m.get('data','')[:48]}")
+            # 0439 is item-use: compare this pre-SendPacket inventory slot with
+            # the slot in the subsequent SEND log, without logging account IDs.
+            if m.get('id') == 0x0439 and m.get('item_index') is not None:
+                print(f"[sendcall] SENT 0x0439 requested item_index={m['item_index']} len={m.get('len')}")
+            else:
+                print(f"[sendcall] SENT len={m.get('len')}")
         elif hit == 'throttled':
             print(f"[sendcall] cast 0x{m.get('id', 0):04x} pacejado (rajada evitada)")
         else:
@@ -100,6 +114,7 @@ class CaptureLog:
         self.f = open(path, 'w', buffering=1)          # line-buffered: survives os._exit on detach
 
     def write(self, m):
+        m.setdefault('ts', int(time.time() * 1000))
         m.pop('data', None)                            # binary attachments never go to the log
         m.pop('ptr', None)
         sanitize(m)

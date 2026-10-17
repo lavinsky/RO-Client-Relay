@@ -124,7 +124,9 @@ class CommandPipeline:
                 self.samples['native_call_ms'].append(end - begin)
                 if isinstance(accepted, (float, int)):
                     self.samples['agent_schedule_ms'].append(begin - accepted)
-            if tag == 'SCRAMBLE' and hit == 'armed':
+            # A duplicate ACK must not synthesize a second physical keypress for the
+            # same command. Only the first native-ready transition is actionable.
+            if tag == 'SCRAMBLE' and hit == 'armed' and 'armed_ns' not in c:
                 c['armed_ns'] = now
                 self.samples['post_to_armed_ms'].append((now - c['dispatch_ns']) / 1e6)
                 if self.armed:

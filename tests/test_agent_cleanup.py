@@ -74,7 +74,7 @@ class ReadinessTests(unittest.TestCase):
         pipeline.session(True)
         first, second = bytes.fromhex('37040102030407'), bytes.fromhex('38040a001c0001020304')
         self.assertTrue(pipeline.accept(first, 'S'))
-        self.assertTrue(pipeline.accept(second, 'S'))
+        self.assertIs(pipeline.accept(second, 'S'), False)  # held in XKore framing, not a FIFO
         token, epoch = pipeline.current['token'], pipeline.epoch
         armed = dict(tag='SCRAMBLE', hit='armed', id=0x0437, token=token, epoch=epoch)
         self.assertTrue(pipeline.observe(dict(armed)))
@@ -85,6 +85,8 @@ class ReadinessTests(unittest.TestCase):
         pipeline.observe(dict(tag='INPUT', hit='released', token=token, epoch=epoch))
         self.assertEqual(len(dispatches), 1)
         pipeline.observe(dict(tag='SCRAMBLE', hit='consumed', token=token, epoch=epoch))
+        self.assertEqual(len(dispatches), 1)
+        self.assertTrue(pipeline.accept(second, 'S'))  # transport now retries the held frame
         self.assertEqual(len(dispatches), 2)
         self.assertEqual(dispatches[1]['payload'], second)
 

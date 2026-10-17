@@ -16,6 +16,7 @@ from .synthetic_input import build_actuator
 
 class CommandPipeline:
     CAPACITY = 64
+    ACTION_IDS = {0x035f, 0x0437, 0x0438, 0x0af4}
     TERMINAL = {'SCRAMBLE': {'consumed', 'error', 'cancelled'},
                 'SENDCALL': {'sent', 'error'},
                 'MOVE-DISPATCH': {'dispatched', 'abort', 'error'}}
@@ -48,7 +49,10 @@ class CommandPipeline:
         with self.lock:
             if not self.active or len(self.pending) + bool(self.current) >= self.CAPACITY:
                 self.log({'tag': 'COMMAND', 'hit': 'error', 'e': 'disconnected' if not self.active
-                          else 'client readiness capacity exhausted', 'epoch': self.epoch})
+                          else 'client readiness capacity exhausted', 'epoch': self.epoch,
+                          'code': 'COMMAND_CAPACITY' if self.active else 'COMMAND_DISCONNECTED',
+                          'id': int.from_bytes(payload[:2], 'little'), 'len': len(payload),
+                          **self._blocked_metadata()})
                 return False
             self.serial += 1
             self.pending.append({'payload': bytes(payload), 'typ': typ, 'token': self.serial,
@@ -56,18 +60,35 @@ class CommandPipeline:
             self._next()
             return True
 
+    def _blocked_metadata(self):
+        """Describe readiness without exposing packet bodies or native pointers. Lock held."""
+        state = {'pending': len(self.pending), 'capacity': self.CAPACITY}
+        c = self.current
+        if c is not None:
+            stage = ('input' if c.get('native_done') else
+                     'carrier' if 'armed_ns' in c else 'native')
+            state.update(blocked_id=int.from_bytes(c['payload'][:2], 'little'),
+                         blocked_token=c['token'], blocked_stage=stage,
+                         blocked_ms=(self.clock() - c['received_ns']) / 1e6)
+        return state
+
     def _next(self):
         while self.active and self.current is None and self.pending:
             c = self.current = self.pending.popleft()
             c['dispatch_ns'] = self.clock()
             self.samples['ready_wait_ms'].append((c['dispatch_ns'] - c['received_ns']) / 1e6)
+            pid = int.from_bytes(c['payload'][:2], 'little')
+            if pid in self.ACTION_IDS:
+                self.log({'tag': 'COMMAND', 'hit': 'dispatch', 'id': pid,
+                          'token': c['token'], 'epoch': c['epoch'], 'len': len(c['payload'])})
             try:
                 # False = explicit local rejection; no native completion can arrive.
                 waiting = self.dispatch(c)
             except Exception as e:
                 waiting = False
                 self.log({'tag': 'COMMAND', 'hit': 'error', 'token': c['token'],
-                          'epoch': c['epoch'], 'e': type(e).__name__ + ': ' + str(e)})
+                          'epoch': c['epoch'], 'id': pid, 'code': 'COMMAND_DISPATCH_FAILED',
+                          'e': type(e).__name__})
             if waiting is False and self.current is c:
                 self.current = None
             elif self.current is c:
@@ -96,6 +117,9 @@ class CommandPipeline:
                     c['input_pending'] = self.armed(m) is True
             if tag == 'INPUT' and hit == 'released':
                 c['input_done'] = True
+                if not c.get('native_done') and 'armed_ns' in c:
+                    self.log({'tag': 'COMMAND', 'hit': 'waiting', 'code': 'COMMAND_CARRIER_PENDING',
+                              'epoch': self.epoch, **self._blocked_metadata()})
             if hit in self.TERMINAL.get(tag, ()):
                 self.samples['local_completion_ms'].append(m['local_elapsed_ms'])
                 if 'armed_ns' in c:

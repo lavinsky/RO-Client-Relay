@@ -214,3 +214,53 @@ de RTT; permanecem as mesmas limitações e exigência de autorização por roda
 Os testes operacionais também receberam nomes alinhados às responsabilidades: `test_cli_config`, `test_client_dispatch_routes`, `test_client_readiness`, `test_actor_recovery`, `test_packet_pipeline`, `test_frida_agent`, `test_event_log_modes`, `test_send_recovery`, `test_synthetic_input`, `test_traffic_safety` e `test_xkore_*`. O benchmark mantém seleção explícita de módulos antigos apenas para reproduzir revisões arquivadas anteriores à consolidação.
 
 A revisão independente do dispatcher composto foi PASS (estática). Uma comparação AST contra `0e6e3e7` confirmou 31 funções/classes idênticas nas quatro fusões mecânicas; o dispatcher foi verificado pelos testes de readiness, roteamento, sessões e controle. `validate-research.py`, `validate-codex.py`, compilação Python, help do launcher e `git diff --check`: PASS.
+
+## Diagnóstico de bloqueio após a refatoração
+
+Base do diagnóstico: `700950a`. O responsável relatou falha de movimento e ações
+em uma rodada executada por ele e autorizou leitura **local de metadados** do
+log. O agente não iniciou cliente, OpenKore, input sintético nem teste ao vivo.
+Nenhum corpo, credencial, ponteiro ou captura bruta integra este registro.
+
+**OBSERVADO nos metadados autorizados:** cinco ACKs de arme `0437`, cinco
+liberações de input, quatro escritas e quatro consumos. O último comando armado
+não teve escrita nem terminal até a desconexão. Houve 443 recusas por capacidade;
+a desconexão cancelou 64 comandos sob controle da pipeline. As estatísticas de
+atores continuaram registrando recuperação fresca. Isso não comprova integridade
+de toda a recepção, mas não aponta falha de recuperação como origem do bloqueio.
+
+**OBSERVADO no código / reproduzido offline:** uma ação sem terminal mantém
+`CommandPipeline.current`. Os comandos seguintes permanecem pendentes, inclusive
+`035F` e `0438`, até esgotar a capacidade global. Essa dependência global foi
+introduzida na refatoração, não na fusão dos módulos. A suíte anterior passou,
+mas não demonstrava disponibilidade quando o carrier não aparece. A ausência
+de `wrote` no comando bloqueador não indica falha de `_fix0`: o reparo sucede
+uma escrita que não foi observada nessa ocorrência.
+
+**Correção de diagnóstico:** erros de capacidade agora mostram o opcode recusado,
+opcode/token bloqueador, etapa, ocupação e tempo local. IDs aparecem em hexadecimal
+nos dois modos. A liberação da tecla sem terminal gera uma indicação explícita de
+espera; o início do despacho das quatro ações é visível sem dumps. Descrições de
+erro usam códigos públicos fixos; texto arbitrário de exceção não vai ao console.
+Exceções de despacho persistem somente o tipo, sem sua mensagem potencialmente
+sensível. Não houve mudança de sincronização, cancelamento, rotas ou `_fix0`.
+
+**NÃO VERIFICADO / regressão aberta:** por que o cliente não produziu o carrier
+correspondente. O log não distingue input não processado, foco incorreto, evento
+nativo tardio ou outra condição do cliente. Liberação da tecla não é um evento
+negativo de consumo. Não há mecanismo demonstrado para encerrar essa espera sem
+tempo arbitrário, cancelamento explícito ou mudança de ordenação. Logo este patch
+de observabilidade **não restaura a disponibilidade** e não deve ser apresentado
+como correção funcional. O PR permanece Draft, com esse bloqueio conhecido.
+
+Os novos testes reproduzem a falta de consumo, identificam bloqueador e recusas,
+verificam que não se fabrica confirmação de envio e exercitam cancelamento
+explícito seguido de avanço ordenado. Uma investigação adicional deve observar
+foco/input e geração do carrier em uma rodada separadamente autorizada; não
+reabrir a pesquisa encerrada de cifra de movimento/ações nem alterar `_fix0`.
+
+Verificações desta etapa: suíte offline completa antes/depois **PASS (18 scripts)**;
+readiness e console **PASS (8 casos cada)**; revisão independente do patch **PASS**;
+`validate-research.py`, `validate-codex.py` e `git diff --check` **PASS**.
+Teste ao vivo executado pelo agente **NOT RUN**. Os arquivos protegidos da cifra,
+o agente JS e a configuração permaneceram sem alterações nesta etapa.

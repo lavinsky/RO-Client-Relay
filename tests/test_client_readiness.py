@@ -81,6 +81,49 @@ class PipelineTests(unittest.TestCase):
                 p.observe(release)
             self.assertEqual(len(d),2)
 
+    def test_missing_carrier_identifies_blocker_without_claiming_completion(self):
+        p,d,events,*_=self.make()
+        p.armed=lambda m: True
+        p.accept(bytes.fromhex('37040102030407'),'S')
+        self.ack(p,hit='armed')
+        self.ack(p,tag='INPUT',hit='released')
+        waiting=events[-1]
+        self.assertEqual(waiting['code'],'COMMAND_CARRIER_PENDING')
+        self.assertEqual(waiting['blocked_id'],0x0437)
+        self.assertEqual(waiting['blocked_stage'],'carrier')
+        # Neither input release nor missing carrier proves that a packet was sent.
+        self.assertEqual(p.summary().get('local_completion_ms',{}),{})
+        following=[bytes.fromhex(s) for s in ('5f03010203','38040a001c0001020304')]
+        for i in range(p.CAPACITY-1):
+            self.assertTrue(p.accept(following[i%2],'S'))
+        self.assertFalse(p.accept(following[0],'S'))
+        error=events[-1]
+        self.assertEqual(error['code'],'COMMAND_CAPACITY')
+        self.assertEqual(error['id'],0x035f)
+        self.assertEqual(error['blocked_id'],0x0437)
+        self.assertEqual(error['blocked_token'],p.current['token'])
+        self.assertEqual(error['pending'],p.CAPACITY-1)
+        self.assertGreaterEqual(error['blocked_ms'],0)
+        self.assertEqual(len(d),1)
+        self.assertNotIn('payload',error)
+        # An explicit native cancellation, unlike silence, can release readiness.
+        self.ack(p,hit='cancelled')
+        self.assertEqual(d[1]['payload'],following[0])
+        p.session(False)
+        self.assertIsNone(p.current)
+        self.assertFalse(p.pending)
+
+    def test_dispatch_exception_does_not_log_private_exception_text(self):
+        p,d,events,*_=self.make()
+        def fail(c):
+            raise RuntimeError('private credential fixture')
+        p.dispatch=fail
+        p.accept(bytes.fromhex('5f03010203'),'S')
+        self.assertEqual(events[-1]['code'],'COMMAND_DISPATCH_FAILED')
+        self.assertEqual(events[-1]['e'],'RuntimeError')
+        self.assertNotIn('private',str(events))
+        self.assertIsNone(p.current)
+
     def test_no_hidden_clock_release_or_age_drop(self):
         tree=ast.parse(Path('relay/client_dispatch.py').read_text())
         self.assertFalse(any(isinstance(n,ast.Attribute) and n.attr in ('sleep','Timer') for n in ast.walk(tree)))

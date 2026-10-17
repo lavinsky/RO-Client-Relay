@@ -40,9 +40,13 @@ def event(message, level='info', verbose=False):
 def _metadata(m):
     # ACKs may carry raw bodies: expose only correlation and timing fields.
     fields = ('id', 'token', 'epoch', 'len', 'ms', 'elapsed_ms', 'queue_ms',
-              'dispatch_ms', 'wire_ms', 'local_elapsed_ms', 'mono_ms', 'active', 'pending', 'dropped', 'cancelled')
-    return ' '.join(f'{key}={m[key]}' for key in fields
-                    if key in m and isinstance(m[key], (int, float, bool)))
+              'dispatch_ms', 'wire_ms', 'local_elapsed_ms', 'mono_ms', 'active', 'pending',
+              'capacity', 'blocked_id', 'blocked_token', 'blocked_ms', 'dropped', 'cancelled')
+    parts = [f'{key}={_pid(m[key]) if key in ("id", "blocked_id") else m[key]}'
+             for key in fields if key in m and isinstance(m[key], (int, float, bool))]
+    if m.get('blocked_stage') in ('input', 'carrier', 'native'):
+        parts.append('blocked_stage=' + m['blocked_stage'])
+    return ' '.join(parts)
 
 
 def show(m):
@@ -52,8 +56,16 @@ def show(m):
             tag == 'SCRAMBLE' and hit in ('armed', 'consumed', 'cancelled', 'error')):
         if hit == 'throttled':
             return
-        level = 'error' if hit == 'error' or m.get('exception') else 'stage'
+        level = ('error' if hit == 'error' or m.get('exception') else
+                 'warning' if hit == 'waiting' else 'stage')
         detail = ''
+        # Fixed public descriptions: arbitrary exception text may contain secrets.
+        reasons = {'COMMAND_CAPACITY': 'capacidade esgotada; comando recusado',
+                   'COMMAND_DISCONNECTED': 'OpenKore desconectado; comando recusado',
+                   'COMMAND_DISPATCH_FAILED': 'falha no despacho local',
+                   'COMMAND_CARRIER_PENDING': 'tecla liberada; aguardando carrier nativo (envio não confirmado)'}
+        if tag == 'COMMAND' and m.get('code') in reasons:
+            detail = ' ' + reasons[m['code']]
         if tag == 'LATENCY' and m.get('stages'):
             detail = ' ' + json.dumps(m.get('stages', {}), separators=(',', ':'))
         event(f"[{tag}] {hit} {_metadata(m)}{detail}".rstrip(), level)

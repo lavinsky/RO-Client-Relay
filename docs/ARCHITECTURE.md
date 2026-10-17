@@ -84,6 +84,13 @@ consecutivos do mesmo opcode não se substituem. Limite de capacidade produz
 falha explícita. Não há intervalo mínimo, expiração por idade, debounce ou
 cooldown imposto pelo relay. A duração de tecla necessária é preservada.
 
+**Limitação operacional observada após a refatoração:** se um carrier não for
+produzido, o comando corrente pode esperar indefinidamente e bloquear também
+movimento e outras ações. A liberação da tecla não comprova consumo. O console
+agora identifica o opcode/token bloqueador, a etapa e a capacidade nas recusas,
+mas isso não corrige a disponibilidade. O PR permanece Draft com regressão
+aberta; ver [diagnóstico e limites](REFACTOR_REVIEW.md#diagnóstico-de-bloqueio-após-a-refatoração).
+
 Arme, retorno de função, merge e execução local não confirmam aceitação pelo
 servidor. `SEND` observado é transporte independente; tamanho sozinho não vincula
 ciphertext a um comando. As confirmações funcionais anteriores do responsável

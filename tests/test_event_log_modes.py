@@ -55,7 +55,30 @@ class ConsoleModes(unittest.TestCase):
                                       elapsed_ms=3, C='deadbeef', P='secret',
                                       body='password', data='credential', e='private'))
                 self.assertEqual(output.getvalue(),
-                                 f'[{tag}] {hit} id=1079 token=5 epoch=2 elapsed_ms=3\n')
+                                 f'[{tag}] {hit} id=0x0437 token=5 epoch=2 elapsed_ms=3\n')
+
+    def test_capacity_error_explains_rejection_and_blocker_safely(self):
+        for mode in ('normal','verbose'):
+            output=io.StringIO()
+            with contextlib.redirect_stdout(output):
+                console.configure(SimpleNamespace(console_mode=mode,no_color=True))
+                console.show(dict(tag='COMMAND',hit='error',code='COMMAND_CAPACITY',
+                                  id=0x035f,epoch=1,pending=63,capacity=64,
+                                  blocked_id=0x0437,blocked_token=54,blocked_stage='carrier',
+                                  blocked_ms=1500,e='private exception text',body='private'))
+            rendered=output.getvalue()
+            for text in ('id=0x035f','blocked_id=0x0437','blocked_token=54',
+                         'blocked_stage=carrier','capacidade esgotada; comando recusado'):
+                self.assertIn(text,rendered)
+            self.assertNotIn('private',rendered)
+
+    def test_unknown_code_and_stage_are_not_echoed(self):
+        output=io.StringIO()
+        with contextlib.redirect_stdout(output):
+            console.configure(SimpleNamespace(console_mode='verbose',no_color=True))
+            console.show(dict(tag='COMMAND',hit='error',code='private',
+                              blocked_stage='private',e='private'))
+        self.assertNotIn('private',output.getvalue())
 
     def test_normal_suppresses_routine_packets(self):
         self.assertEqual(self.render('normal'), '')

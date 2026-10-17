@@ -55,6 +55,20 @@ class WireFilter:
         self.L, self.drop = lengths, drop
         self.conns = {}                                # conn -> {'buf', 'start', 'raw', 'off'}
         self.on_packet = None                          # callback(conn, pid, stream_offset, packet)
+        self._map_seen = False                         # server phase: map traffic was observed
+        self._char_return = set()                      # subsequent char TCP identities
+
+    def observe_socket(self, conn, sock):
+        """Identify a *new* char connection after map traffic, without guessing packet IDs.
+
+        Only suppress the bare four-byte AID preamble on this transition. Never suppress
+        an actual recognized packet or any payload within it.
+        """
+        if sock.endswith(':5121'):
+            self._map_seen = True
+        elif sock.endswith(':6121') and self._map_seen and conn not in self.conns:
+            self._char_return.add(conn)
+            self._map_seen = False
 
     def carried(self, conn):
         """Bytes of a partial packet waiting for the next chunk of this connection."""
@@ -81,7 +95,11 @@ class WireFilter:
                 if st['start'] and pos == 0:
                     if len(buf) < 4:
                         break
-                    out += buf[:4]; pos = 4; st['start'] = False   # bare account ID
+                    if conn not in self._char_return:
+                        out += buf[:4]                 # initial login: consumer expects bare AID
+                    else:
+                        self._char_return.discard(conn)  # return from map: not a packet switch
+                    pos = 4; st['start'] = False
                     continue
                 pid = buf[pos] | (buf[pos + 1] << 8)
                 print(f'[wire] conn {conn}: unknown id 0x{pid:04x} - passing this connection through raw')

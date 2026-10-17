@@ -58,6 +58,7 @@ class WireFeed:
             self.log.write(m)
             return
         conn = conn_of(m)
+        self.wire.observe_socket(conn, m['sock']) if self.wire else None
         if self.probe:
             self.probe.note_chunk(conn, m['len'], int(m['ptr'], 16), C)
         if self.relay and self.wire:

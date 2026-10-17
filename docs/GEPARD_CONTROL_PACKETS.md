@@ -1,5 +1,17 @@
 # Registro de pacotes de controle e sessão — Gepard / uaRO
 
+
+<!-- CIPHER-SPECIALIST-REFERENCES-2026-10-17 -->
+
+## Dependência de login, unidades de cifra e sincronização — atualização 2026-10-17
+
+**FONTE TÉCNICA ESPECIALIZADA — ALTA CONFIANÇA:** variantes reais contemporâneas do Gepard utilizam seed/constantes para inicialização de tabela mutável (256 bytes) e posições de estado, seguidas por atualização por byte. O responsável confirmou que valores relacionados à cifra são entregues ao cliente no login. **Ainda não está identificado** se esses campos são seeds, outros parâmetros ou estado já derivado, nem se há unidade independente para envio, recepção e sincronização no uaRO.
+
+**Limite do `0x8280`:** periodicidade e origem Gepard relatadas/observadas continuam válidas nos recortes históricos; **não** foi demonstrado que o pacote carregue seed, inicialize estado, dispare rekey ou corresponda binariamente ao `0x8285` do código de 2016. Tratar como **dependência de protocolo para investigação da cifra/xKore 0**, sem reabrir a pesquisa funcional de ataque ou postulá-lo preâmbulo por ação.
+
+**Perguntas discriminatórias:** quais valores de login chegam a qual inicializador? Qual sequência e direção de unidade é afetada? Quando uma unidade é criada, evolui ou resetada? Há vinculação entre `0x8280` e estado da unidade criptográfica? Versão, ID, direção, estrutura e capturas sanitizadas devem fundamentar qualquer equivalência.
+
+Documentação detalhada e variantes integrais: [CIPHER_INVESTIGATION.md](CIPHER_INVESTIGATION.md#cipher-specialist-20261017).
 **Atualização canônica 2026-10-17:** ataque automático `0437`, skill automática em alvo `0438` e skill automática no chão `0AF4` **FUNCIONAIS** conforme responsável. Defeito real da fase ACT-03: byte 0 do corpo do consumidor era reescrito pelo store do scrambler após merge no Frida; `_fix0` corrigiu. Hipóteses de seleção/alcance como causa raiz estão **SUPERADAS**. Apenas a pesquisa da cifra segue aberta. [Conclusão de ações](HISTORY/ACTIONS_COMPLETE.md#source-docs-action-0437-0438-investigation-md). O texto antigo abaixo mantém negativos e hipóteses como histórico, não falha operacional vigente.
 
 **Objetivo:** reter evidências verificáveis para avaliar futuramente um plugin OpenKore de protocolo/sessão independente do cliente (xKore 0). Este arquivo **não** é uma implementação, especificação final de wire protocol ou prova de compatibilidade entre builds.

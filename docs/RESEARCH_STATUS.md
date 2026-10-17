@@ -1,5 +1,13 @@
 # Estado atual e decisões — RO-Client-Relay
 
+
+<!-- CIPHER-SPECIALIST-REFERENCES-2026-10-17 -->
+
+**Prioridade especializada da cifra — 2026-10-17:** a investigação da cifra continua a **única pesquisa ativa**. Foram recebidos de fonte técnica especializada de **alta confiança** dois **algoritmos reais de referência Gepard**, de servidores distintos, representativos de **versões atuais**. As variantes não são apenas conjuntos de constantes: diferem em índices, dependências de estado, sinais das operações, deslocamentos de inicialização e tratamento do hash. O modelo concreto de trabalho é tabela mutável de 256 bytes + três posições + seed/constantes + XOR/transformações por byte + comprimento e possível persistência. Ver [estudo e código integral](CIPHER_INVESTIGATION.md#cipher-specialist-20261017).
+
+**Classificação:** conhecimento especializado = **FONTE TÉCNICA ESPECIALIZADA — ALTA CONFIANÇA**; exemplos = **ALGORITMOS DE REFERÊNCIA FORNECIDOS POR ESPECIALISTA**; algoritmo, seed, constantes e unidades atuais do uaRO = **PENDENTE DE IDENTIFICAÇÃO NO uaRO**. A evidência observada STACK/SLICE até candidata `EBP+0x09` permanece válida, mas não gerou keystream. O responsável confirmou valores de cifra no login; serem seeds da família é hipótese de **correspondência**, não de confiabilidade da fonte. VMProtect/hypervisor/templates são conhecimento metodológico recebido, sem identificação de função concreta no build atual.
+
+**Próximos marcos:** vetores sintéticos offline A/B com semântica explícita; assinatura discriminatória de ordem/índice/sinal/shift; identificação de seed vs estado derivado e vínculo login→inicialização; unidades de envio/recepção/sync, continuidade/reset; dependência do `0x8280` para xKore 0. **Nenhuma constante exemplar se torna parâmetro do uaRO sem evidência correspondente.** Não foram realizadas sondas nesta atualização documental.
 **Referência:** 2026-10-17 · revisado após a conclusão funcional de movimento e ações, confirmada pelo responsável. Este documento é o **único panorama canônico do trabalho atual**; investigações, decisões e índices anteriores estão preservados integralmente em [HISTORY/STATUS_AND_AUDIT.md](HISTORY/STATUS_AND_AUDIT.md).
 
 ## Estado operacional

@@ -1,5 +1,7 @@
 # Pré-condições de preparação do movimento 0x035F
 
+**Fechamento funcional — 2026-10-17 (responsável):** pesquisa de movimento `0x035F` **ENCERRADA / FUNCIONAL**. Rodadas 06b, 08 e 09 demonstraram a via de origem/disparo e a integração relay/OpenKore; o responsável confirma o resultado final. Ensaios negativos/hipóteses nas seções iniciais são **históricos**, não trabalho de movimento ainda aberto. Ataque/skills `0437/0438/0AF4` também concluídos, ver [estudo de ações](ACTION_0437_0438_INVESTIGATION.md). **Única pesquisa aberta: cifra.**
+
 > **Leitura atual (pós-rodada 06b, 2026-10-15):** §§1–12 registram etapas anteriores; §13 cobre os
 > ensaios nativos do dispatcher 0x11. O disasm de `uaRO.exe` mostra `0xd473b0` como `__thiscall`
 > comum que termina em `ret 0x34` (13 dwords) — "VM que não retorna" está **REFUTADA quanto ao

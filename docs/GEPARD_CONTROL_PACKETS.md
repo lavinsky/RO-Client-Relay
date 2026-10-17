@@ -1,5 +1,7 @@
 # Registro de pacotes de controle e sessão — Gepard / uaRO
 
+**Atualização canônica 2026-10-17:** ataque automático `0437`, skill automática em alvo `0438` e skill automática no chão `0AF4` **FUNCIONAIS** conforme responsável. Defeito real da fase ACT-03: byte 0 do corpo do consumidor era reescrito pelo store do scrambler após merge no Frida; `_fix0` corrigiu. Hipóteses de seleção/alcance como causa raiz estão **SUPERADAS**. Apenas a pesquisa da cifra segue aberta. [Conclusão de ações](ACTION_0437_0438_INVESTIGATION.md). O texto antigo abaixo mantém negativos e hipóteses como histórico, não falha operacional vigente.
+
 **Objetivo:** reter evidências verificáveis para avaliar futuramente um plugin OpenKore de protocolo/sessão independente do cliente (xKore 0). Este arquivo **não** é uma implementação, especificação final de wire protocol ou prova de compatibilidade entre builds.
 
 ## Evidências disponíveis
@@ -22,11 +24,13 @@
 
 ## Hipótese separada da evidência
 
-**H-CIPHER-01 — integridade do conteúdo em comandos com corpo mais expressivo.** O fonte servidor de 2016 sugere decifragem de corpos selecionados antes do parser, com estado de recepção que deve avançar na sequência correta. Conjectura atual: bytes de conteúdo incorretamente decifrados podem fazer o parser/servidor rejeitar `0x0438`; operações de corpo menor, como algumas variantes de `0x0437`, podem parecer funcionar mesmo se a cobertura da cifra estiver incorreta. **Não está provado** que exista validação criptográfica por byte, que o servidor descarte o pacote por esse motivo, ou que a cifra atual seja idêntica à de 2016.
+**H-CIPHER-01 — HIPÓTESE HISTÓRICA, NÃO causa ativa da falha corrigida.** O fonte servidor de 2016 sugere decifragem de corpos selecionados antes do parser, com estado de recepção que deve avançar na sequência correta. Conjectura atual: bytes de conteúdo incorretamente decifrados podem fazer o parser/servidor rejeitar `0x0438`; operações de corpo menor, como algumas variantes de `0x0437`, podem parecer funcionar mesmo se a cobertura da cifra estiver incorreta. **Não está provado** que exista validação criptográfica por byte, que o servidor descarte o pacote por esse motivo, ou que a cifra atual seja idêntica à de 2016.
 
 **Evidência que falta:** comparar resultados reproduzíveis de sessões de teste autorizadas e dados sanitizados, separados por versão, ID, comprimento e estado de sessão, para distinguir diferença de corpo, dessincronização, pré-condição de ação e rejeição de parser. Não concluir causalidade apenas pela ausência da animação de perícia.
 
 ## `0368` pré-select e ações com alvo (`0437` ataque / `0438` perícia) — achado REFUTADO como solução
+
+**Fechamento posterior:** `0368` não era a causa; ataque e skills automáticos funcionam após o `_fix0` no Frida (`agent/relay_hook_linux.js:481-534`). Os negativos desta seção referem-se à via `SendPacket` crua **testada anteriormente**, não ao carrier+merge hoje funcional.
 
 **Procedência.** Sessão OrquestradorCLAUDE, **2026-10-16** (ORCH-20261016-01b, rodada 09b); build
 `uaRO.exe` `f2f2…9569`; servidor emulador **próprio do responsável**. Caminho no relay:
@@ -170,9 +174,7 @@ falham por **não** virem acompanhados do `8280` natural. Isso explicaria por qu
   `3804|nível(2)|skill(2)|GID(4)`; `0AF4` = `f40a|0100|skill(2)|x(2)|y(2)` — **o `0AF4` carrega
   skill+x+y no corpo**, confirmando o desenho "clique fixo + merge reescreve x,y".
 
-**Lacunas remanescentes (NÃO VERIFICADO):** que o store `gepard+0x18eff2` intercepta o buffer de ação
-no **envio natural** de `0438`/`0AF4` (só o `0437` tem o indício `INSERT→ataque`); a identidade
-binária do egress de 128 B com `0x8280`; se o `control_value` varia. Captura crua (gitignored):
+**Lacunas específicas da coleta histórica de 2026-10-16 (não são falhas operacionais atuais):** naquela coleta ainda não havia captura individual do store `gepard+0x18eff2` no envio natural de `0438`/`0AF4`; o responsável confirmou as skills automáticas funcionais posteriormente. Permanecem perguntas separadas de protocolo: a identidade binária do egress de 128 B com `0x8280` e a possível variação do `control_value`. Captura crua (gitignored):
 `research/action_0437_0438/captures/obs8280_20261016/`.
 
 **Spike de isolamento** para dirigir a ação por input sintético escondido:
@@ -191,3 +193,11 @@ binária do egress de 128 B com `0x8280`; se o `control_value` varia. Captura cr
 ## Limite de arquitetura do futuro plugin
 
 Quando houver protocolo demonstrado, a responsabilidade por inicialização de sessão, mensagens de controle periódicas e estado do protocolo deverá ser especificada como extensão **do OpenKore**. Este repositório permanece responsável pelo relay de texto claro na fase xKore 1. Nenhuma implementação de controle deve preceder evidência suficiente de direção, transições de estado e testes reproduzíveis.
+
+## Fechamento funcional das ações e limite criptográfico — 2026-10-17
+
+**CONFIRMADO PELO RESPONSÁVEL:** ataque automático `0437`, skill de alvo `0438` e de chão `0AF4` estão funcionando. Não há bloqueio pendente da automação por `0368`, lock de alvo ou coordenação de movimento. O primeiro byte do corpo entregue pelo consumidor estava saindo com contribuição do original do cliente por conta da ordem do store byte a byte; o `_fix0` o corrige no hit seguinte (`agent/relay_hook_linux.js:481-534`).
+
+**OBSERVADO NO CÓDIGO:** escrita de corpo pré-XOR e restauração `c0 ^ orig0 ^ our0`. **NÃO VERIFICADO NESTA REVISÃO:** nova captura de rede pós-fix por família e reconstrução do algoritmo criptográfico. A observação de `0x8280` periódico é registro separado; não transformá-lo em preâmbulo obrigatório por ação.
+
+Os experimentos históricos `0368`/`SendPacket` cru, replay de `0x2a` e `0x8280` permanecem preservados com seu escopo original. A interpretação final e matriz de evidências estão em [ACTION_0437_0438_INVESTIGATION](ACTION_0437_0438_INVESTIGATION.md).

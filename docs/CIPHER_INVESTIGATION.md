@@ -1,5 +1,7 @@
 # Investigação da cifra uaRO/Gepard — 2026-10-15
 
+**Estado 2026-10-17:** esta é a **única linha de pesquisa ainda aberta**, por decisão do responsável; movimento `035F` e ações automáticas `0437/0438/0AF4` estão funcionais. O bug de byte zero no merge do Frida foi corrigido por `_fix0` (`agent/relay_hook_linux.js:481-534`), **sem** identificar o produtor de keystream, estado de sessão ou inicialização. Não confundir correção local dos bytes com descoberta do algoritmo. [Conclusão funcional](ACTION_0437_0438_INVESTIGATION.md).
+
 > **Integração 2026-10-16:** [entregas conferidas e limites](#integração-documental--cifra-20261016-pop-03) atualizam os checkpoints anteriores; relatos, consistência de artefatos e prova independente permanecem distintos.
 
 ## Resultado e escopo

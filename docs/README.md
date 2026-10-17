@@ -1,5 +1,7 @@
 # Documentação técnica — RO-Client-Relay
 
+**Estado em 2026-10-17:** movimento `0x035F` e ações `0x0437`/`0x0438`/`0x0AF4` **funcionais, pesquisas encerradas** conforme o responsável; **única pesquisa aberta: cifra uaRO/Gepard**. A causa da falha automática era o **primeiro byte regravado pelo scrambler** após o merge do Frida; correção `_fix0` verificada em `agent/relay_hook_linux.js:481-534`. [Fechamento técnico](ACTION_0437_0438_INVESTIGATION.md).
+
 **Fonte canônica de navegação.** Revisão local de 2026-10-15 em
 `main@524b0f05fa61872e140f98ace9e503d12356641e`, reconciliada com o pacote de `bdc2a07` e o ensaio de dispatcher de `524b0f0`.
 Os quatro estudos especializados permanecem separados e completos. Históricos sanitizados
@@ -22,6 +24,7 @@ ficam em `HISTORY/`; os caminhos anteriores na raiz redirecionam para esta docum
 | [OPERATIONS.md](OPERATIONS.md) | Requisitos, instalação, execução, config, diagnóstico, testes e segurança | Novo, revisão 2026-10-15; conferido com CLI/config | Operador/verifier; [README da raiz](../README.md), `relay/cli.py` |
 | [MOVEMENT_035F_INVESTIGATION.md](MOVEMENT_035F_INVESTIGATION.md) | S1/S2, VM, dispatcher, ABI, offsets, sondas, controles, ensaio nativo original | Existente, investigação 2026-10-15 | Subagente de movimento; [pré-condições](MOVEMENT_035F_PRECONDITIONS.md) |
 | [MOVEMENT_035F_PRECONDITIONS.md](MOVEMENT_035F_PRECONDITIONS.md) | Contrato natural/nativo, canais independentes, refutação M-H1 na etapa 6.4, ensaio do dispatcher §13 e limites H2/H3 | Existente, resultado posterior 2026-10-15 | Subagente de movimento; `research/movement_035f/` |
+| [ACTION_0437_0438_INVESTIGATION.md](ACTION_0437_0438_INVESTIGATION.md) | Fechamento do ataque automático `0437` e skills `0438`/`0AF4`; causa byte zero, `_fix0`, histórico ACT-01/02/03 e resultados negativos | **CONCLUÍDO/funcional**, confirmação do responsável 2026-10-17 e código inspecionado | Investigador de ações, verifier, documentador; [controle](GEPARD_CONTROL_PACKETS.md), [cifra](CIPHER_INVESTIGATION.md) |
 | [CIPHER_INVESTIGATION.md](CIPHER_INVESTIGATION.md) | Cadeias executadas, assembly, escritores/consumidores, estudos negativos, limites | Existente, continuação dinâmica 2026-10-15 | Subagente de cifra; [pesquisa local](../research/cipher/README.md) |
 | [GEPARD_CONTROL_PACKETS.md](GEPARD_CONTROL_PACKETS.md) | IDs/tamanhos conhecidos, hipóteses de handshake e controle, restrições do build 2016; mapa dispatcher code → `035F`/`0437`/`0438` e teste negativo de injeção da perícia (2026-10-16) | Existente; reclassifica histórico explicitamente; `0368` pré-select REFUTADO como solução | Investigador de protocolo; [decisões](RESEARCH_DECISIONS.md) |
 | [RESEARCH_DECISIONS.md](RESEARCH_DECISIONS.md) | Decisões aprovadas e hipóteses históricas identificadas como tais | Existente; nota de precedência adicionada pela aplicação | Coordenador; [estado atual](RESEARCH_STATUS.md) |

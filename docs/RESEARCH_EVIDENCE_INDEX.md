@@ -1,5 +1,7 @@
 # Índice de evidências técnicas — RO-Client-Relay
 
+**Atualização 2026-10-17:** movimento e ações encerrados funcionalmente; somente cifra é pesquisa aberta. A evidência de código para o defeito do byte zero está em `agent/relay_hook_linux.js:481-534`. Ver [A-02/A-03 abaixo](#a-02a-03--fechamento-de-movimento-e-ações-2026-10-17).
+
 > **Integração 2026-10-16:** [entregas conferidas e limites](#c-08--integração-cifra-20261016-pop-03) atualizam os checkpoints anteriores; relatos, consistência de artefatos e prova independente permanecem distintos.
 
 **Revisão:** 2026-10-15. **Referência:** revisão local `524b0f05fa61872e140f98ace9e503d12356641e`. Os resultados abaixo são **documentados em fontes primárias do repositório**, não verificados de novo em cliente real por esta auditoria. Os artefatos privados citados nos estudos **não acompanham** este índice.
@@ -200,3 +202,13 @@ SLICE-11 inválida (exclusividade perdida). Relato do autor, não reexecutado pe
 deferido. **REFUTADO:** `0368` pré-select como bloqueio. **RETIRADO:** cadeias de caller por
 Backtracer/EBP-walk. [Controle](GEPARD_CONTROL_PACKETS.md#mapa-dispatcher--pacote-de-ação-act-20261016-01).
 Supera a leitura da rodada 09b citada em M-12.
+
+## A-02/A-03 — fechamento de movimento e ações (2026-10-17)
+
+**CONFIRMADO PELO RESPONSÁVEL:** `0x035F` (movimento), `0x0437` (ataque automático), `0x0438` (skill automática em alvo) e `0x0AF4` (skill automática no chão) funcionam no ambiente pesquisado. Trilhas MOVER e ACT encerradas; cifra permanece a única pesquisa aberta. Registro novo por declaração do responsável, **não por coleta repetida nesta auditoria**.
+
+**OBSERVADO NO CÓDIGO:** `agent/relay_hook_linux.js:481-534` demonstra `_fix0`. `bodyp.writeByteArray(body)` não bastava no primeiro byte quando `bl` já tinha o valor derivado do corpo original: o store `mov [ecx],bl` o sobregravava. No hit seguinte, `c0 ^ orig0 ^ our0` restaura a contribuição do consumidor. Comentário do agente relaciona erro anterior a GID de ataque e nível de skill. Base `main@0bddf0d77a5f81dc92c6fa5f5d6d45f1aa237d95`.
+
+**REFUTADO/SUPERADO como causa do bloqueio automático:** seleção/lock de alvo e diagnóstico de alcance/estado de movimento em ACT-03. **REFUTADO como correção suficiente:** `0368` pré-select, fila FIFO e disparo isolado da perícia pelo fire-site de movimento. Esses últimos continuam resultados negativos válidos **das vias testadas**, não falha das funções finais.
+
+**Fontes:** [estudo de ações](ACTION_0437_0438_INVESTIGATION.md), `research/action_0437_0438/HANDOFF.md` ACT-01/02/03, `research/action_0437_0438/MERGE_SYNTH_STATE.md` (histórico), `research/movement_035f/HANDOFF.md` MOVER-06b/08, [Pré-condições `13](MOVEMENT_035F_PRECONDITIONS.md). **Limite:** sem ensaio live pós-fix pelo documentador; não comprova algoritmo/estado criptográfico nem generaliza a builds distintos.

@@ -6,10 +6,12 @@
 - **Final:** usar OpenKore (Perl, externo) em xKore 0, sem cliente oficial.
 - **Intermediário:** xKore 1 existente no OpenKore + RO-Client-Relay + cliente uaRO, para encaminhar texto claro e utilizar o cliente como executor do protocolo.
 - **Padrões intencionais:** manter `inject = true` e `inject-call = true` em `relay_capture.conf`.
-- **Prioridade:** investigar o fluxo que antecede e prepara o movimento `0x035F`; não limitar a pesquisa à função final de transmissão.
+- **Prioridade atual (2026-10-17, responsável):** apenas a investigação da **cifra uaRO/Gepard** permanece aberta. Movimento `0x035F`, ataque automático `0x0437` e skills automáticas `0x0438`/`0x0AF4` estão funcionais, com as pesquisas de movimento/ações encerradas. Ver [ACTION_0437_0438_INVESTIGATION](ACTION_0437_0438_INVESTIGATION.md).
 - **Futuro:** documentar os pacotes de controle e requisitos de sessão para avaliar um plugin no OpenKore; referência: `docs/GEPARD_CONTROL_PACKETS.md`.
 
-## Hipóteses ativas, não decisões técnicas finais
+## Hipóteses históricas de movimento/ação e hipóteses remanescentes da cifra
+
+**Atualização 2026-10-17:** hipóteses de falha do `0438`, seleção de alvo ou falta de alcance como causa da falha automática estão **SUPERADAS**. O defeito identificado pelo responsável foi o byte zero sobregravado pelo store após o merge; a implementação `_fix0` aparece em `agent/relay_hook_linux.js:481-534`. A tabela seguinte conserva a formulação **anterior** como histórico; não é backlog atual.
 
 | Hipótese | Base | Limitação / alternativa |
 |---|---|---|
@@ -62,9 +64,7 @@ não foi alterado.
 - **Limite técnico:** a presença desses protetores não prova quais
   rotinas específicas estão virtualizadas; os sinais heurísticos
   sobre seções/certificado não equivalem à execução de código.
-- **Decisão:** manter a prioridade do `0x035F` e da origem de
-  `CL`; não classificar como VM Themida ou VMProtect um
-  callsite/região sem evidência de fluxo. H2/H3 continuam abertas.
+- **Decisão histórica (2026-10-15):** priorizar `0x035F` e origem de `CL`. **Atualização 2026-10-17:** movimento encerrado; cifra/CL é a única pesquisa ativa. Não classificar como VM Themida ou VMProtect um callsite/região sem evidência de fluxo; H2/H3 são lacunas históricas, não investigações de movimento ativas.
 - **Proveniência e detalhes:** [`PROTECTION_FINGERPRINT_DIE.md`](PROTECTION_FINGERPRINT_DIE.md).
 
 ## Método de atualização

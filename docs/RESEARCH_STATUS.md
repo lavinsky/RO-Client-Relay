@@ -1,5 +1,7 @@
 # RO-Client-Relay — estado atual do conhecimento técnico
 
+**Atualização canônica — 2026-10-17 (responsável):** movimento `0x035F`, ataque automático `0x0437` e skills automáticas de alvo `0x0438` e de chão `0x0AF4` estão **FUNCIONAIS / pesquisas encerradas**. A falha do ataque automático era o primeiro byte do corpo reescrito no store do scrambler pelo agente Frida, não a seleção do alvo nem um gate de walk; a correção `_fix0` está em `agent/relay_hook_linux.js:481-534`. **Somente a investigação da cifra permanece ativa**. Ver [ACTION_0437_0438_INVESTIGATION.md](ACTION_0437_0438_INVESTIGATION.md). Resultados antigos abaixo são históricos e não descrevem falha operacional atual.
+
 > **Integração 2026-10-16:** [entregas conferidas e limites](#integração-de-entregas--2026-10-16) atualizam os checkpoints anteriores; relatos, consistência de artefatos e prova independente permanecem distintos.
 
 > **Revisão documental local:** 2026-10-15, `main@524b0f05fa61872e140f98ace9e503d12356641e`. Pacote inicial baseado em `bdc2a07`, reconciliado com `2645fad`, `87245d6` e o ensaio posterior de `524b0f0`. Alterações preexistentes foram preservadas; artefatos privados/ignorados não foram abertos. **Este arquivo é o mapa; os estudos especializados contêm a evidência integral.**
@@ -16,7 +18,8 @@
 
 | Linha | Estado fundamentado | Fonte detalhada | Próxima dependência |
 |---|---|---|---|
-| Movimento `0x035F` | **OBSERVADO:** cadeia natural `0x11 → 0x0D → 0x5B → 0x8A` até store (= byte-store do scrambler, §13.8 — `035F` é cifrado); dependência de fase OBSERVADA (§13.9); rodada **06b** originou um `035F` autônomo ponta-a-ponta **uma vez** (retorno+envio+`recv_0087` dst=injetado+cliente vivo), em contexto de disparo não-natural, **reproduzido** na rodada 08 através de relogin (§§13.10, 13.12; M-13) | [Investigação](MOVEMENT_035F_INVESTIGATION.md); [Pré-condições](MOVEMENT_035F_PRECONDITIONS.md) §§5, 13.8–13.10 | Reproduzir o PoC relay (rodada 09) e comparar com a via de relay (merge pré-XOR em `gepard+0x18eff2`); mecanismo do crash 04/05 segue HIPÓTESE; nova execução ao vivo exige direção do responsável |
+| Movimento `0x035F` | **CONCLUÍDO (funcional, confirmação do responsável 2026-10-17)**; cadeia natural e PoC relay registrados nas rodadas 06b/08/09; ensaios negativos antigos preservados | [Investigação](MOVEMENT_035F_INVESTIGATION.md), [Pré-condições](MOVEMENT_035F_PRECONDITIONS.md) | Sem investigação de movimento ativa; detalhes não resolvidos da cifra pertencem à linha CIFRA |
+| Ações `0x0437`/`0x0438`/`0x0AF4` | **CONCLUÍDAS (funcionais, confirmação do responsável 2026-10-17)**; bug do byte zero no Frida resolvido por `_fix0`, não por seleção de alvo | [Ações](ACTION_0437_0438_INVESTIGATION.md); `agent/relay_hook_linux.js:481-534` | Nenhuma pesquisa de ação ativa; não confundir histórico ACT-03 com estado atual |
 | Cifra atual | **OBSERVADO:** origem imediata de CL até o store, XOR local independente e última escrita com byte associado ao consumidor; **NÃO VERIFICADO:** produção anterior, papel criptográfico, estado/inicialização, fronteira P/C e vetor completo | [Cifra](CIPHER_INVESTIGATION.md) §§ *Retomada após consolidação*, *Nova instância*; C-05–C-07 abaixo | Confirmar `+0x1C70DC pop [edx]` antes/depois e seguir a origem de seu operando |
 | Controle de sessão/Gepard | Tabela uaRO contém tamanhos de alguns IDs; modelo `SC_GEPARD_INIT` e `CS_GEPARD_INIT_ACK` é **histórico de 2016**, não especificação do build atual. Papel de `0x8280` é **HIPÓTESE** | [Pacotes de controle](GEPARD_CONTROL_PACKETS.md) | IDs, direção, fase, handshake, reset, cadência, transições no build atual |
 | OpenKore/relay | xKore 1 em uso como ponte; rota futura xKore 0 depende de demonstrar protocolo e estados sem o cliente | [Arquitetura](ARCHITECTURE.md); [Decisões](RESEARCH_DECISIONS.md) | Provas da cifra e controles; decisão humana sobre integração futura |
@@ -169,7 +172,9 @@ salvo antes da carga; não se inferiu o caminho por disassembly linear.
 do pacote. A associação posterior de escrita→carga está delimitada em C-07.
 [Cifra — retomada após consolidação](CIPHER_INVESTIGATION.md#retomada-após-consolidação--origem-executada-de-cl).
 
-## D. Hipóteses ativas — revisão 2026-10-15
+## D. Hipóteses registradas no período exploratório — histórico (movimento encerrado)
+
+As entradas `M-H2/M-H3/M-H4` preservam lacunas explicativas dos ensaios negativos, **não** representam pesquisas atualmente abertas. Em 2026-10-17 somente a cifra permaneceu ativa.
 
 | ID | Status | Favorável | Limite/rival | Experimento discriminatório (planejamento, **não executado aqui**) |
 |---|---|---|---|---|
@@ -190,27 +195,16 @@ do pacote. A associação posterior de escrita→carga está delimitada em C-07.
 - **Modelo Gepard 2016, padrões de `ramp`, papéis de `0x8280` e escolha dos IDs de cifra do build atual:** **NÃO VERIFICADOS** por equivalência de build. Textos de raiz às vezes os apresentam categoricamente; preservá-los como **referência histórica ou hipótese**, não fatos atuais. [Inventário de controle](GEPARD_CONTROL_PACKETS.md), [cifra](CIPHER_INVESTIGATION.md) §§ *Evidências auditadas*, *Três famílias*.
 - **A suposição de que um store pré-XOR já demonstra a operação criptográfica:** **NÃO SUSTENTADA** pelas observações atuais. O store é compartilhado e os recortes incluem cópias; a geração de keystream/CL não foi observada como tal.
 
-## F. Pendências e prioridades — revisão 2026-10-15
+## F. Prioridade corrente e histórico de encerramento — 2026-10-17
 
-1. **Movimento:** a dependência de fase/contexto está **OBSERVADA** (§13.9); a rodada **06b**
-   demonstrou origem autônoma de `035F` ponta-a-ponta **uma única vez** (§13.10/M-11); e a rodada
-   **09** demonstrou o **PoC do relay dirigido por OpenKore** (`035F` do consumidor → dispatcher
-   nativo → `recv_0087` dst=destino → cliente vivo), também **uma única vez** live (§13.11/M-12,
-   working tree não commitado). Prioridades: (a) **reproduzir** 06b/09 para avaliar determinismo;
-   (b) **comparar** com a via de relay validada (merge pré-XOR no store `gepard+0x18eff2`,
-   `inject=true`/`inject-call=true`) e decidir a entrega realista; (c) o **mecanismo do crash 04/05
-   continua HIPÓTESE** (líder: reentrância Wine), não demonstrado; (d) **ações com alvo** (`0437` ataque / `0438` perícia): a remoção do `0368`
-   pré-select **não** era a solução (REFUTADO pelo responsável, 2026-10-16) e o disparo nativo da
-   cadeia de cast de `0x4dcba0` foi inócuo e instável (A-01); próximo passo é RE read-only do sítio/
-   pré-condição do code `0x2a` (ver [GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md)). Trap pré-store não comprova
-   pacote finalizado; o store observado é o do scrambler (§13.8). Qualquer ensaio vivo exige direção
-   direta do responsável.
-2. **Cifra:** a linhagem do byte de CL foi recuada por transportes de pilha até `EBP+0x57`/`EBP+0x09` (C-10, STACK-04→SLICE-12), sem operação criptográfica demonstrada. Próximo: observar a fonte `EBP+0x09` mantendo a ligação ao consumidor, no máximo quatro DRs e sem ampliar a janela de 500 ms; depois identificar regiões de estado consumidas/modificadas e o vínculo com os valores recebidos no login. Não associar fontes de sessões distintas.
-3. **Protocolo:** estabelecer mensagens de inicialização/reinicialização e controle do build atual, com direção, comprimento, sequência, estado e artefatos sanitizados, antes de projetar implementação independente.
-4. **Operação:** conservar `inject = true` e `inject-call = true` na configuração; nenhuma alteração funcional ou ação externa sem aprovação humana. Toda sonda viva exige coordenação de exclusividade por colisões nos DRs/handlers.
-5. **Curadoria:** conservar a migração sanitizada em `docs/HISTORY/` e o manual em `CIPHER_TOOLS.md`; inventário, proveniência e limites da revisão local em [DOCUMENTATION_AUDIT.md](DOCUMENTATION_AUDIT.md). Não interpretar os históricos como especificação atual.
+1. **ÚNICA PESQUISA ATIVA: CIFRA.** Linhagem de CL recuada por transportes até `EBP+0x57`/`EBP+0x09` (C-10) sem operação geradora demonstrada. Faltam produtor, estado, inicialização, fronteira P/C, vetor independente e vínculo dos valores recebidos no login. Ver [CIPHER_INVESTIGATION](CIPHER_INVESTIGATION.md).
+2. **MOVIMENTO `0x035F`: CONCLUÍDO.** Funcional pelo fluxo OpenKore → dispatcher nativo → cliente, confirmado pelo responsável. Preservar resultados negativos anteriores para procedência, sem agendar novos ensaios como investigação prioritária.
+3. **AÇÕES `0x0437`, `0x0438`, `0x0AF4`: CONCLUÍDAS.** Ataque automático e skills automáticas de alvo/chão estão funcionais. **Causa da falha antiga:** byte 0 do corpo regravado pelo store do scrambler depois da injeção Frida; corrigido em `agent/relay_hook_linux.js` por `_fix0`. Diagnósticos de seleção/alcance/egress FIFO como raiz são superados. Consulte [Ações](ACTION_0437_0438_INVESTIGATION.md).
+4. **Protocolos/controle de sessão:** lacunas de conhecimento são **dependências subordinadas à investigação da cifra / meta futura xKore 0**, e não reabertura das trilhas funcionais encerradas. Nenhuma investigação autônoma adicional está ativa por decisão do responsável.
+5. **Restrições:** preservar `inject = true` e `inject-call = true`; resultados desta edição são documentais, sem nova coleta ao vivo nem autorização implícita de atividade de rede. Os detalhes históricos anteriores da seção `D` são hipóteses arquivadas, não backlog vigente.
 
-**Critério para mudar o status:** nova evidência deve indicar fonte, data, build, sessão sanitizada, observação/método e rival. Atualizar primeiro o documento especializado, depois este mapa, por último o [índice de evidências](RESEARCH_EVIDENCE_INDEX.md).
+**Mudança de status:** confirmação expressa do responsável em 2026-10-17 e correção `_fix0` presente no commit-base. O documentador verificou o código, não repetiu experimentos live.
+
 
 ## G. Mapa documental — revisão 2026-10-15
 
@@ -218,6 +212,7 @@ do pacote. A associação posterior de escrita→carga está delimitada em C-07.
 |---|---|---|
 | Situação e prioridades | Este documento | [README da documentação](README.md) |
 | Cadeia `0x035F` | [MOVEMENT_035F_INVESTIGATION](MOVEMENT_035F_INVESTIGATION.md) | [Pré-condições](MOVEMENT_035F_PRECONDITIONS.md) e `research/movement_035f/` |
+| Ações `0437/0438/0AF4` concluídas | [ACTION_0437_0438_INVESTIGATION](ACTION_0437_0438_INVESTIGATION.md) | `agent/relay_hook_linux.js`, `research/action_0437_0438/HANDOFF.md` |
 | Pré-condições/ensaio isolado | [MOVEMENT_035F_PRECONDITIONS](MOVEMENT_035F_PRECONDITIONS.md) | [Investigação](MOVEMENT_035F_INVESTIGATION.md) |
 | Dependências de bytes/cifra | [CIPHER_INVESTIGATION](CIPHER_INVESTIGATION.md) | `research/cipher/README.md`, `research/cipher/chain_audit.py` |
 | Pacotes de controle | [GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md) | [Índice de evidências](RESEARCH_EVIDENCE_INDEX.md) |
@@ -335,7 +330,9 @@ exclusividade (outro agente; relato do responsável) e deixou limpeza pendente r
 instância. Não fundir ocorrências de instâncias diferentes.
 [Detalhes](CIPHER_INVESTIGATION.md#integração-documental--cifra-stack-04--slice-12).
 
-## Direção ativa — ações via gatilho natural + merge (2026-10-16)
+## Histórico de implementação — ações via gatilho natural + merge (2026-10-16; concluídas em 2026-10-17)
+
+**SUPERADO COMO ESTADO ATUAL:** a fase exploratória a seguir antecede `_fix0` e a confirmação funcional posterior. Em 2026-10-17 o responsável confirmou ataque/skills automáticas e atribuiu a falha ao primeiro byte regravado pelo scrambler após o merge; as lacunas abaixo descrevem somente o recorte de 2026-10-16. [Conclusão atual](ACTION_0437_0438_INVESTIGATION.md).
 
 **Decisão (responsável, plan aprovado):** resolver ataque/perícia (`0437`/`0438`/`0AF4`) pelo mesmo
 princípio do walk — **não fabricar**; deixar o cliente montar/cifrar/enviar o pacote natural (que já

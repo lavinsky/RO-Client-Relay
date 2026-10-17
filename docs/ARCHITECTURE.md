@@ -146,3 +146,13 @@ mesmos arquivos usados nas pesquisas atuais. Isso identifica os protetores dos a
 sem atribuir automaticamente funções ou regiões anônimas à virtualização de um deles.
 Origem: commit `77954b2`, incorporado em `origin/main@0a29193`.
 Relatório completo: [PROTECTION_FINGERPRINT_DIE.md](PROTECTION_FINGERPRINT_DIE.md).
+
+## 13. Fechamento funcional de movimento e ações — 2026-10-17
+
+**Estado canônico (responsável):** movimento `0x035F` e ataque/skills automáticos `0x0437`, `0x0438`, `0x0AF4` **FUNCIONAIS**, pesquisas encerradas. **Somente cifra ativa.** As análises antigas de `7` descrevem *tentativas delimitadas* da fase exploratória; não refutam as rodadas posteriores 06b/08/09.
+
+O fluxo de movimento atual usa `--move-dispatch` para levar o destino do OpenKore ao dispatcher nativo, que monta/cifra/envia o `035F`. Nas ações, `--action-merge` arma corpo pré-XOR; `--synth-input` pode produzir o carrier natural; o agente Frida injeta os bytes do consumidor no store do scrambler.
+
+**Bug corrigido — primeiro byte:** `agent/relay_hook_linux.js:481-534` demonstra que a escrita `bodyp.writeByteArray(body)` precedia um store que ainda escrevia `bl` derivado do corpo **original** do cliente em `body[0]`. O `_fix0`, executado no hit seguinte, corrige o resultado por XOR `c0 ^ orig0 ^ our0`. Falha funcional anteriormente atribuída à seleção do alvo ou à coordenação de movimento foi **superada** pela correção desse byte. O responsável confirmou ataque e skills automáticos funcionando.
+
+**Fronteira intacta:** cliente responsável por criptografia, sessão e envio; o relay não gera o keystream. A investigação da cifra permanece aberta e é a única linha ativa. Detalhes: [ACTION_0437_0438_INVESTIGATION](ACTION_0437_0438_INVESTIGATION.md), [CIPHER_INVESTIGATION](CIPHER_INVESTIGATION.md).

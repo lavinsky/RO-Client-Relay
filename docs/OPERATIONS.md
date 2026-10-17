@@ -49,6 +49,8 @@ A precedência declarada é **defaults internos CLI → `relay_capture.conf` →
 
 ## Flags de pesquisa do CLI (fora da config; exigem autorização para uso live)
 
+**Status corrigido 2026-10-17:** operação funcional de movimento, ataque automático e skills automáticas de alvo/chão **confirmada pelo responsável**. A falha anterior foi causada pelo primeiro byte sobregravado no agente Frida, corrigido em `agent/relay_hook_linux.js:481-534`; não foi seleção de alvo. Única pesquisa aberta: cifra. A tabela abaixo registra parâmetros de CLI (OFF por padrão onde indicado); **não** instrui teste live.
+
 Estas flags **não** estão em `relay_capture.conf` (entram pelo CLI; `relay_capture.conf` permanece
 inalterado). Uso live contra o cliente exige escopo explicitamente aprovado — validação offline por
 padrão.
@@ -59,6 +61,12 @@ padrão.
 | `--move-dispatch-ptr` | `0xd473b0` | Endereço do dispatcher (hex); evita hardcode no agent. |
 | `--move-dispatch-site` | `0x4dcba0` | Fire-site de main-loop do `uaRO.exe` (hex). |
 | `--target-select` | OFF | Reativa o `0368` (seleção por GID) **antes** de ações com alvo (`0437` ataque / `0438` perícia). **Default OFF** (o cliente já emite o `0368` sozinho). A leitura de que o `0368` pré-ação bloqueava ataque/perícia foi **REFUTADA** pelo responsável em 2026-10-16: o `sendmsg` da ação sai com ou sem `0368`, e a ação continua **sem efeito** via SendPacket crua. Ligar/desligar a flag **não** resolve ataque/perícia (ver [GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md)). |
+| `--action-merge` | OFF | Arma corpo de `0437/0438/0AF4` do consumidor no store do scrambler, pré-XOR; requer carrier natural correspondente do cliente. Ações automáticas funcionais após `_fix0`. |
+| `--synth-input` | OFF | Atuador interno de entrada sintética via `uinput`/`ydotool`; precisa de ambiente autorizado, janela focável e `ydotoold`. |
+| `--synth-key-0437` / `--synth-key-0438` / `--synth-key-0af4` | `INSERT` / `9` / `F2` | Teclas padrão para produzir o carrier; `9` corresponde à fileira superior. |
+| `--synth-debounce-ms` / `--synth-dry` | `500` / OFF | Antirrepetição em milissegundos; modo `dry` registra sem enviar input. |
+| `--egress-queue` | OFF | FIFO para quadros de egresso `S` (não `R`); ordenação, **não** causa/correção do defeito de byte zero. |
+| `--egress-interval-ms` / `--egress-action-gap-ms` / `--egress-max-age-ms` | `400` / `400` / `800` | Intervalos e descarte de quadro envelhecido na FIFO; não garantem por si só término do movimento. |
 
 **Orçamento de debug registers (x86 = 4 HW BP).** Com `--move-dispatch`, os 4 slots são:
 DR0 scramble (`--inject`) · DR1 SendPacket (`--inject-call`) · DR2 captura passiva do `this` do

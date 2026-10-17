@@ -344,3 +344,17 @@ anterior de relatório fora da árvore refere-se ao momento anterior a esse pull
 observadores de execução/transporte e registro incremental. A checagem antes de publicar
 cobriu sintaxe Python/JS, não execução no cliente. Hashes dos módulos não são conferidos
 automaticamente pelo script; parâmetros e endereços pertencem à build documentada.
+
+## 11. Atualização documental de encerramento — 2026-10-17
+
+**Base:** `main@0bddf0d77a5f81dc92c6fa5f5d6d45f1aa237d95`; atualização solicitada expressamente pelo responsável. Mudança somente documental; nenhum arquivo funcional em `relay/`, `agent/`, testes ou configuração alterado neste PR.
+
+| Origem | Destino canônico | Ação e justificativa |
+|---|---|---|
+| Confirmação atual do responsável + `agent/relay_hook_linux.js:481-534` | [ACTION_0437_0438_INVESTIGATION](ACTION_0437_0438_INVESTIGATION.md) | Corrigir o diagnóstico: byte zero regravado pelo store, restaurado por `_fix0`; ações e movimento encerrados funcionalmente |
+| `research/action_0437_0438/{STATE,HANDOFF,MERGE_SYNTH_STATE,HANDOFF_CODEX}.md` | [ACTION_0437_0438_INVESTIGATION](ACTION_0437_0438_INVESTIGATION.md) | Conservar evidências, ABI, cronologia e tentativas negativas; deixar claros limites temporais de ACT-01/02/03 |
+| ``docs/MOVEMENT_035F_*`, handoffs MOVER | [MOVEMENT_035F_PRECONDITIONS](MOVEMENT_035F_PRECONDITIONS.md), [RESEARCH_STATUS](RESEARCH_STATUS.md) | Encerrar status funcional sem apagar hipóteses históricas |
+| Prioridades/rotas desatualizadas em ``AGENTS.md` e `docs/{README,ARCHITECTURE,OPERATIONS,RESEARCH_DECISIONS,RESEARCH_EVIDENCE_INDEX,GEPARD_CONTROL_PACKETS}.md` | mesmos destinos + novo estudo | Atualizar índice, efeitos operacionais, classificação e prova estática; cifra como única pesquisa ativa |
+| `docs/CIPHER_INVESTIGATION.md` | mesmo arquivo | Delimitar cifra como único aberto; `_fix0` não é geração criptográfica |
+
+**Confiabilidade:** conclusão funcional **informada e confirmada pelo responsável**, correção do byte zero **verificada estaticamente** no agente do commit-base. Experimentos live pós-fix **não reexecutados pelo documentador**. Conteúdo de `research/` preservado; conclusões historicamente refutadas identificadas como tal. Não versionar credenciais, GIDs reais, IPs ou capturas brutas.

@@ -35,7 +35,7 @@
 **Procedência.** Sessão OrquestradorCLAUDE, **2026-10-16** (ORCH-20261016-01b, rodada 09b); build
 `uaRO.exe` `f2f2…9569`; servidor emulador **próprio do responsável**. Caminho no relay:
 `relay/writeback.py:_on_inbound_sendcall`. **Refutação** pelo responsável no mesmo dia, registrada em
-ACT-20261016-01 (`research/action_0437_0438/STATE.md` §5, `HANDOFF.md`).
+ACT-20261016-01 (fontes originais `research/action_0437_0438/{STATE,HANDOFF}.md`, arquivadas [integralmente](HISTORY/ACTIONS_COMPLETE.md)).
 
 **Leitura original (2026-10-16, rodada 09b — SUPERADA).** A divergência entre sentar (`0437`, GID=0,
 funcionava) e ataque/perícia (não tinham efeito) foi atribuída ao `0368` (CZ_REQNAME_BYGID) que o relay

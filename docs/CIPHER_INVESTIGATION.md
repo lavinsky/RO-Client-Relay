@@ -347,7 +347,7 @@ antes/depois dos operandos que produzirem CL. Se houver carga, registrar seu end
 antes da sobrescrita. Só promover uma região a estado criptográfico depois de demonstrar
 suas leituras e atualizações na transformação, com fronteiras e inicialização conhecidas.
 
-Relato paralelo recebido ao encerrar as coletas: `docs/MOVEMENT_035F_PRECONDITIONS.md:129`
+Relato paralelo recebido ao encerrar as coletas: antigo `docs/MOVEMENT_035F_PRECONDITIONS.md:129` (cópia integral em [HISTORY/MOVEMENT_COMPLETE.md](HISTORY/MOVEMENT_COMPLETE.md#source-docs-movement-035f-preconditions-md))
 registra `sendmsg` com retorno efetivo de cinco bytes, mas sem comprimento solicitado
 ou buffer capturado nessa rodada. Isso é **OBSERVADO no documento / NÃO REVALIDADO aqui**;
 não associa as ocorrências desta pesquisa a `0x035F` nem fornece fronteira da cifra.

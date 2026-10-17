@@ -1,5 +1,40 @@
 # CIFRA — handoff operacional atual
 
+## GEPARD-SESSION-20261017-01 — inventário de login e mapa
+
+**Pergunta/mandato:** pedido direto do responsável nesta conversa para observar
+login até dez segundos no mapa, investigar desconhecidos e documentar controles.
+Revisão `d3baabe` mais instrumentos locais; hashes de uaRO/Gepard e evidências
+integrados em [GEPARD_CONTROL_PACKETS](../../docs/GEPARD_CONTROL_PACKETS.md).
+
+**Resultado:** A/B/D totalizam 314 mensagens, 69 pares direção/ID, 65 mapeados ao
+parser e quatro controles. A cumpre login/10 s com ações; D cumpre 10 s sem ações.
+B saiu do mapa em 3,078 s e não valida estadia contínua; C expirou antes de nova
+entrada e foi excluída. Não há bytes pendentes, comprimento desconhecido ou lacuna
+de sequência nos recortes registrados. Cobertura dos hooks não equivale a PCAP.
+
+**Níveis:** OBSERVADO `4754` R/40, `C392` S/72 pareados no login/mapa; negociação/ACK
+INFERIDOS. `5395` R/12 tem 1/1 compatível com LGP histórico; R/16 tem código 4 e dois
+campos variáveis: @12 acompanha milissegundos em seis amostras (até 10 ms de erro
+adjacente em 2.451.850 ms); relógio INFERIDO, origem/eco não verificados. @8 permanece
+sem significado identificado. `8280` S/128 ocorre também sem
+ações no recorte. Conteúdo criptográfico e associação de campos a seeds permanecem
+NÃO VERIFICADOS. 72 hipóteses de decifragem literal A/B/2016 foram negativas somente
+para constantes, offsets, fronteira e estado assumidos; não refutam a família.
+
+**Rival/discriminador:** @8 do tipo 4 pode ser nonce/checksum/configuração em vez
+de seed; localizar consumidor, separando-o do relógio candidato @12. Não promover nomes e
+offsets 2016 ao uaRO. Referências de código e catálogo completo estão no documento;
+`catalog.json`, sequências e scripts privados em `/tmp/gepard-session-20261017/`.
+
+**Limpeza:** unload/detach confirmados nas quatro tentativas, nenhum HW BP/input;
+nenhum coletor desta rodada mantido ativo. Repetição manual pendente após timeout.
+**Testes focados:** `tests/test_session_packets.py` PASS; `tests/test_packet_semantics.py`
+PASS (8 testes). **Verificações finais:** `bash scripts/test-offline.sh` PASS (14 scripts);
+`python3 scripts/validate-research.py` PASS; `python3 scripts/validate-codex.py` PASS;
+`git diff --check` PASS.
+Sem commit, push ou alteração em produção/configuração nesta tarefa.
+
 
 <!-- CIPHER-SPECIALIST-REFERENCES-2026-10-17 -->
 

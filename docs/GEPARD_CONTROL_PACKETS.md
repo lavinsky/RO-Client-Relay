@@ -1,6 +1,6 @@
 # Registro de pacotes de controle e sessão — Gepard / uaRO
 
-**Atualização canônica 2026-10-17:** ataque automático `0437`, skill automática em alvo `0438` e skill automática no chão `0AF4` **FUNCIONAIS** conforme responsável. Defeito real da fase ACT-03: byte 0 do corpo do consumidor era reescrito pelo store do scrambler após merge no Frida; `_fix0` corrigiu. Hipóteses de seleção/alcance como causa raiz estão **SUPERADAS**. Apenas a pesquisa da cifra segue aberta. [Conclusão de ações](ACTION_0437_0438_INVESTIGATION.md). O texto antigo abaixo mantém negativos e hipóteses como histórico, não falha operacional vigente.
+**Atualização canônica 2026-10-17:** ataque automático `0437`, skill automática em alvo `0438` e skill automática no chão `0AF4` **FUNCIONAIS** conforme responsável. Defeito real da fase ACT-03: byte 0 do corpo do consumidor era reescrito pelo store do scrambler após merge no Frida; `_fix0` corrigiu. Hipóteses de seleção/alcance como causa raiz estão **SUPERADAS**. Apenas a pesquisa da cifra segue aberta. [Conclusão de ações](HISTORY/ACTIONS_COMPLETE.md#source-docs-action-0437-0438-investigation-md). O texto antigo abaixo mantém negativos e hipóteses como histórico, não falha operacional vigente.
 
 **Objetivo:** reter evidências verificáveis para avaliar futuramente um plugin OpenKore de protocolo/sessão independente do cliente (xKore 0). Este arquivo **não** é uma implementação, especificação final de wire protocol ou prova de compatibilidade entre builds.
 
@@ -144,7 +144,7 @@ decifradas com `recv_crypt`. **A equivalência build-2016 × uaRO não está dem
 injeção crua de `0437/0438` (REFUTADA em ACT-20261016-01) e disparo do dispatcher fora de contexto
 falham por **não** virem acompanhados do `8280` natural. Isso explicaria por que o `INSERT→ataque`
 (merge sobre um `0437` que o próprio cliente montou pela entrada natural, **com** o `8280`) **executou**
-— ver [MOVEMENT_035F_PRECONDITIONS §13.13](MOVEMENT_035F_PRECONDITIONS.md) e o mapa acima.
+— ver [MOVEMENT_035F_PRECONDITIONS §13.13](HISTORY/MOVEMENT_COMPLETE.md#source-docs-movement-035f-preconditions-md) e o mapa acima.
 
 **Resultado da Fase 1 (OBSERVADO — build atual, 2026-10-16, pid 3752762, 20 ações; sonda
 `research/action_0437_0438/observe_8280.py`, HW exec BP na `SendPacket` uaRO+0x816640 + Interceptor
@@ -178,7 +178,7 @@ falham por **não** virem acompanhados do `8280` natural. Isso explicaria por qu
 `research/action_0437_0438/captures/obs8280_20261016/`.
 
 **Spike de isolamento** para dirigir a ação por input sintético escondido:
-[`research/action_0437_0438/ISOLATION_SPIKE.md`](../research/action_0437_0438/ISOLATION_SPIKE.md).
+[`research/action_0437_0438/ISOLATION_SPIKE.md`](HISTORY/ACTIONS_COMPLETE.md#source-research-action-0437-0438-isolation-spike-md).
 
 ## Ficha obrigatória para novas descobertas
 
@@ -200,4 +200,4 @@ Quando houver protocolo demonstrado, a responsabilidade por inicialização de s
 
 **OBSERVADO NO CÓDIGO:** escrita de corpo pré-XOR e restauração `c0 ^ orig0 ^ our0`. **NÃO VERIFICADO NESTA REVISÃO:** nova captura de rede pós-fix por família e reconstrução do algoritmo criptográfico. A observação de `0x8280` periódico é registro separado; não transformá-lo em preâmbulo obrigatório por ação.
 
-Os experimentos históricos `0368`/`SendPacket` cru, replay de `0x2a` e `0x8280` permanecem preservados com seu escopo original. A interpretação final e matriz de evidências estão em [ACTION_0437_0438_INVESTIGATION](ACTION_0437_0438_INVESTIGATION.md).
+Os experimentos históricos `0368`/`SendPacket` cru, replay de `0x2a` e `0x8280` permanecem preservados com seu escopo original. A interpretação final e matriz de evidências estão em [ACTION_0437_0438_INVESTIGATION](HISTORY/ACTIONS_COMPLETE.md#source-docs-action-0437-0438-investigation-md).

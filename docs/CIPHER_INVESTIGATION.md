@@ -1,6 +1,6 @@
 # Investigação da cifra uaRO/Gepard — 2026-10-15
 
-**Estado 2026-10-17:** esta é a **única linha de pesquisa ainda aberta**, por decisão do responsável; movimento `035F` e ações automáticas `0437/0438/0AF4` estão funcionais. O bug de byte zero no merge do Frida foi corrigido por `_fix0` (`agent/relay_hook_linux.js:481-534`), **sem** identificar o produtor de keystream, estado de sessão ou inicialização. Não confundir correção local dos bytes com descoberta do algoritmo. [Conclusão funcional](ACTION_0437_0438_INVESTIGATION.md).
+**Estado 2026-10-17:** esta é a **única linha de pesquisa ainda aberta**, por decisão do responsável; movimento `035F` e ações automáticas `0437/0438/0AF4` estão funcionais. O bug de byte zero no merge do Frida foi corrigido por `_fix0` (`agent/relay_hook_linux.js:481-534`), **sem** identificar o produtor de keystream, estado de sessão ou inicialização. Não confundir correção local dos bytes com descoberta do algoritmo. [Conclusão funcional](HISTORY/ACTIONS_COMPLETE.md#source-docs-action-0437-0438-investigation-md).
 
 > **Integração 2026-10-16:** [entregas conferidas e limites](#integração-documental--cifra-20261016-pop-03) atualizam os checkpoints anteriores; relatos, consistência de artefatos e prova independente permanecem distintos.
 
@@ -49,7 +49,7 @@ protegido por **Themida/WinLicense 3.XX** e `gepard.dll`
 protegida por **VMProtect**. Os arquivos analisados são os
 atuais, não uma amostra histórica. Isso não revela a origem
 de `CL` nem determina se esse trecho é virtualizado.
-[Fingerprint e limites](PROTECTION_FINGERPRINT_DIE.md).
+[Fingerprint e limites](CIPHER_INVESTIGATION.md#original-docs-protection-fingerprint-die-md).
 
 Esses hashes também constam da investigação anterior S1/S2. Isso identifica arquivos;
 não prova identidade de sessões criptográficas nem inicialização atual. Artefatos sem
@@ -137,7 +137,7 @@ python3 research/cipher/analyze.py \
 
 Para auditar fontes reais existentes, indicar cada caminho por `--input`; usar outro
 diretório privado de saída a cada rodada. Formatos, limites, semântica dos campos e
-diagnósticos estão em [CIPHER_TOOLS.md](CIPHER_TOOLS.md). Os únicos bytes/estados colocados
+diagnósticos estão em [CIPHER_TOOLS.md](CIPHER_INVESTIGATION.md#original-docs-cipher-tools-md). Os únicos bytes/estados colocados
 no repositório nesta tarefa são sintéticos e explicitamente rotulados como tal.
 
 Resultados: `inventory.json` e `missing-data.json`, ambos privados. O inventário inclui
@@ -498,7 +498,7 @@ cifrar e enviar. Fontes no código: `agent/relay_hook_linux.js:224-233` e a escr
 `relay/writeback.py:4-6` (merge no ponto de cifragem, "antes do XOR em memória, no breakpoint de
 execução DR0"); `relay_capture.conf:99-111` (`scramble-bp=18eff2`, `scramble-range=2632000-2730000`,
 `scramble-id=035f`). Conecta-se ao `store_035f` da trilha de movimento em
-[MOVEMENT_035F_PRECONDITIONS §13.8](MOVEMENT_035F_PRECONDITIONS.md).
+[MOVEMENT_035F_PRECONDITIONS §13.8](HISTORY/MOVEMENT_COMPLETE.md#source-docs-movement-035f-preconditions-md).
 
 **Limite explícito — o que continua DESCONHECIDO.** Saber que a operação final é um XOR byte a byte
 **não** resolve a cifra. A função geradora e tudo o que **antecede** o XOR permanecem essencialmente

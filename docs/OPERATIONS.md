@@ -57,7 +57,7 @@ padrão.
 
 | Flag | Default | Efeito |
 |---|---|---|
-| `--move-dispatch` | OFF | Roteia o `035F` (CZ_REQUEST_MOVE) do consumidor para o **dispatcher nativo de movimento do cliente** em vez do merge pré-XOR: o cliente monta/cifra/envia o próprio `035F` e o `035F` original é dropado. Usa **DR2+DR3**; requer `--no-send-watch`. Ref.: [MOVEMENT_035F_PRECONDITIONS §13.11](MOVEMENT_035F_PRECONDITIONS.md). |
+| `--move-dispatch` | OFF | Roteia o `035F` (CZ_REQUEST_MOVE) do consumidor para o **dispatcher nativo de movimento do cliente** em vez do merge pré-XOR: o cliente monta/cifra/envia o próprio `035F` e o `035F` original é dropado. Usa **DR2+DR3**; requer `--no-send-watch`. Ref.: [MOVEMENT_035F_PRECONDITIONS §13.11](HISTORY/MOVEMENT_COMPLETE.md#source-docs-movement-035f-preconditions-md). |
 | `--move-dispatch-ptr` | `0xd473b0` | Endereço do dispatcher (hex); evita hardcode no agent. |
 | `--move-dispatch-site` | `0x4dcba0` | Fire-site de main-loop do `uaRO.exe` (hex). |
 | `--target-select` | OFF | Reativa o `0368` (seleção por GID) **antes** de ações com alvo (`0437` ataque / `0438` perícia). **Default OFF** (o cliente já emite o `0368` sozinho). A leitura de que o `0368` pré-ação bloqueava ataque/perícia foi **REFUTADA** pelo responsável em 2026-10-16: o `sendmsg` da ação sai com ou sem `0368`, e a ação continua **sem efeito** via SendPacket crua. Ligar/desligar a flag **não** resolve ataque/perícia (ver [GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md)). |
@@ -127,11 +127,11 @@ git diff --check
 
 `validate-research.py` valida **marcadores e tamanhos tabelados**, não a hipótese criptográfica; `validate-codex.py` valida **estrutura de agentes/configurações**, não disponibilidade de modelos. A suíte `test-offline.sh` roda `tests/test_*.py` sequencialmente; inclui `test_cipher_research.py`, `test_movement_preconditions.py` e os testes operacionais. `test_integration.py` pode usar sockets loopback locais: sua falha por permissão em alguns sandboxes **não** caracteriza falha do cliente. Nenhum teste offline prova envio/recepção aceitos pelo servidor.
 
-**Status desta revisão local:** comandos e resultados efetivamente executados em [DOCUMENTATION_AUDIT.md](DOCUMENTATION_AUDIT.md). Nenhuma instalação ou coleta viva foi realizada.
+**Status desta revisão local:** comandos e resultados efetivamente executados em [DOCUMENTATION_AUDIT.md](HISTORY/STATUS_AND_AUDIT.md#source-docs-documentation-audit-md). Nenhuma instalação ou coleta viva foi realizada.
 
 ## Operação e pesquisa são escopos diferentes
 
-Atualizar documentação não concede autorização para executar o cliente, probes, `Frida`, CEServer, alterar `relay/`/`agent/` ou provocar tráfego de servidor. Para detalhes especializados de experimento offline, consulte `research/cipher/README.md` (instruções locais) e `research/movement_035f/` (fontes), além de [RESEARCH_STATUS](RESEARCH_STATUS.md) e [índice de evidências](RESEARCH_EVIDENCE_INDEX.md).
+Atualizar documentação não concede autorização para executar o cliente, probes, `Frida`, CEServer, alterar `relay/`/`agent/` ou provocar tráfego de servidor. Para detalhes especializados de experimento offline, consulte `research/cipher/README.md` (instruções locais) e `research/movement_035f/` (fontes), além de [RESEARCH_STATUS](RESEARCH_STATUS.md) e [índice de evidências](RESEARCH_STATUS.md#evidências-essenciais).
 
 ## Detalhes de instalação e configuração preservados
 

@@ -12,6 +12,10 @@ from relay.client_dispatch import CommandPipeline
 from relay.frida_bridge import Agent
 
 
+class InvalidOperationError(Exception):
+    """Offline stand-in for the Frida exception thrown after script detach."""
+
+
 class TeardownTests(unittest.TestCase):
     def make_agent(self, dispose, unload):
         agent = Agent.__new__(Agent)  # no Frida process or network connection

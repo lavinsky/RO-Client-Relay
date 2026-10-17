@@ -34,8 +34,14 @@ function pktId(h) { return h && h.length >= 4 ? h.slice(2, 4) + h.slice(0, 2) : 
 // ---- sockets -----------------------------------------------------------------------------------
 var libcGetpeername = new NativeFunction(Module.getGlobalExportByName('getpeername'), 'int', ['int', 'pointer', 'pointer']);
 var libcGetsockname = new NativeFunction(Module.getGlobalExportByName('getsockname'), 'int', ['int', 'pointer', 'pointer']);
+var libcGetsockopt = null, socketIdentityWarned = false, socketChangedWarned = false;
+try {
+    var getsockoptAddress = Module.findGlobalExportByName('getsockopt');
+    if (getsockoptAddress !== null)
+        libcGetsockopt = new NativeFunction(getsockoptAddress, 'int', ['int', 'int', 'int', 'pointer', 'pointer']);
+} catch (e) {}
 var peerCache = {};     // fd -> "ip:port" of the last query (a hint only: fds get reused)
-var connCache = {};     // fd -> local port = a unique id per TCP connection
+var connCache = {};     // fd -> Linux socket cookie; duplicate fds share the same TCP identity
 
 // "ip:port" for AF_INET sockets, null otherwise (wineserver/unix sockets). Re-queried on every
 // use that matters: the client closes and reopens sockets at each login->char->map switch and
@@ -47,10 +53,44 @@ function peerOf(fd) {
     len.writeU32(128);
     if (libcGetpeername(fd, sa, len) === 0 && sa.readU16() === 2) {
         res = [4, 5, 6, 7].map(function (o) { return sa.add(o).readU8(); }).join('.') + ':' + portAt(sa);
-        len.writeU32(128);
-        if (libcGetsockname(fd, sa, len) === 0) connCache[fd] = portAt(sa);
+        connCache[fd] = socketIdentity(fd, sa, len);
     }
     return (peerCache[fd] = res);
+}
+// SO_COOKIE (Linux UAPI: SOL_SOCKET=1, SO_COOKIE=57) survives dup() but changes for a new socket.
+// Reuse the sockaddr tail for its uint64 result; stringify both halves without Number precision loss.
+function socketIdentity(fd, sa, len) {
+    if (libcGetsockopt !== null) {
+        try {
+            var cookie = sa.add(16); len.writeU32(8);
+            if (libcGetsockopt(fd, 1, 57, cookie, len) === 0 && len.readU32() === 8)
+                return 'cookie:' + cookie.add(4).readU32().toString(16).padStart(8, '0') +
+                    cookie.readU32().toString(16).padStart(8, '0');
+        } catch (e) {}
+    }
+    if (!socketIdentityWarned) {
+        socketIdentityWarned = true;
+        send({tag: 'WARNING', code: 'SO_COOKIE_FALLBACK',
+              e: 'SO_COOKIE unavailable; local-port identity is weaker under port reuse'});
+    }
+    len.writeU32(128);
+    // Compatibility fallback: local ports can repeat after close and cannot prove TCP identity.
+    return libcGetsockname(fd, sa, len) === 0 ? portAt(sa) : null;
+}
+// Never label a blocked syscall's bytes with a socket that replaced its original fd.
+function sameSocket(peer, conn, currentPeer, currentConn) {
+    return peer !== null && peer !== undefined && conn !== null && conn !== undefined &&
+        peer === currentPeer && conn === currentConn;
+}
+function socketUnchanged(call) {
+    var currentPeer = peerOf(call.fd), currentConn = connCache[call.fd];
+    if (sameSocket(call.peer, call.conn, currentPeer, currentConn)) return true;
+    if (!socketChangedWarned) {
+        socketChangedWarned = true;
+        send({tag: 'WARNING', code: 'SOCKET_ID_CHANGED',
+              e: 'socket identity changed during syscall; event discarded'});
+    }
+    return false;
 }
 function portAt(sa) { return (sa.add(2).readU8() << 8) | sa.add(3).readU8(); }
 
@@ -84,6 +124,22 @@ function hookAll(names, callbacks) {
     });
 }
 
+// libc monotonic clock is optional; omit measurements if this ABI/export is unavailable.
+var monotonicClock = null;
+try {
+    var clockAddress = Module.findGlobalExportByName('clock_gettime');
+    if (clockAddress !== null) monotonicClock = new NativeFunction(clockAddress, 'int', ['int', 'pointer']);
+} catch (e) {}
+function monoNow() {
+    if (monotonicClock === null) return undefined;
+    try {
+        var ts = Memory.alloc(Process.pointerSize * 2);
+        if (monotonicClock(1, ts) !== 0) return undefined; // CLOCK_MONOTONIC, i386 timespec
+        return ts.readU32() * 1000 + ts.add(Process.pointerSize).readU32() / 1000000;
+    } catch (e) { return undefined; }
+}
+
+var workEpoch = 0, workMinToken = 0, workActive = false, WORK_CAPACITY = 64;
 var seq = 0;            // orders RECV / RINGSNAP / SEND events for the driver
 var g = null, gepardSent = false;   // gepard.dll base, resolved lazily (it loads only after login)
 
@@ -113,19 +169,19 @@ function ringBytes(peer, chunkLen) {                // whole chunk + context, or
 
 hookAll(['__recvmsg64', 'recvmsg'], {
     onEnter: function (args) {
-        this.fd = args[0].toInt32(); this.msg = args[1];
-        var hint = peerCache[this.fd];
-        if (!hint || !ringBase[hint] || !lastLen[hint]) return;     // not a socket we snapshot: no syscall
-        var peer = peerOf(this.fd);                                 // the fd may now be another connection
+        this.fd = args[0].toInt32(); this.msg = args[1]; this.epoch = workEpoch;
+        this.peer = peerOf(this.fd); this.conn = connCache[this.fd];
+        var peer = this.peer;
         if (!peer || !ringBase[peer] || !lastLen[peer]) return;
         try {
-            send({tag: 'RINGSNAP', sock: peer, conn: connCache[this.fd], base: ringBase[peer].toString(),
+            send({tag: 'RINGSNAP', epoch: this.epoch, mono_ms: monoNow(), sock: peer, conn: this.conn, base: ringBase[peer].toString(),
                   seq: seq, ts: Date.now()}, ringBase[peer].readByteArray(ringBytes(peer, lastLen[peer])));
         } catch (e) {}
     },
     onLeave: function (ret) {
-        var n = ret.toInt32(); if (n <= 0) return;
-        var fd = this.fd, peer = peerOf(fd); if (!peer) return;
+        var n = ret.toInt32(); if (n <= 0 || !this.peer) return;
+        if (!socketUnchanged(this)) return;
+        var eventEpoch = this.epoch, eventConn = this.conn, fd = this.fd, peer = this.peer;
         lastLen[peer] = n;
         // ring BEFORE the client can decrypt this chunk (we are still inside its recv): the
         // driver's proof that a copy found later is new, not a stale leftover
@@ -137,7 +193,7 @@ hookAll(['__recvmsg64', 'recvmsg'], {
             var h = toHex(v[0], v[1]);
             if (!h) return;
             var first = k === 0 && pre !== null;
-            send({tag: 'RECV', sock: peer, conn: connCache[fd], len: v[1], id: pktId(h), C: h,
+            send({tag: 'RECV', epoch: eventEpoch, mono_ms: monoNow(), sock: peer, conn: eventConn, len: v[1], id: pktId(h), C: h,
                   ptr: v[0].toString(), seq: seq++, ts: Date.now(),
                   pre: first ? ringBase[peer].toString() : undefined}, first ? pre : null);
         });
@@ -145,81 +201,7 @@ hookAll(['__recvmsg64', 'recvmsg'], {
     }
 });
 
-// ---- send watch (opt-in: the driver posts {type:'sendwatch'}) ----------------------------------
-// 0437 action / 0438 skill are built in the client's send queue, back to back (the next packet goes
-// at buf + len), and the client encrypts the body IN PLACE before sendmsg. A hardware write watchpoint on
-// the next slot (all 4 debug registers = 16 bytes, slots are unaligned) sees the plaintext before the
-// encryptor overwrites it. The trap handler only copies pc + the 16 bytes into a preallocated ring:
-// a heavier handler (first relay_sendbp.py run) hung the client. The window rides along with the
-// SEND and the driver picks the plaintext out (relay_sendbp.py --queue = the same method).
-var sw = null;                                  // {lo, hi, ports} while the watch is on
-var swArmed = null;                             // {tid, thread, slot, base, words}
-var SWREC = 5, SWRING = 32;                     // record = pc + 4 words; ring of the last 32 writes
-var swRing = new Uint32Array(SWREC * SWRING), swN = 0, swThread = null, swHandler = false;
-
-function swDisarm() {
-    var a = swArmed; if (a === null) return;
-    swArmed = null;
-    for (var i = 0; i < 4; i++) { try { a.thread.unsetHardwareWatchpoint(i); } catch (e) {} }
-}
-
-function swArm(tid, slot) {
-    swDisarm();
-    if (sw === null) return;
-    if (swThread === null || swThread.id !== tid)
-        swThread = Process.enumerateThreads().filter(function (t) { return t.id === tid; })[0] || null;
-    if (swThread === null) return;
-    var base = slot.and(ptr(~3 >>> 0)), words = [base, base.add(4), base.add(8), base.add(12)];
-    swN = 0;
-    swArmed = {tid: tid, thread: swThread, slot: slot, base: base, words: words};
-    try {
-        for (var w = 0; w < 4; w++) swThread.setHardwareWatchpoint(w, words[w], 4, 'w');
-    } catch (e) { swDisarm(); send({tag: 'SENDWATCH-ERR', e: e.message}); }
-}
-
-function swHex(o) {                             // the 16 watched bytes of record o, as hex
-    var s = '';
-    for (var w = 1; w <= 4; w++) {
-        var v = swRing[o + w];
-        s += HEX[v & 0xff] + HEX[(v >>> 8) & 0xff] + HEX[(v >>> 16) & 0xff] + HEX[(v >>> 24) & 0xff];
-    }
-    return s;
-}
-
-function swWindow(a) {                          // writes since arming, oldest of the kept ones first
-    var keep = Math.min(swN, SWRING), hits = [];
-    for (var j = swN - keep; j < swN; j++) {
-        var o = (j % SWRING) * SWREC;
-        hits.push({pc: '0x' + swRing[o].toString(16), win: swHex(o)});
-    }
-    return {base: a.base.toString(), n: swN, hits: hits};
-}
-
-function swTrap(d) {
-    var a = swArmed;
-    if (a === null || (d.type !== 'single-step' && d.type !== 'breakpoint')) return false;
-    if (Process.getCurrentThreadId() !== a.tid) return false;
-    var o = (swN % SWRING) * SWREC;
-    swRing[o] = d.context.pc.toUInt32();
-    for (var w = 0; w < 4; w++) swRing[o + 1 + w] = a.words[w].readU32();
-    swN++;
-    return true;                                // data watchpoints trap AFTER the write: just resume
-}
-
-function onSendWatch(m) {
-    if (m.lo) {
-        sw = {lo: ptr(m.lo), hi: ptr(m.hi), ports: m.ports || [5121]};
-        if (!swHandler) {                       // registered only once the feature is on
-            swHandler = true;
-            Process.setExceptionHandler(swTrap);
-        }
-        console.log('[*] send watch on: queue ' + sw.lo + '-' + sw.hi + ' ports ' + sw.ports);
-    } else {
-        sw = null; swDisarm();
-    }
-    recv('sendwatch', onSendWatch);
-}
-recv('sendwatch', onSendWatch);
+var sw = null; // Optional send-watch state; helpers exist only in research_hooks.js.
 
 // ---- scramble intercept (opt-in: the driver posts {type:'scramble'}) ---------------------------
 // Inject a valid encrypted client->server packet: a hardware EXECUTION breakpoint at the client's
@@ -231,6 +213,19 @@ recv('sendwatch', onSendWatch);
 // registers so the exact entry pc and pointer register can be confirmed first. It uses one debug
 // register, so it can't run alongside the full 4-register send watch (use --no-send-watch).
 // NOTE: a debug register is exactly what the anti-cheat may detect - this is for a client you own.
+function workAck(hit, item, extra) {
+    send(Object.assign({tag: 'SCRAMBLE', hit: hit, token: item.token, epoch: item.epoch, id: item.id,
+        mono_ms: monoNow(), accepted_mono_ms: item.accepted_mono_ms}, extra || {}));
+}
+function workFinish(item, hit, extra) {
+    workAck(hit, item, extra);
+    if (scr !== null && scr.pending.length && !scr._fix0) workAck('armed', scr.pending[0]);
+}
+function workCurrent(m) {
+    return m.epoch === undefined || (workActive && m.epoch === workEpoch &&
+        (typeof m.token !== 'number' || m.token >= workMinToken));
+}
+var researchTrap = null, researchReset = null;
 var scr = null;                                 // {pc, reg, id, body(array)|null, dry} or null
 var scrThread = null, scrHandler = false;
 var scrCall = null;                              // sendcall: {pc} do ponto de captura do `this`, em DR1
@@ -274,161 +269,6 @@ function slotFrom(ctx, reg) {                     // the slot pointer: a registe
     } catch (e) { return null; }
 }
 
-var scrEntry;                                    // cached nearest function prologue before the bp pc
-function scrPrologue() {
-    if (scrEntry !== undefined) return scrEntry;
-    scrEntry = null;
-    try {
-        var span = 0x400, base = scr.pc.sub(span), buf = new Uint8Array(base.readByteArray(span));
-        for (var k = buf.length - 3; k >= 0; k--) {        // push ebp; mov ebp,esp  (55 8B EC / 55 89 E5)
-            if (buf[k] === 0x55 && ((buf[k + 1] === 0x8b && buf[k + 2] === 0xec) || (buf[k + 1] === 0x89 && buf[k + 2] === 0xe5))) {
-                var e = base.add(k);
-                scrEntry = {abs: e.toString(), off: g !== null ? '0x' + e.sub(g).toString(16) : null};
-                break;
-            }
-        }
-    } catch (e) {}
-    return scrEntry;
-}
-
-// --send-probe: on the first recognised client send, capture the registers and walk the stack for
-// return addresses into mapped modules (resolved to module+offset and the nearest prologue), so the
-// driver can pick the client's callable send routine. One-shot and read-only - it never writes.
-function safeHead(p, n) {                                            // first n (default 16) bytes at p, hex, or null
-    if (!(p instanceof NativePointer) || p.isNull()) return null;
-    try { return hexOf(new Uint8Array(p.readByteArray(n || 16))); } catch (e) { return null; }
-}
-
-// --probe-entry: one-shot capture of a function's arguments at its entry. On the first hit we dump
-// the registers, the top of the stack (incoming args / return address), and the first bytes each of
-// those points at, so the driver can see how the packet/slot is passed. Read-only; disarms at once.
-function scrProbeEntry(ctx) {
-    if (scr.lo !== null) {                                           // gated: a send-packet copy into the queue
-        var args = [];                                              // at entry: [esp]=return addr, [esp+4..]=args
-        for (var j = 1; j <= 4; j++) { try { args.push(ctx.esp.add(j * 4).readPointer()); } catch (e) { args.push(null); } }
-        var inRange = args.some(function (a) { return a && a.compare(scr.lo) >= 0 && a.compare(scr.hi) < 0; });
-        var hasId = args.some(function (a) {
-            if (!a) return false;
-            try { return scr.ids[a.readU16()] === 1; } catch (e) { return false; }
-        });
-        if (!(inRange || hasId)) return true;                       // not the call we want: keep waiting
-    }
-    var regs = {}, regmem = {};
-    GP.forEach(function (r) { try { regs[r] = ctx[r].toString(); regmem[r] = safeHead(ctx[r]); } catch (e) {} });
-    var stack = [], esp = ctx.esp;
-    for (var i = 0; i < 12; i++) {                                   // [esp+0]=return addr, [esp+4..]=args (cdecl/stdcall)
-        var v;
-        try { v = esp.add(i * 4).readPointer(); } catch (e) { break; }
-        var c = codeAt(v);
-        stack.push({off: '0x' + (i * 4).toString(16), val: v.toString(),
-                    code: c ? (c.name + '+0x' + v.sub(c.base).toString(16)) : null, mem: safeHead(v)});
-    }
-    send({tag: 'SCRAMBLE', hit: 'entry', pc: scr.pc.toString(), regs: regs, regmem: regmem, stack: stack});
-    scr = null; scrDisarm();                                         // one-shot
-    return true;
-}
-
-function scrProbe(ctx) {
-    var PROBE_IDS = scr.ids;                                         // the encrypted client send ids to gate on
-    var cand = {eax: ctx.eax, ebx: ctx.ebx, ecx: ctx.ecx, edx: ctx.edx, esi: ctx.esi, edi: ctx.edi, ebp: ctx.ebp};
-    var slotReg = null, slotPtr = null, slotId = -1, slotOff = null, inRange = null;
-    for (var rn in cand) {                                           // confirm a real send: a reg points at a slot id we expect
-        var r = cand[rn];
-        if (!(r instanceof NativePointer) || r.isNull()) continue;
-        if (scr.lo !== null && (r.compare(scr.lo) < 0 || r.compare(scr.hi) >= 0)) continue;   // cheap reject
-        if (inRange === null) inRange = {rn: rn, r: r};              // first reg inside the range
-        for (var ci = 0; ci < SCR_IDOFFS.length; ci++) {
-            var o = SCR_IDOFFS[ci], idv;
-            try { idv = r.add(o).readU16(); } catch (e) { continue; }
-            if (PROBE_IDS[idv]) { slotReg = rn; slotPtr = r.add(o); slotId = idv; slotOff = o; break; }
-        }
-        if (slotReg) break;
-    }
-    if (slotReg === null && scr.anyid && inRange !== null) {         // range is the gate: take the first in-range hit
-        slotReg = inRange.rn; slotPtr = inRange.r.add(SCR_IDOFFS[0]); slotOff = SCR_IDOFFS[0];
-        try { slotId = inRange.r.add(SCR_IDOFFS[0]).readU16(); } catch (e) { slotId = -1; }
-    }
-    if (slotReg === null) {                                          // no match yet
-        if (inRange !== null && ++scr.nprobe >= 2000) {              // hard cap on in-range work -> disarm, never flood
-            send({tag: 'SENDWATCH-ERR', e: 'probe: ' + scr.nprobe + ' in-range hits, no id match; disarming'});
-            scr = null; scrDisarm();
-        }
-        return true;                                                // out-of-range hits are rejected cheaply, not counted
-    }
-    var regs = {};
-    GP.forEach(function (r) { try { regs[r] = ctx[r].toString(); } catch (e) {} });
-    var frames = [], esp = ctx.esp;
-    for (var i = 0; i < 512 && frames.length < 64; i++) {            // scan the stack for return addresses
-        var w;
-        try { w = esp.add(i * 4).readPointer(); } catch (e) { break; }
-        if (w.isNull()) continue;
-        var c = codeAt(w);                                           // file-backed executable range (Wine PE too)
-        if (c === null) continue;
-        frames.push({sp: '0x' + (i * 4).toString(16), ret: w.toString(), mod: c.name,
-                     off: '0x' + w.sub(c.base).toString(16), entry: scrPrologueBefore(w)});
-    }
-    send({tag: 'SCRAMBLE', hit: 'probe', pc: scr.pc.toString(), reg: slotReg, idoff: slotOff,
-          id: slotId, slot: slotPtr.toString(), regs: regs, frames: frames});
-    scr = null; scrDisarm();                                         // one-shot
-    return true;
-}
-
-// Executable, file-backed ranges (Frida's module API misses Wine-loaded PE modules, so resolve
-// addresses against the mapped ranges directly, as peBase() does). `base` is the lowest range of
-// the same file - a usable module base for RVAs. Cached; recomputed only if a lookup misses.
-var CODE_RANGES = null;
-// Faixas executaveis para resolver enderecos da pilha. O codigo do uaRO roda em memoria ANONIMA
-// (desempacotado pelo gepard, base 0x401000), por isso incluimos faixas anonimas executaveis de
-// endereco baixo (< 0x2000000: o uaRO em 0x401000 e o blob do gepard em 0x1717000) alem dos modulos
-// .exe/.dll com arquivo; pulamos .grf (dados) e as regioes anonimas altas (pilhas/heaps). Construida
-// UMA vez - reconstruir a cada endereco sem correspondencia travava a thread do jogo.
-var LIMITE_ANON = ptr('0x2000000');
-function codeRanges() {
-    if (CODE_RANGES) return CODE_RANGES;
-    var grupos = {};
-    Process.enumerateRanges({protection: 'r-x', coalesce: false}).forEach(function (r) {
-        var cam = (r.file && r.file.path) ? r.file.path : null, chave, nome;
-        if (cam) {
-            if (!/\.(exe|dll)$/i.test(cam)) return;                  // pular arquivos de dados (.grf, .nls)
-            chave = cam; nome = cam.split('/').pop();
-        } else {
-            if (r.base.compare(LIMITE_ANON) >= 0) return;            // anonimo alto = pilha/heap, nao codigo
-            chave = 'anon:' + r.base; nome = 'anon@' + r.base;       // codigo desempacotado (uaRO, VM gepard)
-        }
-        (grupos[chave] = grupos[chave] || {nome: nome, faixas: []}).faixas.push([r.base, r.base.add(r.size)]);
-    });
-    var saida = [];
-    for (var k in grupos) {
-        var g = grupos[k], base = g.faixas[0][0];
-        g.faixas.forEach(function (x) { if (x[0].compare(base) < 0) base = x[0]; });
-        g.faixas.forEach(function (x) { saida.push({lo: x[0], hi: x[1], name: g.nome, base: base}); });
-    }
-    return (CODE_RANGES = saida);
-}
-function codeAt(ptr) {                                               // sem reconstruir: evita o congelamento
-    var rs = codeRanges();
-    for (var i = 0; i < rs.length; i++) if (ptr.compare(rs[i].lo) >= 0 && ptr.compare(rs[i].hi) < 0) return rs[i];
-    return null;
-}
-
-function scrPrologueBefore(addr) {                                   // nearest push ebp;mov ebp,esp before addr
-    try {
-        var c = codeAt(addr);
-        if (c === null) return null;
-        var span = 0x600, base = addr.sub(span);
-        if (base.compare(c.lo) < 0) { base = c.lo; span = addr.sub(c.lo).toInt32(); }
-        if (span <= 3) return null;
-        var buf = new Uint8Array(base.readByteArray(span));
-        for (var k = buf.length - 3; k >= 0; k--) {
-            if (buf[k] === 0x55 && ((buf[k + 1] === 0x8b && buf[k + 2] === 0xec) || (buf[k + 1] === 0x89 && buf[k + 2] === 0xe5))) {
-                var e = base.add(k);
-                return {abs: e.toString(), off: '0x' + e.sub(c.base).toString(16), mod: c.name};
-            }
-        }
-    } catch (e) {}
-    return null;
-}
-
 function scrTrap(d) {
     if (d.type !== 'breakpoint') return false;
     var ctx = d.context;
@@ -436,6 +276,7 @@ function scrTrap(d) {
     // sendcall: captura de uso unico do `this` (ecx) na entrada da SendPacket, no DR1 -- independente
     // do merge de 035f (DR0), que segue armado. Depois a SendPacket e chamada por NativeFunction.
     if (scrCall !== null && ctx.pc.equals(scrCall.pc)) {
+        if (scrThread !== null && Process.getCurrentThreadId() !== scrThread.id) return false;
         try {
             scSend['this'] = ctx.ecx;
             scSend.tid = Process.getCurrentThreadId();   // a thread em que a SendPacket roda; drenar so nela
@@ -446,38 +287,8 @@ function scrTrap(d) {
         return true;
     }
     if (scr === null || !ctx.pc.equals(scr.pc)) return false;
-    if (scr.entry) return scrProbeEntry(ctx);                        // --probe-entry: capture args + disarm
-    if (scr.probe) return scrProbe(ctx);                             // --send-probe: capture + disarm, no write
-    if (scr.trace) {                                                 // TRACE: snapshot por byte, so no fluxo de envio
-        if (scr.lo === null) {                                       // trace exige --scramble-range; sem ele, desarma
-            scr.trace = false; scrDisarm();
-            send({tag: 'SCRAMBLE', hit: 'trace-done', n: scr.traceN, e: 'trace needs --scramble-range'});
-            return true;
-        }
-        var ex = ctx.ecx, bx = ctx.ebx;
-        if (!(ex instanceof NativePointer) ||
-            ex.compare(scr.lo) < 0 || ex.compare(scr.hi) >= 0) return true;   // so envio (ecx no range)
-        if (scr.traceN >= scr.traceMax) { scr.trace = false; scrDisarm(); send({tag: 'SCRAMBLE', hit: 'trace-done', n: scr.traceN}); return true; }
-        scr.traceN++;
-        var wb = bx.sub(bx.and(0x3ff)), tbl = null, db = null;       // janela 1KB-alinhada ao ebx
-        try { tbl = toHex(wb, 0x600); } catch (e) {}
-        try { db = toHex(ex, 1); } catch (e) {}
-        send({tag: 'SCRAMBLE', hit: 'trace', n: scr.traceN, ecx: ex.toString(), ebx: bx.toString(), win: wb.toString(), db: db, tbl: tbl});
-        return true;
-    }
-    if (scr.dry) {                                                   // DRY: report everything, write nothing
-        var regs = {}, stk = [], i;
-        GP.forEach(function (r) { try { regs[r] = ctx[r].toString(); } catch (e) {} });
-        for (i = 0; i < 6; i++) { try { stk.push(ctx.esp.add(4 * i).readPointer().toString()); } catch (e) { stk.push(null); } }
-        var slot = slotFrom(ctx, scr.reg), pid = null, body = null;
-        if (slot instanceof NativePointer) {
-            try { var h = new Uint8Array(slot.readByteArray(2)); pid = h[0] | (h[1] << 8); body = toHex(slot.add(2), 8); } catch (e) {}
-        }
-        send({tag: 'SCRAMBLE', hit: 'dry', pc: scr.pc.toString(), reg: scr.reg,
-              slot: slot ? slot.toString() : null, id: pid, body: body, regs: regs, stack: stk,
-              entry: scrPrologue()});
-        return true;
-    }
+    if (scrThread !== null && Process.getCurrentThreadId() !== scrThread.id) return false;
+    if (researchTrap !== null && researchTrap(ctx)) return true;
     // --- byte0 fix (merge) ---------------------------------------------------------------------
     // O store scr.pc (mov [ecx],bl) grava UM byte em bodyp[0] DEPOIS do nosso writeByteArray, com o
     // valor derivado do byte ORIGINAL (bl foi carregado antes do nosso write) -> body[0] revertia:
@@ -485,9 +296,12 @@ function scrTrap(d) {
     // scrambler é ascendente (body[0] primeiro), corrigimos no hit SEGUINTE (byte1 do mesmo pacote, o
     // store de body[0] já rodou) reescrevendo body[0] pela identidade XOR, sem conhecer o keystream
     // nem assumir onde o XOR é aplicado: final = (valor_atual) ^ original0 ^ nosso0.
-    if (scr._fix0) {
+    if (scr._fix0 && scr._fix0.tid === Process.getCurrentThreadId()) {
         var f0 = scr._fix0; scr._fix0 = null;
-        try { var c0 = f0.at.readU8(); f0.at.writeU8((c0 ^ f0.orig0 ^ f0.our0) & 0xff); } catch (e) {}
+        try {
+            var c0 = f0.at.readU8(); f0.at.writeU8((c0 ^ f0.orig0 ^ f0.our0) & 0xff);
+            if (f0.item) workFinish(f0.item, 'consumed');
+        } catch (e) { if (f0.item) workFinish(f0.item, 'error', {e: 'byte-zero repair: ' + e.message}); }
     }
     // Find the slot pointer + which body to write. Two modes:
     //   fixed  (scr.reg is a register / sN): pointer = that reg, id at pointer+idoff (configured).
@@ -495,7 +309,7 @@ function scrTrap(d) {
     //          we're injecting, trying a couple of id offsets - so reg/idoff need not be known ahead.
     var bodyp = null, pid2 = -1, body = null, oneshot = false, usedReg = scr.reg, usedOff = scr.idoff;
     if (scr.reg === 'auto') {
-        var haveMap = false, kk; for (kk in scr.bodies) { haveMap = true; break; }
+        var pending = scr.pending[0], haveMap = pending !== undefined;
         if (!haveMap && scr.body === null) return true;              // nothing queued to inject: cheap exit
         var cand = {eax: ctx.eax, ebx: ctx.ebx, ecx: ctx.ecx, edx: ctx.edx, esi: ctx.esi, edi: ctx.edi, ebp: ctx.ebp};
         for (var rn in cand) {
@@ -505,7 +319,7 @@ function scrTrap(d) {
             for (var ci = 0; ci < SCR_IDOFFS.length; ci++) {
                 var off2 = SCR_IDOFFS[ci], idv;
                 try { idv = r.add(off2).readU16(); } catch (e) { continue; }
-                if (scr.bodies[idv] !== undefined) { pid2 = idv; body = scr.bodies[idv]; oneshot = true; }
+                if (pending && pending.id === idv) { pid2 = idv; body = pending.body; oneshot = true; }
                 else if (scr.body !== null && idv === scr.id) { pid2 = idv; body = scr.body; }
                 if (body !== null) { bodyp = r.add(off2 + 2); usedReg = rn; usedOff = off2; break; }
             }
@@ -520,25 +334,41 @@ function scrTrap(d) {
         var head;
         try { head = new Uint8Array(idp.readByteArray(2)); } catch (e) { return true; }
         pid2 = head[0] | (head[1] << 8);
-        if (scr.bodies[pid2] !== undefined) { body = scr.bodies[pid2]; oneshot = true; }   // consumer packet wins
+        if (scr.pending.length && scr.pending[0].id === pid2) { body = scr.pending[0].body; oneshot = true; }   // consumer packet wins
         else if (scr.body !== null && (scr.id === undefined || pid2 === scr.id)) { body = scr.body; }  // legacy walk
         if (body === null) return true;                             // not a packet we're injecting
     }
     var was = null;
     try { was = toHex(bodyp, body.length); } catch (e) {}
+    if (usedOff === -2 && (was === null || was.length < 2)) {
+        if (oneshot) workFinish(scr.pending.shift(), 'error', {e: 'original byte unavailable for byte-zero repair'});
+        else send({tag: 'SENDWATCH-ERR', e: 'original byte unavailable for byte-zero repair'});
+        return true;
+    }
     try {
         bodyp.writeByteArray(body);                                 // overwrite plaintext; the in-place XOR encrypts ours
-        if (oneshot && !scr.persist) delete scr.bodies[pid2];       // one-shot: client's own sends resume; persist: keep replacing
+        if (oneshot && !(scr.persist && scr.pending[0].token === undefined)) {
+            var consumed = scr.pending.shift();
+        }       // Each queued consumer packet is consumed exactly once.
         if (usedOff === -2 && was !== null && was.length >= 2) {    // bodyp==ecx: o store seguinte grava body[0]
-            scr._fix0 = {at: bodyp, orig0: parseInt(was.slice(0, 2), 16), our0: body[0] & 0xff};
+            scr._fix0 = {item: consumed, tid: Process.getCurrentThreadId(), at: bodyp, orig0: parseInt(was.slice(0, 2), 16), our0: body[0] & 0xff};
         }
+        if (consumed && !scr._fix0) workFinish(consumed, 'consumed');
         send({tag: 'SCRAMBLE', hit: 'wrote', pc: scr.pc.toString(), slot: bodyp.toString(), id: pid2,
               body: was, wrote: hexOf(new Uint8Array(body)), reg: usedReg, idoff: usedOff});
-    } catch (e) { send({tag: 'SENDWATCH-ERR', e: 'scramble write: ' + e.message}); }
+    } catch (e) {
+        if (oneshot && scr.pending.length) workFinish(scr.pending.shift(), 'error', {e: 'scramble write: ' + e.message});
+        else send({tag: 'SENDWATCH-ERR', e: 'scramble write: ' + e.message});
+    }
     return true;
 }
 
 function onScramble(m) {
+    if ((m.pc !== undefined || m.off !== undefined) && researchTrap === null &&
+        (m.entry || m.probe || m.trace || m.dry !== false)) {
+        send({tag: 'SENDWATCH-ERR', e: 'research hooks not loaded'});
+        recv('scramble', onScramble); return;
+    }
     if (m.pc === undefined && m.off === undefined) {
         scr = null; scrDisarm();
     } else {
@@ -555,8 +385,8 @@ function onScramble(m) {
                traceMax: m.traceMax || 400, traceN: 0,
                nprobe: 0,              // in-range misses seen (hard cap -> disarm, never flood)
                ids: (function () { var o = {}; (m.ids || [0x0437, 0x0438]).forEach(function (x) { o[x] = 1; }); return o; })(),
-               bodies: {}};        // --inject merge: id -> plaintext body to substitute (pre-XOR)
-        scrEntry = undefined;                       // recompute the prologue scan for this pc
+               pending: []};        // ordered plaintext substitutions (pre-XOR)
+        if (researchReset !== null) researchReset();
         if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
         scrArm();
         console.log('[*] scramble intercept: bp @ ' + pc + ' reg ' + scr.reg +
@@ -567,16 +397,26 @@ function onScramble(m) {
 recv('scramble', onScramble);
 
 // --inject merge: the driver forwards each packet the consumer wants to send as {id, body}.
-// We stash the body keyed by id; the next time the scramble BP sees that id in a slot, scrTrap
+// Only the FIFO head is armed; the next time the scramble BP sees its id in a slot, scrTrap
 // writes the body in place of the client's own, one-shot, so the client's XOR encrypts ours.
 function onScrambleSet(m) {
-    if (scr !== null) {
-        if (m.body === null || m.body === undefined) delete scr.bodies[m.id];
-        else scr.bodies[m.id] = Array.from(hexToBytes(m.body));
-        console.log('[*] scramble body ' + (m.body ? 'armed' : 'cleared') +
-                    ' for id 0x' + (m.id | 0).toString(16) + (m.body ? ' (' + (m.body.length >> 1) + 'B)' : ''));
-    } else {
-        send({tag: 'SENDWATCH-ERR', e: 'scramble-set with no scramble BP armed (need --scramble-bp)'});
+    var item = {id: m.id, token: m.token, epoch: m.epoch === undefined ? workEpoch : m.epoch, accepted_mono_ms: monoNow()};
+    if (!workCurrent(m)) workAck('error', item, {e: 'stale epoch'});
+    else if (scr === null) workAck('error', item, {e: 'scramble BP not armed'});
+    else if (m.body === null || m.body === undefined) {
+        var wasHead = scr.pending[0];
+        scr.pending = scr.pending.filter(function (queued) {
+            if (queued.id !== m.id || (m.token !== undefined && queued.token !== m.token)) return true;
+            workAck('cancelled', queued); return false;
+        });
+        if (scr.pending.length && scr.pending[0] !== wasHead && !scr._fix0) workAck('armed', scr.pending[0]);
+    }
+    else if (scr.pending.length >= WORK_CAPACITY) workAck('error', item, {e: 'pending queue full'});
+    else if (!/^(?:[0-9a-fA-F]{2})+$/.test(m.body)) workAck('error', item, {e: 'invalid body hex'});
+    else {
+        item.body = Array.from(hexToBytes(m.body));
+        scr.pending.push(item);
+        if (scr.pending.length === 1 && !scr._fix0) workAck('armed', item);
     }
     recv('scramble-set', onScrambleSet);
 }
@@ -595,10 +435,6 @@ function hexToBytes(h) {
 // the call is made on the GAME thread (drained from the recv/send hooks), never from the JS thread.
 var scSend = null;                              // {pc, fn, this, queue:[[bytes]]}
 var scDraining = false;                         // re-entrancy guard
-var scCastMs = 800;                             // janela de paceamento dos casts (0 desliga)
-var scLastCast = 0;                             // Date.now() do ultimo cast realmente enviado
-var CAST_IDS = {0x0438: 1, 0x0af4: 1};          // pericias com tempo de cast: so uma por janela
-
 function onSendCall(m) {
     if (m.rva === undefined && m.pc === undefined) {                 // disarm
         scSend = null;
@@ -611,7 +447,6 @@ function onSendCall(m) {
             send({tag: 'SENDCALL', hit: 'error', e: 'could not resolve ' + (m.module || 'uaRO.exe') + ' base'});
         } else {
             scSend = {pc: pc, fn: null, 'this': null, queue: []};
-            if (m.castMs !== undefined) scCastMs = m.castMs;
             scrCall = {pc: pc};                              // DR1, independente do merge de 035f (DR0)
             if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
             scrCallArm();
@@ -623,8 +458,11 @@ function onSendCall(m) {
 recv('sendcall', onSendCall);
 
 function onSendEmit(m) {
-    if (scSend === null) send({tag: 'SENDCALL', hit: 'error', e: 'emit with no sendcall armed'});
-    else if (m.data) scSend.queue.push(Array.from(hexToBytes(m.data)));
+    if (scSend === null) send({tag: 'SENDCALL', hit: 'error', e: 'emit with no sendcall armed', token: m.token, epoch: m.epoch});
+    else if (!workCurrent(m)) send({tag: 'SENDCALL', hit: 'error', e: 'stale epoch', epoch: m.epoch, token: m.token});
+    else if (scSend.queue.length >= WORK_CAPACITY) send({tag: 'SENDCALL', hit: 'error', e: 'queue full', epoch: m.epoch, token: m.token});
+    else if (!m.data || !/^(?:[0-9a-fA-F]{2}){2,}$/.test(m.data)) send({tag: 'SENDCALL', hit: 'error', e: 'invalid packet hex', token: m.token, epoch: m.epoch});
+    else scSend.queue.push({bytes: Array.from(hexToBytes(m.data)), token: m.token, epoch: m.epoch, accepted_mono_ms: monoNow()});
     recv('sendcall-emit', onSendEmit);
 }
 recv('sendcall-emit', onSendEmit);
@@ -635,24 +473,24 @@ function drainSendCall() {                       // only runs on the game thread
     if (scSend.tid && Process.getCurrentThreadId() !== scSend.tid) return;   // so na thread que roda a SendPacket
     scDraining = true;
     try {
-        while (scSend.queue.length) {
-            var pk = scSend.queue.shift();
-            var id = pk.length >= 2 ? (pk[0] | (pk[1] << 8)) : 0;
-            if (scCastMs > 0 && CAST_IDS[id]) {              // pericia com cast: so uma por janela
-                var now = Date.now();                        // retentativas enfileiradas drenariam
-                if (now - scLastCast < scCastMs) {           // em rajada e uma cancelaria a outra
-                    send({tag: 'SENDCALL', hit: 'throttled', len: pk.length, id: id});
-                    continue;                                // descarta este cast (nao reenfileira)
-                }
-                scLastCast = now;
+        var current = scSend;
+        while (scSend === current && current.fn !== null && current['this'] !== null && current.queue.length) {
+            var queued = current.queue.shift(), pk = queued.bytes;
+            if (!workCurrent(queued)) {
+                send({tag: 'SENDCALL', hit: 'error', e: 'stale epoch', token: queued.token, epoch: queued.epoch});
+                continue;
             }
             try {
                 var buf = Memory.alloc(pk.length < 8 ? 8 : pk.length);
                 buf.writeByteArray(pk);
+                var nativeBegin = monoNow();
+                if (scSend !== current || current.fn === null || current['this'] === null || !workCurrent(queued))
+                    throw new Error('session reset before native call');
                 scSend.fn(scSend['this'], pk.length, buf);           // client builds+encrypts+sends it
-                send({tag: 'SENDCALL', hit: 'sent', len: pk.length, data: hexOf(new Uint8Array(pk))});
+                send({tag: 'SENDCALL', hit: 'sent', len: pk.length, token: queued.token, epoch: queued.epoch,
+                    accepted_mono_ms: queued.accepted_mono_ms, native_begin_mono_ms: nativeBegin, native_end_mono_ms: monoNow()});
             } catch (e) {
-                send({tag: 'SENDCALL', hit: 'error', e: 'call: ' + e.message});
+                send({tag: 'SENDCALL', hit: 'error', e: 'call: ' + e.message, token: queued.token, epoch: queued.epoch});
             }
         }
     } finally { scDraining = false; }
@@ -687,7 +525,7 @@ function mdReceiverReady() {                    // guarda de prontidao do recept
 }
 
 function mdTrap(ctx) {                          // devolve true se tratou o breakpoint
-    if (md === null) return false;
+    if (md === null || Process.getCurrentThreadId() !== md.tid) return false;
     if (md.capArmed && ctx.pc.equals(md.disp)) {                   // captura passiva do `this` (construct mode)
         if (md.thisp === null && !md.busy) {
             var lo = ctx.esp.add(8).readU32(), hi = ctx.esp.add(12).readU32();
@@ -700,23 +538,39 @@ function mdTrap(ctx) {                          // devolve true se tratou o brea
     }
     if (md.fireArmed && ctx.pc.equals(md.site)) {                  // sitio PE do main-loop
         if (Process.getCurrentThreadId() !== md.tid || md.thisp === null || md.queue.length === 0 || md.busy) return true;
-        var a = md.queue.shift();
+        var currentDispatch = md, a = md.queue.shift();
         md.fireArmed = false; mdUnarm(3); md.capArmed = false; mdUnarm(2);   // sem BP aninhado
-        var r = {tag: 'MOVE-DISPATCH', hit: 'fired', x: a.x, y: a.y, 'this': md.thisp.toString()};
+        var r = {tag: 'MOVE-DISPATCH', hit: a.token === undefined ? 'fired' : 'dispatched', x: a.x, y: a.y, token: a.token, epoch: a.epoch, accepted_mono_ms: a.accepted_mono_ms, 'this': md.thisp.toString()};
         if (!mdReceiverReady()) { r.hit = 'abort'; r.e = 'receiver not ready/changed'; send(r); }
         else {
             try {
                 md.busy = true;
                 var f = md.recipe.buildFrame(a);
                 r.frame = f;
-                send({tag: 'MOVE-DISPATCH', hit: 'call', x: a.x, y: a.y});
+                var dispatchThis = currentDispatch.thisp;
+                r.native_begin_mono_ms = monoNow();
+                if (md !== currentDispatch || currentDispatch.thisp !== dispatchThis || !workCurrent(a))
+                    throw new Error('session reset before native dispatch');
+                send({tag: 'MOVE-DISPATCH', hit: 'call', token: a.token, epoch: a.epoch, mono_ms: r.native_begin_mono_ms, x: a.x, y: a.y});
                 var rv = md.fn.apply(null, [md.thisp].concat(f));
-                r.retval = rv >>> 0; r.exception = null;
-            } catch (e) { r.exception = String(e.message || e); }
-            md.busy = false;
+                r.native_end_mono_ms = monoNow(); r.retval = rv >>> 0; r.exception = null;
+            } catch (e) { r.hit = 'error'; r.exception = String(e.message || e); }
+            currentDispatch.busy = false;
             send(r);
         }
-        if (md.queue.length) { try { md.th.setHardwareBreakpoint(3, md.site); md.fireArmed = true; } catch (e) {} }
+        if (md === currentDispatch) {
+            if (md.thisp === null && !md.capArmed) {
+                try { md.th.setHardwareBreakpoint(2, md.disp); md.capArmed = true; }
+                catch (e) { send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'capture rearm: ' + e.message}); }
+            } else if (md.queue.length) {
+                try { md.th.setHardwareBreakpoint(3, md.site); md.fireArmed = true; }
+                catch (e) {
+                    md.queue.splice(0).forEach(function (item) {
+                        send({tag: 'MOVE-DISPATCH', hit: 'error', token: item.token, epoch: item.epoch, e: 'fire rearm: ' + e.message});
+                    });
+                }
+            }
+        }
         return true;
     }
     return false;
@@ -739,6 +593,7 @@ function onNativeDispatch(m) {
                 send({tag: 'MOVE-DISPATCH', hit: 'recapture', e: 'this reset; walk once to re-capture'});
             }
         } else if (m.arm) {
+            if (md !== null) { mdUnarm(2); mdUnarm(3); md = null; }
             var rec = MD_RECIPES[m.recipe];
             var base = peBase(m.module || 'uaRO.exe');
             if (!rec || base === null) { send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'recipe/base unresolved'}); }
@@ -763,89 +618,74 @@ function onNativeDispatch(m) {
                 }
             }
         } else if (m.args && md !== null) {
-            if (md.thisp === null) send({tag: 'MOVE-DISPATCH', hit: 'dropped', e: 'dispThis not captured yet (walk once in-client)', x: m.args.x, y: m.args.y});
-            else if (md.queue.length >= 8) send({tag: 'MOVE-DISPATCH', hit: 'dropped', e: 'queue full'});
+            if (md.thisp === null) send({tag: 'MOVE-DISPATCH', token: m.token, epoch: m.epoch, hit: 'error', e: 'dispThis not captured yet (walk once in-client)', x: m.args.x, y: m.args.y});
+            else if (!workCurrent(m)) send({tag: 'MOVE-DISPATCH', token: m.token, epoch: m.epoch, hit: 'error', e: 'stale epoch'});
+            else if (md.queue.length >= WORK_CAPACITY) send({tag: 'MOVE-DISPATCH', token: m.token, epoch: m.epoch, hit: 'error', e: 'queue full'});
             else {
-                md.queue.push(m.args);
-                if (!md.fireArmed) { md.th.setHardwareBreakpoint(3, md.site); md.fireArmed = true; }   // DR3: sitio de disparo
-                send({tag: 'MOVE-DISPATCH', hit: 'queued', x: m.args.x, y: m.args.y});
+                md.queue.push(Object.assign({}, m.args, {token: m.token, epoch: m.epoch, accepted_mono_ms: monoNow()}));
+                if (!md.fireArmed) {
+                    try { md.th.setHardwareBreakpoint(3, md.site); md.fireArmed = true; }
+                    catch (e) { md.queue.pop(); throw e; }
+                }   // DR3: sitio de disparo
+                send({tag: 'MOVE-DISPATCH', token: m.token, epoch: m.epoch, hit: 'queued', x: m.args.x, y: m.args.y});
             }
-        } else if (m.args) send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'native-dispatch with no arm'});
-    } catch (e) { send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'native-dispatch: ' + e.message}); }
+        } else if (m.args) send({tag: 'MOVE-DISPATCH', token: m.token, epoch: m.epoch, hit: 'error', e: 'native-dispatch with no arm'});
+    } catch (e) { send({tag: 'MOVE-DISPATCH', token: m.token, epoch: m.epoch, hit: 'error', e: 'native-dispatch: ' + e.message}); }
     recv('native-dispatch', onNativeDispatch);
 }
 recv('native-dispatch', onNativeDispatch);
 
-// never leave debug registers armed without our handler: the client would die on the next write
-rpc.exports = { dispose: function () { sw = null; swDisarm(); scr = null; scrDisarm(); scrCall = null; scrCallDisarm(); scSend = null; if (md !== null) { mdUnarm(2); mdUnarm(3); } md = null; } };
-
-// ---- rastreio com Stalker (opcional: o driver envia {type:'trace'}) ----------------------------
-// ARRISCADO em codigo protegido pelo gepard: o Stalker reescreve o codigo executado. Primeiro um
-// teste de sobrevivencia curto; se o cliente aguentar, com a faixa do uaRO registramos as chamadas
-// do codigo do uaRO para dentro do gepard (a chamada do envio do walk esta entre elas). Janela
-// curta e desliga sozinho.
-var traceSeen = null;
-function onTrace(m) {
-    var ms = m.ms || 200;
-    var th = Process.enumerateThreads().filter(function (t) { return t.id === Process.id; })[0];
-    if (!th) { send({tag: 'TRACE', erro: 'thread principal nao encontrada'}); recv('trace', onTrace); return; }
-    var ualo = m.ualo ? ptr(m.ualo) : null, uahi = m.uahi ? ptr(m.uahi) : null;
-    var gep = getGepard(), ghi = gep ? gep.add(0x2000000) : null;
-    var interno = !!m.interno;                                       // true: registrar uaRO->uaRO
-    traceSeen = ualo ? {} : null;
-    var nvistos = 0, TETO = 8000;
-    var nblocos = 0;
-    try {
-        Stalker.follow(th.id, {
-            events: {call: true},
-            onReceive: function (ev) {
-                nblocos += ev.byteLength;
-                if (traceSeen === null) return;                     // teste de sobrevivencia: so conta
-                var es = Stalker.parse(ev, {stringify: false});    // [['call', de, para, prof], ...]
-                for (var i = 0; i < es.length; i++) {
-                    if (es[i][0] !== 'call') continue;
-                    var de = es[i][1], para = es[i][2];
-                    if (!(de instanceof NativePointer) || !(para instanceof NativePointer)) continue;
-                    if (nvistos >= TETO) continue;                  // teto de memoria
-                    if (de.compare(ualo) < 0 || de.compare(uahi) >= 0) continue;   // origem no uaRO
-                    var chave = null;
-                    if (interno) {                                  // destino tambem no uaRO
-                        if (para.compare(ualo) >= 0 && para.compare(uahi) < 0)
-                            chave = de.sub(ualo).toString() + '>u' + para.sub(ualo).toString();
-                    } else if (gep && para.compare(gep) >= 0 && para.compare(ghi) < 0) {
-                        chave = de.sub(ualo).toString() + '>' + para.sub(gep).toString();
-                    }
-                    if (chave !== null && traceSeen[chave] === undefined) { traceSeen[chave] = 1; nvistos++; }
-                }
-            }
-        });
-    } catch (e) { send({tag: 'TRACE', erro: 'follow: ' + e.message}); recv('trace', onTrace); return; }
-    setTimeout(function () {
-        try { Stalker.unfollow(th.id); Stalker.flush(); } catch (e) {}
-        var msg = {tag: 'TRACE', ms: ms, bytes: nblocos};
-        if (traceSeen !== null) { msg.chamadas = Object.keys(traceSeen); msg.n = msg.chamadas.length; }
-        else { msg.nota = 'teste de sobrevivencia ok'; }
-        send(msg);
-        traceSeen = null;
-    }, ms);
-    recv('trace', onTrace);
+// A new connection/session invalidates native object pointers and every queued action.
+function onSessionReset(m) {
+    var nextEpoch = m.epoch === undefined ? workEpoch + 1 : m.epoch;
+    if (nextEpoch !== workEpoch) workMinToken = 0;
+    if (typeof m.min_token === 'number') workMinToken = Math.max(workMinToken, m.min_token);
+    workEpoch = nextEpoch;
+    workActive = m.active === true;
+    if (scr !== null) {
+        scr.pending.forEach(function (item) { workAck('cancelled', item); });
+        scr.pending.length = 0;
+        scr.body = null;
+        // A committed body still needs its next-hit XOR repair, even across an epoch reset.
+        // Preserve _fix0 and its originating thread; no new action uses the old native context.
+    }
+    if (scSend !== null) {
+        scSend.queue.length = 0; scSend.fn = null; scSend['this'] = null; scSend.tid = null;
+        scrCall = {pc: scSend.pc}; scrCallArm();
+    }
+    if (md !== null) {
+        md.queue.length = 0; md.thisp = null;
+        mdUnarm(3); md.fireArmed = false;
+        mdUnarm(2); md.capArmed = false;
+        if (!md.busy) {
+            try { md.th.setHardwareBreakpoint(2, md.disp); md.capArmed = true; }
+            catch (e) { send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'reset capture: ' + e.message}); }
+        } // A call already in progress rearms capture on return, without nested breakpoints.
+    }
+    send({tag: 'SESSION', hit: 'reset', epoch: workEpoch, min_token: workMinToken, active: workActive});
+    recv('session-reset', onSessionReset);
 }
-recv('trace', onTrace);
+recv('session-reset', onSessionReset);
+
+// never leave debug registers armed without our handler: the client would die on the next write
+rpc.exports = { dispose: function () { sw = null; if (typeof swDisarm === 'function') swDisarm(); scr = null; scrDisarm(); scrCall = null; scrCallDisarm(); scSend = null; if (md !== null) { mdUnarm(2); mdUnarm(3); } md = null; } };
 
 // ---- send --------------------------------------------------------------------------------------
 hookAll(['__sendmsg64', 'sendmsg'], {
     onEnter: function (args) {
-        this.fd = args[0].toInt32(); this.msg = args[1];
+        this.fd = args[0].toInt32(); this.msg = args[1]; this.epoch = workEpoch;
+        this.peer = peerOf(this.fd); this.conn = connCache[this.fd];
     },
     onLeave: function (ret) {
-        var n = ret.toInt32(); if (n <= 0) return;
-        var peer = peerOf(this.fd); if (!peer) return;
+        var n = ret.toInt32(); if (n <= 0 || !this.peer) return;
+        if (!socketUnchanged(this)) return;
+        var peer = this.peer;
         if (!gepardSent) {                                  // gepard loads after login: report its base once it's up
             var gb = getGepard();
             if (gb !== null) { gepardSent = true; send({tag: 'GEPARD', base: gb.toString()}); }
         }
         var chunks = iovs(this.msg, n), h = chunks.map(function (v) { return toHex(v[0], v[1]) || ''; }).join('');
-        var m = {tag: 'SEND', sock: peer, conn: connCache[this.fd], len: n, id: pktId(h), C: h, seq: seq++, ts: Date.now()};
+        var m = {tag: 'SEND', epoch: this.epoch, mono_ms: monoNow(), sock: peer, conn: this.conn, len: n, id: pktId(h), C: h, seq: seq++, ts: Date.now()};
         if (sw !== null && chunks.length && sw.ports.indexOf(parseInt(peer.split(':')[1], 10)) >= 0) {
             var buf = chunks[0][0], tid = Process.getCurrentThreadId();
             if (buf.compare(sw.lo) >= 0 && buf.compare(sw.hi) < 0) {

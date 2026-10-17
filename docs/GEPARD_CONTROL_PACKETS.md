@@ -57,27 +57,26 @@ injetava antes de ações com alvo. O `0368` pré-ação passou a ser **gated** 
 **REFUTADO (responsável, 2026-10-16):** a hipótese "o `0368` pré-ação era o bloqueio" é **falsa**.
 **Com ou sem `0368` o `SendPacket`/`sendmsg` da ação sempre ocorria**; o problema (ação enviada mas
 **sem efeito** no servidor) é **anterior** ao `0368`. Consequência: rotear `0437`/`0438` pela
-`SendPacket` crua do cliente **não executa** ataque/perícia. A flag `--target-select` e o `0368` em
-`SKIP_IDS` continuam no código (comportamento operacional válido: o cliente já emite o `0368` sozinho
-ao passar o mouse/clicar), mas **não** são solução para ataque/perícia.
+`SendPacket` crua do cliente **não executa** ataque/perícia. Na revisão de 2026-10-16, a flag
+`--target-select` e o `0368` em `SKIP_IDS` ainda estavam no código; essa política foi revista em
+2026-10-17 para encaminhar consultas `0368` originadas pelo OpenKore, sem tratar isso como solução
+para ataque/perícia.
 
 Fatos que permanecem:
 
 - **`0368` (CZ_REQNAME_BYGID):** OBSERVADO como **pedido de nome por GID** emitido pelo cliente ao
-  passar o mouse/clicar num alvo — não um "lock de alvo". Por isso está em `SKIP_IDS`
-  (`relay/writeback.py`) no sentido consumidor→servidor.
+  passar o mouse/clicar num alvo — não um "lock de alvo". O roteamento atual também encaminha o pedido
+  do OpenKore, pois seu GID consultado não é garantidamente o mesmo do hover natural.
 - **`0437` sentar/levantar (GID=0):** OBSERVADO funcionando via client SendPacket.
 - **`0437` ataque (GID≠0) e `0438` perícia via SendPacket crua:** pacote sai, **ação não executa**
   (relato do responsável; mecanismo do servidor NÃO VERIFICADO).
-- **Throttle de cast:** `0438` sob `--cast-throttle` (default 0.8 s): um cast por janela, log
-  `cast 0x0438 pacejado (rajada evitada)` — política intencional de writeback.
+- **Throttle de cast (histórico):** removido da operação na refatoração; frequência e cooldown pertencem ao OpenKore. Ver [auditoria operacional](REFACTOR_REVIEW.md).
 
 **Relação com H-CIPHER-01:** a explicação alternativa "era o `0368`" foi retirada; H-CIPHER-01
 (rejeição por conteúdo/cifra) **volta a ser candidata**, ao lado de pré-condições de estado do
 cliente que a via natural monta (ver abaixo). Nenhuma das duas está demonstrada.
 
-**Teste offline:** `tests/test_writeback.py` cobre o roteamento (default sem `0368`; caso
-`target_select=True` com dedup por GID). Testa o código, não a execução da ação no servidor.
+**Teste offline atual:** `tests/test_client_dispatch_routes.py` cobre roteamento, bytes e omissões anti-duplicação. A seleção experimental foi removida; os resultados anteriores acima permanecem históricos. O teste não comprova execução no servidor.
 
 ## Mapa dispatcher → pacote de ação (ACT-20261016-01)
 
@@ -211,5 +210,14 @@ Quando houver protocolo demonstrado, a responsabilidade por inicialização de s
 **CONFIRMADO PELO RESPONSÁVEL:** ataque automático `0437`, skill de alvo `0438` e de chão `0AF4` estão funcionando. Não há bloqueio pendente da automação por `0368`, lock de alvo ou coordenação de movimento. O primeiro byte do corpo entregue pelo consumidor estava saindo com contribuição do original do cliente por conta da ordem do store byte a byte; o `_fix0` o corrige no hit seguinte (`agent/relay_hook_linux.js:481-534`).
 
 **OBSERVADO NO CÓDIGO:** escrita de corpo pré-XOR e restauração `c0 ^ orig0 ^ our0`. **NÃO VERIFICADO NESTA REVISÃO:** nova captura de rede pós-fix por família e reconstrução do algoritmo criptográfico. A observação de `0x8280` periódico é registro separado; não transformá-lo em preâmbulo obrigatório por ação.
+
+**Atualização operacional (2026-10-17):** o roteamento genérico deixou de omitir
+`0x0368` emitido pelo OpenKore: esse pedido leva o GID solicitado pelo consumidor e
+deve chegar ao cliente via `SendPacket`. O pedido natural de nome em hover não
+comprova que o OpenKore recebeu a resposta do GID que pediu. A mudança não reabre
+a hipótese histórica de `0368` como pré-condição de ataque; ela corrige apenas a
+omissão de consultas de nome do consumidor. Se o cliente emitir simultaneamente
+outro `0368` para o mesmo GID, pode haver uma consulta duplicada; não há correlação
+segura demonstrada para suprimir apenas essa duplicata.
 
 Os experimentos históricos `0368`/`SendPacket` cru, replay de `0x2a` e `0x8280` permanecem preservados com seu escopo original. A interpretação final e matriz de evidências estão em [ACTION_0437_0438_INVESTIGATION](HISTORY/ACTIONS_COMPLETE.md#source-docs-action-0437-0438-investigation-md).

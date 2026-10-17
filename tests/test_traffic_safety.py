@@ -1,8 +1,8 @@
-"""Teste offline de relay/safety.py: a fronteira de credenciais. Garante que nenhum usuário/senha
+"""Teste offline de relay/traffic_safety.py: a fronteira de credenciais. Garante que nenhum usuário/senha
 do socket de login chega ao consumidor ou ao log, que tráfego HTTP (token/config) nunca é tratado
 como pacote RO, e que o jogo normal passa intacto. É a barreira mais sensível do software."""
 import _boot  # noqa: F401  (põe o repo no sys.path)
-from relay.safety import (client_packet_to_feed, is_game_sock, is_login_sock, looks_like_http,
+from relay.traffic_safety import (client_packet_to_feed, is_game_sock, is_login_sock, looks_like_http,
                           redact_login, sanitize)
 
 # --- classificação de sockets -----------------------------------------------------------------

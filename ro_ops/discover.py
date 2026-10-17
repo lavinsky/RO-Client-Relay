@@ -1,4 +1,4 @@
-"""discover (read-only): gadget Frida do cliente via relay.agent (sem reescrever o parsing de `ss`)
+"""discover (read-only): gadget Frida do cliente via relay.frida_bridge (sem reescrever o parsing de `ss`)
 + main_tid lido em /proc. Identidades (pid/porta/tid) sao reconsultadas a CADA execucao."""
 import os
 
@@ -7,12 +7,12 @@ from .common import proc_starttime
 
 
 def _default_ports_fn():
-    from relay.agent import gadget_ports
+    from relay.frida_bridge import gadget_ports
     return gadget_ports
 
 
 def _default_pid_of_port_fn():
-    from relay.agent import pid_of_port
+    from relay.frida_bridge import pid_of_port
     return pid_of_port
 
 

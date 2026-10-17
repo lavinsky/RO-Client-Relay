@@ -4,7 +4,7 @@ import socket
 import threading
 import time
 
-from .packets import NEED_MORE, packet_len
+from .packet_pipeline import NEED_MORE, packet_len
 
 
 class Relay:
@@ -26,19 +26,40 @@ class Relay:
     which feeds pre-tokenized wire bytes; kept for a raw/aligned stream consumer)."""
     FRAME_MAX = 0xFFFF                                 # 'len' is a 16-bit field
 
-    def __init__(self, host, port, fmt='xkore1', lengths=None, align=True, drop=None):
+    def __init__(self, host, port, fmt='xkore1', lengths=None, align=True, drop=None,
+                 on_connect=None, on_disconnect=None, autostart=True):
         self.host, self.port, self.fmt = host, port, fmt
         self.aligner = PacketAligner(lengths, drop) if (align and lengths) else None
         self.align = self.aligner is not None
         self.sock = None
-        self.lock = threading.Lock()                   # guards sock, aligner, counters, dump, _in
+        self.lock = threading.RLock()                   # guards sock, aligner, counters, dump, _in
         self.sent = self.dropped = 0
         self.dump = None                               # optional file: every framed byte sent (--feed-dump)
         self.on_inbound = None                         # callback(payload, typ) for what the consumer sends
-        self.on_connect = None                         # callback() on RE-connect only (not the first connect)
-        self._connected_once = False                   # distinguishes the initial connect from reconnects
+        self.on_connect = on_connect                   # callback() before accepting every session
+        self.on_disconnect = on_disconnect             # callback() once per disconnected session
+        self.generation = 0
         self._in = b''                                 # reassembly buffer for inbound frames
-        threading.Thread(target=self._connect_loop, name='relay-connect', daemon=True).start()
+        self._inbound_paused = False
+        self._wake_read, self._wake_write = socket.socketpair()
+        self._wake_read.setblocking(False)
+        self._wake_write.setblocking(False)
+        self._thread = None
+        if autostart:
+            self.start()
+
+    def __del__(self):
+        for name in ('_wake_read', '_wake_write'):
+            wake = getattr(self, name, None)
+            if wake is not None:
+                wake.close()
+
+    def start(self):
+        """Start the connector once, after the owner wires session callbacks."""
+        with self.lock:
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._connect_loop, name='relay-connect', daemon=True)
+                self._thread.start()
 
     # ---- connection -------------------------------------------------------------------------
     def _connect_loop(self):
@@ -46,7 +67,11 @@ class Relay:
             s = self.sock
             if s is None:
                 self._connect()
-                time.sleep(1)
+                if self.sock is None:
+                    time.sleep(1)
+                continue
+            if self._inbound_paused:
+                self._wait_capacity(s)
                 continue
             try:                                       # wake as soon as the consumer sends (or closes),
                 ready = select.select([s], [], [], 1.0)[0]   # so inbound frames aren't held up to 1 s
@@ -65,96 +90,155 @@ class Relay:
         s.settimeout(None)
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         with self.lock:
-            self.sock = s
-            self._in = b''                             # a new consumer starts from a fresh frame boundary
+            self._in = b''
+            self._inbound_paused = False
             if self.aligner:
-                self.aligner.reset()                   # each consumer starts from a fresh boundary
+                self.aligner.reset()
+            self.generation += 1
+            # Keep the new socket unavailable until session state has been reset.
+            if self.on_connect is not None:
+                try:
+                    self.on_connect()
+                except Exception as e:
+                    print(f'[relay] on_connect error: {e}')
+                    s.close()
+                    return
+            self.sock = s
         print(f'[relay] connected to {self.host}:{self.port} ({self.fmt}{", aligned" if self.align else ""})')
-        reconnect = self._connected_once               # the consumer dropped and came back (map/login trip)
-        self._connected_once = True
-        if reconnect and self.on_connect is not None:
-            try:
-                self.on_connect()                      # e.g. recapture a stale native-dispatch `this`
-            except Exception as e:                     # a callback must never kill the connect loop
-                print(f'[relay] on_connect error: {e}')
 
     def _check_dead(self):
         s = self.sock
         if s is None:
             return
-        data = b''
+        if self._inbound_paused:
+            return
         try:
-            while True:                                # drain the consumer->us
-                d = s.recv(0x1000, socket.MSG_DONTWAIT)
-                if d == b'':
+            data = s.recv(0x1000, socket.MSG_DONTWAIT)
+            if not data:
+                raise ConnectionResetError('peer closed')
+            # Observe an already queued EOF before dispatching this chunk.
+            try:
+                if s.recv(1, socket.MSG_DONTWAIT | socket.MSG_PEEK) == b'':
                     raise ConnectionResetError('peer closed')
-                data += d
+            except BlockingIOError:
+                pass
+            self._inbound(data, s)
+            return
         except BlockingIOError:
-            if data:                                   # nothing more waiting = still alive
-                self._inbound(data)                    # inject it, or discard if no handler
             return
         except OSError:
             print('[relay] connection dropped; will reconnect')
         self._drop_sock(s)
 
-    def _inbound(self, data):
-        """The consumer's reply bytes. With no on_inbound handler they are discarded (observation
-        only, the original behaviour). With one, whole frames are handed over as (payload, typ):
-        xkore1 deframes typ+len+payload ('S' = a client->server packet to inject); raw hands the
-        bytes over as one 'S' payload."""
+    def resume_inbound(self):
+        """Notify capacity availability without acquiring transport/command locks."""
+        try:
+            self._wake_write.send(b'\x00')
+        except (BlockingIOError, OSError):
+            pass  # A queued wakeup already guarantees a retry.
+
+    def _wait_capacity(self, source):
+        """Wait for actual readiness or peer shutdown, including EOF behind unread bytes."""
+        descriptor = source.fileno()
+        poller = select.poll()
+        closed = select.POLLRDHUP | select.POLLHUP | select.POLLERR | select.POLLNVAL
+        try:
+            poller.register(source, closed)
+            poller.register(self._wake_read, select.POLLIN)
+            events = dict(poller.poll())
+        except (OSError, ValueError):
+            self._drop_sock(source)
+            return
+        if events.get(descriptor, 0) & closed:
+            self._drop_sock(source)
+            return
+        if self._wake_read.fileno() in events:
+            try:
+                while self._wake_read.recv(4096):
+                    pass
+            except BlockingIOError:
+                pass
+            self._inbound(b'', source)
+
+    def _inbound(self, data, source=None):
+        """Deliver frames transactionally; False retains the complete frame for retry.
+
+        The socket reader stops while paused. At most one maximum-size partial frame
+        plus one 4096-byte read is retained; TCP applies pressure to the producer.
+        """
         if self.on_inbound is None:
             return
-        with self.lock:                                # _deframe mutates _in; run the handler outside
+        with self.lock:
+            if source is not None and self.sock is not source:
+                return
             self._in += data
-            frames = self._deframe()
-        for payload, typ in frames:
-            try:
-                self.on_inbound(payload, typ)
-            except Exception as e:
-                print(f'[relay] inbound handler: {type(e).__name__}: {e}')
-
-    def _deframe(self):
-        """Whole frames consumed from self._in as [(payload, typ)]; a partial frame stays buffered."""
-        if self.fmt != 'xkore1':
-            d, self._in = self._in, b''
-            return [(d, 'S')] if d else []
-        out, buf, pos = [], self._in, 0
-        while pos + 3 <= len(buf):
-            typ, ln = chr(buf[pos]), buf[pos + 1] | buf[pos + 2] << 8
-            if pos + 3 + ln > len(buf):
-                break                                  # rest of this frame hasn't arrived yet
-            out.append((bytes(buf[pos + 3:pos + 3 + ln]), typ))
-            pos += 3 + ln
-        self._in = buf[pos:]
-        return out
+            generation = getattr(self, 'generation', 0)
+            self._inbound_paused = False
+            while self._in:
+                if self.fmt == 'xkore1':
+                    if len(self._in) < 3:
+                        break
+                    typ = chr(self._in[0])
+                    length = int.from_bytes(self._in[1:3], 'little')
+                    size = 3 + length
+                    if len(self._in) < size:
+                        break
+                    payload = self._in[3:size]
+                else:
+                    payload, typ, size = self._in, 'S', len(self._in)
+                try:
+                    accepted = self.on_inbound(payload, typ)
+                except Exception as e:
+                    print(f'[relay] inbound handler: {type(e).__name__}: {e}')
+                    accepted = None
+                if generation != getattr(self, 'generation', 0) or (source is not None and self.sock is not source):
+                    break
+                if accepted is False:
+                    self._inbound_paused = True
+                    break
+                self._in = self._in[size:]
 
     def _drop_sock(self, s):
-        try:
-            s.close()
-        except OSError:
-            pass
         with self.lock:
-            if self.sock is s:
-                self.sock = None
+            if self.sock is not s:
+                return
+            self.sock = None
+            self._in = b''
+            self._inbound_paused = False
+            self.resume_inbound()
+            if self.aligner:
+                self.aligner.reset()
+            try:
+                s.close()
+            except OSError:
+                pass
+            if self.on_disconnect is not None:
+                try:
+                    self.on_disconnect()
+                except Exception as e:
+                    print(f'[relay] on_disconnect error: {e}')
 
     # ---- feeding ----------------------------------------------------------------------------
-    def feed(self, data):
-        """Server->client bytes ("R"). Through the aligner when there is one."""
-        if self.aligner:
-            with self.lock:
-                if self.sock is None:                  # nothing listening: drop, re-align later
+    def feed(self, data, generation=None):
+        """Feed server bytes only to the session that produced them, when supplied."""
+        with self.lock:
+            if generation is not None and generation != self.generation:
+                self.dropped += len(data)
+                return
+            if self.aligner:
+                if self.sock is None:
                     self.aligner.reset()
                     self.dropped += len(data)
                     return
                 data = self.aligner.push(data)
-        if data:
-            self.send(data)
+            if data:
+                self.send(data, generation=generation)
 
-    def feed_send(self, packet):
+    def feed_send(self, packet, generation=None):
         """One complete client->server packet as an "S" frame (xkore1 only). Each is already a
         whole packet, so unlike "R" no stream alignment is needed."""
         if self.fmt == 'xkore1' and packet:
-            self.send(packet, typ='S')
+            self.send(packet, typ='S', generation=generation)
 
     def frame(self, data, typ='R'):
         if self.fmt != 'xkore1':
@@ -163,11 +247,11 @@ class Relay:
         return b''.join(tb + len(c).to_bytes(2, 'little') + c
                         for c in (data[i:i + self.FRAME_MAX] for i in range(0, len(data), self.FRAME_MAX)))
 
-    def send(self, data, typ='R'):
+    def send(self, data, typ='R', generation=None):
         data = self.frame(data, typ)
         with self.lock:
             s = self.sock
-            if s is None:
+            if s is None or (generation is not None and generation != self.generation):
                 self.dropped += len(data)
                 return
             try:
@@ -175,11 +259,7 @@ class Relay:
             except OSError as e:
                 print(f'[relay] consumer gone ({e}); will reconnect')
                 self.dropped += len(data)
-                try:
-                    s.close()
-                except OSError:
-                    pass
-                self.sock = None
+                self._drop_sock(s)
                 return
             self.sent += len(data)
             if self.dump:                              # exact framed bytes the consumer got, for offline replay

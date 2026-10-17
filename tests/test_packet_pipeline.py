@@ -1,4 +1,4 @@
-"""Offline test for relay/packets.py: the WireFilter tokenizer (packet boundaries, encrypted-body
+"""Offline test for relay/packet_pipeline.py: the WireFilter tokenizer (packet boundaries, encrypted-body
 items, drop list, unknown-id passthrough, bare account id, partial packets across chunks) and
 MoveTracker (decodes the server 0087 move destination and cross-checks it against a 035f walk).
 Uses exact bytes from a live capture for the move case (035f (298,122), 0087 confirmed (298,122))."""

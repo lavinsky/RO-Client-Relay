@@ -74,12 +74,16 @@ O verbose discrimina foco e tecla. A recuperação de atores preserva os tempos
 de evidência; não foi reduzida para melhorar benchmark. Confira a
 [comparação reproduzível](REFACTOR_REVIEW.md#latência-reprodução-e-limites).
 
-Capacidade de trabalho é 64 comandos incluindo o corrente. Se a interface estiver
-cheia, o quadro XKore completo fica retido no transporte e a leitura TCP pausa até
-uma vaga abrir; o relay não descarta o comando nem cria uma fila sem limite. Se o
-cliente não produzir o carrier, o comando corrente continua pendente e bloqueia os
-seguintes por prontidão; cancelar a sessão limpa esse estado e descarta quadros
-retidos da conexão encerrada. Falha/retorno local não significa transmissão.
+Não existe fila Python de comandos de egresso nem pacing no relay. A via
+SEND processa um quadro por vez, conforme a ordem de chegada: enquanto a ação
+corrente aguarda conclusão nativa, o próximo quadro permanece intacto no framing
+XKore/TCP, e a leitura desse socket sofre backpressure. Não há buffer de 64
+comandos, expiração, retry ou temporizador de despacho. A via RECV, com worker e
+feeder próprios, continua a tratar pacotes do servidor simultaneamente, sem
+aguardar carriers de SEND. A espera por carrier pode bloquear **SEND**, mas não
+pode bloquear **RECV**. Remontagem TCP e evidências de descriptografia permanecem
+por necessidade do protocolo. No cancelamento de sessão, o estado de saída antigo
+é invalidado. Falha/retorno local não significa transmissão.
 O caminho genérico usa SendPacket, sem alegação de cobertura funcional universal.
 O pedido de nome `0368` do consumidor segue para SendPacket; o pedido natural do
 cliente ao passar o mouse não substitui a consulta do OpenKore. Omissões

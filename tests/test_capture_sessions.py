@@ -79,12 +79,41 @@ class Sessions(unittest.TestCase):
         p=bytes.fromhex('37040102030407')
         c.commands.accept(p,'S')
         old=c.commands.current.copy()
-        c.commands.accept(p,'S')
+        self.assertIs(c.commands.accept(p,'S'), False)  # held by XKore, never Python FIFO
         c.commands.observe(dict(tag='SCRAMBLE',hit='consumed',epoch=old['epoch'],token=old['token']))
+        self.assertTrue(c.commands.accept(p,'S'))
         before=len(posted)
         c.client_dispatch._carrier_failed(dict(tag='SCRAMBLE',hit='error',id=0x437,
                                epoch=old['epoch'],token=old['token']))
         self.assertEqual(len(posted),before)
+
+    def test_full_duplex_receive_progresses_when_send_is_waiting(self):
+        c, r, wire, posted, connect = self.make()
+        frames = (r.frame(bytes.fromhex('37040102030407'), 'S') +
+                  r.frame(bytes.fromhex('38040a001c0001020304'), 'S'))
+        r._inbound(frames, r.sock)
+        self.assertTrue(r._inbound_paused)
+        self.assertEqual(r._in, r.frame(bytes.fromhex('38040a001c0001020304'), 'S'))
+        self.assertEqual(c.commands.current['payload'], bytes.fromhex('37040102030407'))
+
+        # RX has its own worker, even when TX is awaiting a native event.
+        worker = threading.Thread(target=lambda: c.dispatch(dict(
+            tag='RECV', epoch=c.commands.epoch, sock='fixture:5121',
+            conn='map-one', C='01000102', len=4, ts=10)))
+        worker.start()
+        worker.join(1)
+        self.assertFalse(worker.is_alive(), 'RECV must never wait for TX native completion')
+        self.assertTrue(c.recv_path.pending)
+        self.assertFalse(c.recv_path._feed_ready())
+        r.sock.sendall.assert_called_with(r.frame(bytes.fromhex('01000102'), 'R'))
+        self.assertTrue(r._inbound_paused)
+
+        old = c.commands.current
+        c.dispatch(dict(tag='SCRAMBLE', hit='consumed', epoch=old['epoch'], token=old['token']))
+        # Simulates the dedicated TX socket thread waking on native completion.
+        r._inbound(b'', r.sock)
+        self.assertFalse(r._inbound_paused)
+        self.assertEqual(c.commands.current['payload'], bytes.fromhex('38040a001c0001020304'))
 
     def test_map_reset_fences_chunk_already_popped_by_feeder(self):
         c,r,w,posted,connect=self.make()

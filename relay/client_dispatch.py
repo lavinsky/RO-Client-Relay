@@ -1,7 +1,9 @@
-"""Bounded client readiness, session cancellation and local monotonic timings.
+"""Ordered, unbuffered consumer send admission and native completion tracking.
 
-There is no clock-based release or expiry. A native completion releases the next
-command; a full interface reports failure instead of overwriting pending bytes.
+Exactly one consumer command is in flight. The XKore socket applies TCP
+backpressure instead of caching a second command in a Python FIFO. Receive
+events have their own worker/feed path and never wait for a native send ACK.
+There is no relay pacing, expiry, retry, or speculative completion.
 Completion means local execution, never server acceptance.
 """
 from collections import defaultdict, deque
@@ -15,7 +17,6 @@ from .synthetic_input import build_actuator
 
 
 class CommandPipeline:
-    CAPACITY = 64
     ACTION_IDS = {0x035f, 0x0437, 0x0438, 0x0af4}
     TERMINAL = {'SCRAMBLE': {'consumed', 'error', 'cancelled'},
                 'SENDCALL': {'sent', 'error'},
@@ -28,24 +29,27 @@ class CommandPipeline:
         self.lock = threading.RLock()
         self.epoch = 0
         self.active = False
-        self.pending = deque()
         self.current = None
         self.serial = 0
         self.samples = defaultdict(lambda: deque(maxlen=2048))
 
     def session(self, active, advance_epoch=True):
         with self.lock:
-            count = len(self.pending) + bool(self.current)
+            count = int(self.current is not None)
             if advance_epoch:
                 self.epoch += 1
             self.active = active
-            self.pending.clear()
             self.current = None
             self.reset(self.epoch, active)
             self.log({'tag': 'SESSION', 'epoch': self.epoch, 'active': active, 'cancelled': count})
             self._resume_inbound()
 
     def accept(self, payload, typ):
+        """Admit one command; False leaves the original XKore frame in TCP framing.
+
+        No consumer command FIFO exists. The socket pauses reads until the
+        current native operation finishes and retries the *same* frame.
+        """
         if typ != 'S' or len(payload) < 2:
             return None
         with self.lock:
@@ -54,28 +58,27 @@ class CommandPipeline:
                           'code': 'COMMAND_DISCONNECTED',
                           'id': int.from_bytes(payload[:2], 'little'), 'len': len(payload)})
                 return None
-            if len(self.pending) + bool(self.current) >= self.CAPACITY:
-                self.log({'tag': 'COMMAND', 'hit': 'error', 'e': 'client readiness capacity exhausted',
-                          'epoch': self.epoch,
-                          'code': 'COMMAND_CAPACITY',
-                          'id': int.from_bytes(payload[:2], 'little'), 'len': len(payload),
-                          **self._blocked_metadata()})
+            if self.current is not None:
+                self.log({'tag': 'COMMAND', 'hit': 'busy', 'code': 'COMMAND_BUSY',
+                          'epoch': self.epoch, 'id': int.from_bytes(payload[:2], 'little'),
+                          'len': len(payload), **self._blocked_metadata()})
                 return False
             self.serial += 1
-            self.pending.append({'payload': bytes(payload), 'typ': typ, 'token': self.serial,
-                                 'epoch': self.epoch, 'received_ns': self.clock()})
-            self._next()
+            command = self.current = {'payload': bytes(payload), 'typ': typ,
+                                      'token': self.serial, 'epoch': self.epoch,
+                                      'received_ns': self.clock()}
+            self._dispatch_current(command)
             return True
 
     def _resume_inbound(self):
-        """Wake transport after a capacity/session change; wakeup must not take Relay.lock."""
+        """Wake socket TX admission without acquiring Relay.lock."""
         resume = self.resume
         if resume:
             resume()
 
     def _blocked_metadata(self):
-        """Describe readiness without exposing packet bodies or native pointers. Lock held."""
-        state = {'pending': len(self.pending), 'capacity': self.CAPACITY}
+        """Describe the single in-flight command without leaking packet content."""
+        state = {'in_flight': self.current is not None}
         c = self.current
         if c is not None:
             stage = ('input' if c.get('native_done') else
@@ -85,28 +88,25 @@ class CommandPipeline:
                          blocked_ms=(self.clock() - c['received_ns']) / 1e6)
         return state
 
-    def _next(self):
-        while self.active and self.current is None and self.pending:
-            c = self.current = self.pending.popleft()
-            c['dispatch_ns'] = self.clock()
-            self.samples['ready_wait_ms'].append((c['dispatch_ns'] - c['received_ns']) / 1e6)
-            pid = int.from_bytes(c['payload'][:2], 'little')
-            if pid in self.ACTION_IDS:
-                self.log({'tag': 'COMMAND', 'hit': 'dispatch', 'id': pid,
-                          'token': c['token'], 'epoch': c['epoch'], 'len': len(c['payload'])})
-            try:
-                # False = explicit local rejection; no native completion can arrive.
-                waiting = self.dispatch(c)
-            except Exception as e:
-                waiting = False
-                self.log({'tag': 'COMMAND', 'hit': 'error', 'token': c['token'],
-                          'epoch': c['epoch'], 'id': pid, 'code': 'COMMAND_DISPATCH_FAILED',
-                          'e': type(e).__name__})
-            if waiting is False and self.current is c:
-                self.current = None
-                self._resume_inbound()
-            elif self.current is c:
-                break
+    def _dispatch_current(self, c):
+        """Route immediately, in the same order as XKore frames are admitted."""
+        c['dispatch_ns'] = self.clock()
+        self.samples['ready_wait_ms'].append((c['dispatch_ns'] - c['received_ns']) / 1e6)
+        pid = int.from_bytes(c['payload'][:2], 'little')
+        if pid in self.ACTION_IDS:
+            self.log({'tag': 'COMMAND', 'hit': 'dispatch', 'id': pid,
+                      'token': c['token'], 'epoch': c['epoch'], 'len': len(c['payload'])})
+        try:
+            # False = no native work posted, so there cannot be a terminal ACK.
+            waiting = self.dispatch(c)
+        except Exception as e:
+            waiting = False
+            self.log({'tag': 'COMMAND', 'hit': 'error', 'token': c['token'],
+                      'epoch': c['epoch'], 'id': pid, 'code': 'COMMAND_DISPATCH_FAILED',
+                      'e': type(e).__name__})
+        if waiting is False and self.current is c:
+            self.current = None
+            self._resume_inbound()
 
     def observe(self, m):
         with self.lock:
@@ -143,7 +143,6 @@ class CommandPipeline:
                 c['native_done'] = True
             if c.get('native_done') and (not c.get('input_pending') or c.get('input_done')):
                 self.current = None
-                self._next()
                 self._resume_inbound()
             return True
 

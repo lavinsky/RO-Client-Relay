@@ -17,17 +17,25 @@ O futuro xKore 0 depende da pesquisa da cifra e de integração no OpenKore.
 
 | Componente | Responsabilidade |
 |---|---|
-| `run.sh`, `relay_capture.conf` | launcher único, configuração principal, precedência CLI |
-| `relay/cli.py`, `agent.py` | montagem e conexão ao Gadget; extensão de pesquisa só sob opção |
-| `relay/relay.py` | socket OpenKore, framing XKore e gerações de conexão |
-| `relay/commands.py` | prontidão, ordem entre rotas, capacidade, cancelamento e tempos locais |
-| `relay/writeback.py` | roteamento de comandos; sem política de ritmo |
-| `relay/synth_input.py` | carrier natural via uinput após ACK de arme; liberação da tecla |
-| `relay/runtime.py` | worker de eventos e coordenação de sessão |
-| `relay/packets.py`, `wire_feed.py`, `actors.py` | delimitação TCP por conexão e recuperação validada |
-| `relay/safety.py`, `console.py` | sanitização, console normal/verbose e log |
-| `agent/relay_hook_linux.js` | captura e execução nativas, store de merge e `_fix0` |
-| `agent/research_hooks.js`, `relay/research.py` | probes/Stalker/diagnósticos opcionais |
+| `run.sh`, `relay_capture.conf`, `relay/cli.py` | launcher, INI/defaults, argumentos e ciclo de vida |
+| `relay/frida_bridge.py` | conexão ao Gadget, carga do agente e mensagens IPC |
+| `relay/xkore_transport.py` | socket OpenKore, framing XKore e gerações |
+| `relay/client_dispatch.py` | roteamento nativo, prontidão, cancelamento e tempos locais |
+| `relay/synthetic_input.py` | carrier natural via uinput após ACK; liberação da tecla |
+| `relay/capture_runtime.py` | worker de eventos, estado de recepção e coordenação de sessão |
+| `relay/packet_pipeline.py` | delimitação RO e alimentação ordenada dos fluxos |
+| `relay/actor_recovery.py` | leitura de memória e recuperação validada de atores |
+| `relay/traffic_safety.py` | sanitização e política HTTP/login |
+| `relay/event_log.py` | console normal/verbose e JSONL sanitizado |
+| `relay/send_recovery.py` | recuperação opcional de sends pelo send-watch |
+| `agent/research_hooks.js`, `relay/research_diagnostics.py` | probes/Stalker/diagnósticos opcionais |
+| `agent/relay_hook_linux.js` | captura/execução nativas, merge e `_fix0` |
+
+São **13 arquivos Python em `relay/`, incluindo `__init__.py`**, após cinco fusões.
+`Capture` compõe `ClientDispatcher`; não herda um mixin de escrita e não usa
+`threading.local` para propagar tokens. O roteamento passa o comando explicitamente.
+Funções puras de framing e construção de mensagens permanecem independentes das
+instâncias que abrem sockets, leem memória ou conectam ao Gadget.
 
 Nenhuma dependência nova. Frida é carregada em runtime; os testes usam mocks.
 

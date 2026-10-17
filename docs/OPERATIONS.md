@@ -102,3 +102,14 @@ sintéticas. Testes offline não demonstram sobrevivência do cliente, aceitaç�
 pelo servidor, RTT ou equivalência funcional ao vivo. O PR permanece Draft até
 revisão e rodadas especificamente autorizadas. Detalhes em
 [ARCHITECTURE](ARCHITECTURE.md) e [REFACTOR_REVIEW](REFACTOR_REVIEW.md).
+
+## Consolidação dos módulos operacionais
+
+O pacote `relay/` tem 13 arquivos Python (contando `__init__.py`). O mapa completo
+está em [ARCHITECTURE](ARCHITECTURE.md#2-componentes-operacionais).
+`cli.py` também carrega a configuração INI; `frida_bridge.py` também constrói as
+mensagens do agente; `client_dispatch.py` reúne roteamento e prontidão;
+`actor_recovery.py` inclui acesso de leitura à memória e `packet_pipeline.py`
+reúne framing RO e alimentação ordenada. Os nomes antigos foram removidos;
+imports internos, testes e `ro_ops` usam os nomes canônicos novos. A fachada
+`relay_capture_linux.py` mantém seus símbolos históricos sem arquivos-shim.

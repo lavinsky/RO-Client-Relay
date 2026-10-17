@@ -149,7 +149,7 @@ assert.deepStrictEqual(events.slice(-2).map(x=>x.token),['cast1','cast2']);
 subprocess.run(['node', '-e', js], check=True)
 print('PASS: agent FIFO, bounded capacity, epoch reset, native invalidation')
 
-from relay.agent import agent_source
+from relay.frida_bridge import agent_source
 operational = agent_source()
 research = agent_source(research=True)
 assert 'Stalker.follow' not in operational

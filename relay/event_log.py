@@ -4,7 +4,7 @@ import os
 import sys
 from copy import deepcopy
 
-from .safety import sanitize
+from .traffic_safety import sanitize
 
 
 def _pid(v):

@@ -20,7 +20,10 @@ ap.add_argument('--repo',type=Path,default=Path(__file__).resolve().parents[1])
 ap.add_argument('--count',type=int,default=20)
 a=ap.parse_args()
 sys.path.insert(0,str(a.repo))
-from relay.runtime import Capture
+from importlib import import_module
+# Explicit archive compatibility: the baseline predates the module consolidation.
+runtime_name = 'relay.capture_runtime' if (a.repo / 'relay/capture_runtime.py').is_file() else 'relay.runtime'
+Capture = import_module(runtime_name).Capture
 
 samples=[]
 packets=[bytes.fromhex(x) for x in ('5f03010203','37040102030407',
@@ -44,7 +47,8 @@ if hasattr(Capture,'_egress_enqueue'):
         if not done.wait(2):raise RuntimeError('baseline dispatch timed out')
     implementation='baseline actual configured pacing, fake native dispatch'
 else:
-    from relay.commands import CommandPipeline
+    readiness_name = 'relay.client_dispatch' if (a.repo / 'relay/client_dispatch.py').is_file() else 'relay.commands'
+    CommandPipeline = import_module(readiness_name).CommandPipeline
     def dispatch(c):
         samples.append((time.monotonic_ns()-c['received_ns'])/1e6)
         return True

@@ -3,18 +3,19 @@ import threading
 import unittest
 from types import SimpleNamespace
 import _boot
-from relay.runtime import Capture
-from relay.packets import pack_move
-from relay.protocol import scramble_set_msg, sendcall_msg
+from relay.client_dispatch import ClientDispatcher
+from relay.packet_pipeline import pack_move
+from relay.frida_bridge import scramble_set_msg, sendcall_msg
 
 
 class Routes(unittest.TestCase):
     def make_capture(self):
-        c = Capture.__new__(Capture)
+        c = ClientDispatcher.__new__(ClientDispatcher)
+        c.capture = SimpleNamespace()
         c.opts = SimpleNamespace(move_dispatch=True, inject_call=True, action_merge=True)
         c._scramble_armed = True
         c.posted = []
-        c.post = c.posted.append
+        c._agent_post = c.posted.append
         return c
 
     def test_actions_exact_bytes_and_movement(self):
@@ -52,7 +53,7 @@ class Routes(unittest.TestCase):
         c._disc_lock = threading.Lock()
         c._scramble_armed = False
         c.opts = SimpleNamespace(scramble_id='035f', scramble_range='1000-2000')
-        c.gepard_base = 0x10000000
+        c.capture.gepard_base = 0x10000000
         c._autodiscover_scramble({'enc':'1018eff4','enc_off':'0x18eff4'})
         self.assertEqual(c.scramble['off'], 0x18eff2)
         self.assertTrue(c._scramble_armed)

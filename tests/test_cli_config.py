@@ -1,4 +1,4 @@
-"""Teste offline de relay/config.py: a config INI vira defaults do argparse com a precedência
+"""Teste offline de relay/cli.py: a config INI vira defaults do argparse com a precedência
 defaults embutidos < arquivo < linha de comando, com coerção de tipo (bool/int/float/str),
 chaves com traço ou sublinhado, e tratamento tolerante de chave desconhecida / valor inválido /
 arquivo ausente. Simula um relay_capture.conf real escrito à mão."""
@@ -7,7 +7,7 @@ import os
 import tempfile
 
 import _boot  # noqa: F401  (põe o repo no sys.path)
-from relay.config import _config_value, load_config_defaults
+from relay.cli import _config_value, load_config_defaults
 
 
 def novo_parser():

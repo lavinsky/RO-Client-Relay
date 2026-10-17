@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 
-from .console import event
+from .event_log import event
 
 # Linux input-event-codes (subconjunto usado aqui).
 KEYCODES = {

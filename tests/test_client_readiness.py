@@ -4,7 +4,7 @@ from pathlib import Path
 import threading
 import unittest
 import _boot
-from relay.commands import CommandPipeline
+from relay.client_dispatch import CommandPipeline
 
 
 class PipelineTests(unittest.TestCase):
@@ -82,7 +82,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(len(d),2)
 
     def test_no_hidden_clock_release_or_age_drop(self):
-        tree=ast.parse(Path('relay/commands.py').read_text())
+        tree=ast.parse(Path('relay/client_dispatch.py').read_text())
         self.assertFalse(any(isinstance(n,ast.Attribute) and n.attr in ('sleep','Timer') for n in ast.walk(tree)))
         p,d,*_=self.make()
         for _ in range(50):p.accept(b'\x37\x04x','S')

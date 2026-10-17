@@ -24,20 +24,20 @@ if _here not in sys.path:
 
 # Re-exported so `from relay_capture_linux import X` (tests, relay_sendbp.py) keeps working.
 from relay import ROOT as HERE                                             # noqa: F401
-from relay.actors import ActorDecrypt, valid_actor                          # noqa: F401
-from relay.agent import gadget_ports, pick_port                             # noqa: F401
+from relay.actor_recovery import ActorDecrypt, valid_actor                          # noqa: F401
+from relay.frida_bridge import gadget_ports, pick_port                             # noqa: F401
 from relay.cli import main
-from relay.console import show                                              # noqa: F401
-from relay.packets import (MoveTracker, WireFilter, load_lengths,           # noqa: F401
+from relay.event_log import show                                              # noqa: F401
+from relay.packet_pipeline import (MoveTracker, WireFilter, load_lengths,           # noqa: F401
                            pack_move, unpack_pos2)
-from relay.relay import PacketAligner, Relay                                # noqa: F401
-from relay.safety import LOGIN_SOCK, redact_login, sanitize                 # noqa: F401
+from relay.xkore_transport import PacketAligner, Relay                                # noqa: F401
+from relay.traffic_safety import LOGIN_SOCK, redact_login, sanitize                 # noqa: F401
 
 # Historical imports remain available without loading research on the run.sh path.
 def __getattr__(name):
     from importlib import import_module
-    module = ('research' if name in ('ActorDiag', 'ActorProbe') else
-              'sendwatch' if name in ('SEND_QUEUE_FALLBACK', 'SendWatch', 'packet_at',
+    module = ('research_diagnostics' if name in ('ActorDiag', 'ActorProbe') else
+              'send_recovery' if name in ('SEND_QUEUE_FALLBACK', 'SendWatch', 'packet_at',
                                      'plaintext_guess', 'send_queue_range') else None)
     if module is None:
         raise AttributeError(name)

@@ -5,7 +5,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from relay.relay import Relay
+from relay.xkore_transport import Relay
 
 
 class Sessions(unittest.TestCase):
@@ -39,8 +39,8 @@ class Sessions(unittest.TestCase):
         def connect():
             r.sock = sock
         with patch.object(r, '_connect', side_effect=connect), \
-                patch('relay.relay.time.sleep') as sleep, \
-                patch('relay.relay.select.select', return_value=([sock], [], [])), \
+                patch('relay.xkore_transport.time.sleep') as sleep, \
+                patch('relay.xkore_transport.select.select', return_value=([sock], [], [])), \
                 patch.object(r, '_check_dead', side_effect=StopIteration):
             with self.assertRaises(StopIteration):
                 r._connect_loop()
@@ -51,7 +51,7 @@ class Sessions(unittest.TestCase):
         r = self.make(on_connect=lambda: seen.append((r.sock, r._in)))
         r._in = b'partial'
         sock = Mock()
-        with patch('relay.relay.socket.create_connection', return_value=sock):
+        with patch('relay.xkore_transport.socket.create_connection', return_value=sock):
             r._connect()
         self.assertEqual(seen, [(None, b'')])
         self.assertEqual(r.generation, 1)

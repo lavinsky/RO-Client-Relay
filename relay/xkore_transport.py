@@ -4,7 +4,7 @@ import socket
 import threading
 import time
 
-from .packets import NEED_MORE, packet_len
+from .packet_pipeline import NEED_MORE, packet_len
 
 
 class Relay:

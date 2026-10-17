@@ -3,8 +3,8 @@ import collections
 import threading
 import time
 
-from .actors import valid_actor
-from .memory import MAX_REGION, ProcessMemory, regions
+from .actor_recovery import valid_actor
+from .actor_recovery import MAX_REGION, ProcessMemory, regions
 
 
 class ActorProbe:
@@ -176,7 +176,7 @@ def scramble_probe_config(opts):
 def arm_trace(capture):
     """Rastreio com Stalker: teste de sobrevivência (--trace-test), uaRO->gepard (--trace-walk)
     ou uaRO->uaRO (--trace-internal). Faixa do código uaRO 0x401000..0x1717000."""
-    from .protocol import trace_msg
+    from .frida_bridge import trace_msg
     w, t = getattr(capture.opts, 'trace_walk', 0), getattr(capture.opts, 'trace_test', 0)
     ti = getattr(capture.opts, 'trace_internal', 0)
     if ti:

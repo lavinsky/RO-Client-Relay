@@ -5,10 +5,10 @@ import unittest
 from unittest.mock import Mock, patch
 import _boot
 from relay.cli import parse_args
-from relay.runtime import Capture
-from relay.relay import Relay
-from relay.packets import WireFilter
-from relay.wire_feed import new_chunk
+from relay.capture_runtime import Capture
+from relay.xkore_transport import Relay
+from relay.packet_pipeline import WireFilter
+from relay.packet_pipeline import new_chunk
 
 
 class Sessions(unittest.TestCase):
@@ -22,9 +22,21 @@ class Sessions(unittest.TestCase):
         wire=WireFilter({1:4},set())
         capture=Capture(a,None,relay,wire,log,posted.append)
         def connect():
-            with patch('relay.relay.socket.create_connection',return_value=Mock()):relay._connect()
+            with patch('relay.xkore_transport.socket.create_connection',return_value=Mock()):relay._connect()
         connect()
         return capture,relay,wire,posted,connect
+
+    def test_dispatch_metadata_is_explicit_and_control_posts_are_unbound(self):
+        c,r,w,posted,connect=self.make()
+        self.assertIsNotNone(c.client_dispatch)
+        c.commands.accept(bytes.fromhex('37040102030407'), 'S')
+        current=c.commands.current
+        self.assertEqual((posted[-1]['epoch'],posted[-1]['token']),
+                         (current['epoch'],current['token']))
+        c.post({'type':'trace','fixture':True})
+        self.assertNotIn('epoch',posted[-1])
+        self.assertNotIn('token',posted[-1])
+        self.assertFalse(hasattr(c, '_context'))
 
     def test_reconnect_cancels_commands_and_partial_receive(self):
         c,r,w,posted,connect=self.make()
@@ -57,7 +69,7 @@ class Sessions(unittest.TestCase):
         c,r,w,posted,connect=self.make()
         r._inbound(r.frame(bytes.fromhex('37040102030407'),'S'),r.sock)
         command=c.commands.current
-        c._carrier_failed(dict(tag='SCRAMBLE',hit='error',id=0x437,
+        c.client_dispatch._carrier_failed(dict(tag='SCRAMBLE',hit='error',id=0x437,
                                epoch=command['epoch'],token=command['token']))
         self.assertIsNone(posted[-1]['body'])
         self.assertEqual(posted[-1]['epoch'],command['epoch'])
@@ -70,7 +82,7 @@ class Sessions(unittest.TestCase):
         c.commands.accept(p,'S')
         c.commands.observe(dict(tag='SCRAMBLE',hit='consumed',epoch=old['epoch'],token=old['token']))
         before=len(posted)
-        c._carrier_failed(dict(tag='SCRAMBLE',hit='error',id=0x437,
+        c.client_dispatch._carrier_failed(dict(tag='SCRAMBLE',hit='error',id=0x437,
                                epoch=old['epoch'],token=old['token']))
         self.assertEqual(len(posted),before)
 

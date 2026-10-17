@@ -75,7 +75,7 @@ Fatos que permanecem:
 (rejeição por conteúdo/cifra) **volta a ser candidata**, ao lado de pré-condições de estado do
 cliente que a via natural monta (ver abaixo). Nenhuma das duas está demonstrada.
 
-**Teste offline atual:** `tests/test_writeback.py` cobre roteamento, bytes e omissões anti-duplicação. A seleção experimental foi removida; os resultados anteriores acima permanecem históricos. O teste não comprova execução no servidor.
+**Teste offline atual:** `tests/test_client_dispatch_routes.py` cobre roteamento, bytes e omissões anti-duplicação. A seleção experimental foi removida; os resultados anteriores acima permanecem históricos. O teste não comprova execução no servidor.
 
 ## Mapa dispatcher → pacote de ação (ACT-20261016-01)
 

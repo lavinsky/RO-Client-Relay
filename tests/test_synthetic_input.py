@@ -3,8 +3,8 @@ import threading
 import unittest
 from types import SimpleNamespace
 import _boot
-from relay.synth_input import KEYCODES, SynthActuator, build_actuator
-from relay.runtime import Capture
+from relay.synthetic_input import KEYCODES, SynthActuator, build_actuator
+from relay.client_dispatch import ClientDispatcher
 
 
 class InputTests(unittest.TestCase):
@@ -78,8 +78,8 @@ class InputTests(unittest.TestCase):
 
     def test_only_agent_ack_triggers_input(self):
         posted, armed = [], []
-        capture = Capture.__new__(Capture)
-        capture.post = posted.append
+        capture = ClientDispatcher.__new__(ClientDispatcher)
+        capture._agent_post = posted.append
         capture.synth = SimpleNamespace(on_armed=lambda *args: armed.append(args))
         capture._on_inbound_scramble(bytes.fromhex('38040a001c0001020304'), 'S')
         self.assertEqual(armed, [])

@@ -143,7 +143,7 @@ O fork na mesma conta do original é impossível; o responsável autorizou depoi
 uma branch exclusiva no próprio repositório, com um único PR Draft e sem push
 na main, force-push ou merge.
 
-Inventário de arquivos desta entrega:
+Inventário da primeira etapa (antes da consolidação de módulos):
 
 - Adicionados: `agent/research_hooks.js`, `relay/commands.py`,
   `scripts/benchmark-relay.py`, `docs/REFACTOR_REVIEW.md`,
@@ -170,3 +170,47 @@ O primeiro cenário proposto é conexão limpa/login/mapa e uma ação de cada t
 com processo relay, cliente já autorizado e OpenKore; parar no primeiro erro,
 desconexão inesperada ou desvio de destino. Só executar após aprovação específica
 do cenário, comandos, processos e impacto.
+
+
+## Consolidação posterior — base `0e6e3e7`
+
+**OBSERVADO OFFLINE:** cinco fusões reduzem `relay/` de 18 para 13 arquivos Python,
+incluindo `__init__.py`. Não foram criados shims para manter os nomes de módulos
+antigos. Símbolos da fachada `relay_capture_linux.py` permanecem disponíveis.
+
+| Arquivos anteriores | Arquivo canônico |
+|---|---|
+| `config.py` + `cli.py` | `cli.py` |
+| `commands.py` + `writeback.py` | `client_dispatch.py` |
+| `agent.py` + `protocol.py` | `frida_bridge.py` |
+| `actors.py` + `memory.py` | `actor_recovery.py` |
+| `packets.py` + `wire_feed.py` | `packet_pipeline.py` |
+| `runtime.py` | `capture_runtime.py` |
+| `relay.py` | `xkore_transport.py` |
+| `console.py` | `event_log.py` |
+| `safety.py` | `traffic_safety.py` |
+| `sendwatch.py` | `send_recovery.py` |
+| `synth_input.py` | `synthetic_input.py` |
+| `research.py` | `research_diagnostics.py` |
+
+A fusão do dispatcher troca herança por composição e remove o transporte implícito
+de token/epoch por `threading.local`. Os comandos passam explicitamente ao roteador;
+posts de controle não herdam metadados de um comando. A ordem de locks e as cercas
+de sessão permanecem. As demais fusões mantêm os algoritmos e fronteiras de efeito:
+importar funções puras não conecta ao Gadget, não abre sockets nem lê `/proc`.
+O Frida continua importado somente no construtor da conexão.
+
+Imports e patches de mocks foram migrados nos testes, benchmark e `ro_ops`.
+Documentação operacional e `AGENTS.md` apontam aos nomes atuais. Referências em
+históricos e nos arquivos protegidos de cifra permanecem literais e se referem às
+revisões que as originaram; não são imports executáveis do núcleo atual.
+
+Verificações da etapa: suíte antes PASS (17 scripts); suíte depois PASS (18 scripts),
+incluindo regressões de metadados explícitos/controle independente e importação
+dos módulos consolidados sem abrir sockets, processos ou memória do cliente. Não foi
+realizada medição nova no cliente. A consolidação não constitui evidência de ganho
+de RTT; permanecem as mesmas limitações e exigência de autorização por rodada viva.
+
+Os testes operacionais também receberam nomes alinhados às responsabilidades: `test_cli_config`, `test_client_dispatch_routes`, `test_client_readiness`, `test_actor_recovery`, `test_packet_pipeline`, `test_frida_agent`, `test_event_log_modes`, `test_send_recovery`, `test_synthetic_input`, `test_traffic_safety` e `test_xkore_*`. O benchmark mantém seleção explícita de módulos antigos apenas para reproduzir revisões arquivadas anteriores à consolidação.
+
+A revisão independente do dispatcher composto foi PASS (estática). Uma comparação AST contra `0e6e3e7` confirmou 31 funções/classes idênticas nas quatro fusões mecânicas; o dispatcher foi verificado pelos testes de readiness, roteamento, sessões e controle. `validate-research.py`, `validate-codex.py`, compilação Python, help do launcher e `git diff --check`: PASS.

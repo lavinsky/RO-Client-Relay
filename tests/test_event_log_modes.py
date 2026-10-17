@@ -9,7 +9,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from relay import console
+from relay import event_log as console
 
 
 class ConsoleModes(unittest.TestCase):

@@ -6,33 +6,30 @@ Threads:
   wire feeder        WireFeed.run (com relay)
   relay connect      dentro de Relay; threads curtas de descoberta dentro de ActorDecrypt
 
-O caminho de escrita está no mixin WriteBack; readiness no CommandPipeline."""
+O caminho de escrita e readiness pertencem ao ClientDispatcher composto."""
 import queue
 import threading
 from contextlib import nullcontext
 
-from . import protocol
-from .actors import ActorDecrypt
-from .packets import MoveTracker
-from .protocol import sendwatch_msg
-from .wire_feed import ClientSendFeed, WireFeed
-from .writeback import WriteBack
-from .commands import CommandPipeline
+from . import frida_bridge as protocol
+from .actor_recovery import ActorDecrypt
+from .frida_bridge import sendwatch_msg
+from .packet_pipeline import ClientSendFeed, MoveTracker, WireFeed
+from .client_dispatch import ClientDispatcher
 
 
-class Capture(WriteBack):
+class Capture:
     def __init__(self, opts, pid, relay, wire, log, post):
         """opts: opções da CLI. relay/wire: Relay e WireFilter, ou None (sem feed). post(msg): envia
         uma mensagem ao agente."""
         self.opts, self.relay, self.log = opts, relay, log
         self._agent_post = post
-        self._context = threading.local()
         self.work = queue.Queue()
         self.dec = self.sendwatch = self.moves = None
         self._sw_posted = None                         # (lo, hi) para onde a send-watch foi apontada
         self._sw_lock = threading.Lock()
         self.gepard_base = None                        # base da gepard.dll (da mensagem GEPARD)
-        self.scramble = self._build_scramble(opts)     # config do BP de cifragem, ou None
+        self.client_dispatch = ClientDispatcher(self, opts, post)
 
         feed_send = bool(opts.feed_send and relay and opts.relay_format == 'xkore1')
         if feed_send and getattr(opts, 'inject', False):
@@ -45,13 +42,13 @@ class Capture(WriteBack):
         if wire is not None:                           # pipeline do feed (precisa de relay/WireFilter)
             self.dec = ActorDecrypt(pid) if opts.decrypt_actors else None
             if opts.probe_actors or opts.actor_diag:
-                from .research import ActorDiag, ActorProbe
+                from .research_diagnostics import ActorDiag, ActorProbe
             probe = ActorProbe(pid) if opts.probe_actors else None
             diag = ActorDiag(self.dec) if (self.dec and opts.actor_diag) else None
             # merge, call-inject e a send-watch completa usam os registradores de depuração.
-            uses_dbg = self.scramble or getattr(opts, 'inject_call', False)
+            uses_dbg = self.client_dispatch.scramble or getattr(opts, 'inject_call', False)
             if opts.send_watch and not uses_dbg:
-                from .sendwatch import SendWatch
+                from .send_recovery import SendWatch
             self.sendwatch = SendWatch() if (opts.send_watch and not uses_dbg) else None
             if self.dec:
                 print(f'[*] --decrypt-actors: 09fd/09ff bodies from the client recv ring (hold <= {opts.actor_delay*1000:.0f}ms)')
@@ -70,19 +67,10 @@ class Capture(WriteBack):
                                       actor_delay=opts.actor_delay, report_stats=self.report_stats)
             self.send_path = ClientSendFeed(relay, feed_send, self.sendwatch)
 
-        self._wire_writeback(opts, pid, wire)          # aponta relay.on_inbound (ver writeback.py)
-        self.commands = CommandPipeline(self._dispatch_command, self._reset_session,
-                                        log.write, self._carrier_armed)
+        self.client_dispatch.configure(pid, wire)
+        self.commands = self.client_dispatch.commands
         if self.recv_path:
             self.recv_path.on_timing = self.commands.measure
-        if relay:
-            self._route = relay.on_inbound
-            relay.on_inbound = self.commands.accept if self._route else None
-            relay.on_connect = lambda: self.commands.session(True)
-            relay.on_disconnect = self.suspend_commands
-        if self.synth:
-            self.synth.on_error = self._carrier_failed
-            self.synth.on_finished = self.work.put
         self._map_conn = None
         self._closed_map_conns = set()
         self._relay_generation = 0
@@ -163,51 +151,28 @@ class Capture(WriteBack):
                     packet = self.send_path.on_send(m, emit=False)
                 if m.get('enc') and self.gepard_base:  # descoberta: pc do store da cifragem como gepard+off
                     m['enc_off'] = hex(int(m['enc'], 16) - self.gepard_base)
-                    if self.autodiscover and not self._scramble_armed:
-                        self._autodiscover_scramble(m)
+                    if self.client_dispatch.autodiscover and not self.client_dispatch._scramble_armed:
+                        self.client_dispatch._autodiscover_scramble(m)
             self.log.write(m)
             return packet
 
-    def post(self, m):
-        c = getattr(self._context, 'command', None)
-        if c is not None and m['type'] in ('scramble-set', 'sendcall-emit', 'native-dispatch'):
-            m = dict(m, token=c['token'], epoch=c['epoch'])
-            c['posted'] = True
-        self._agent_post(m)
+    def post(self, message):
+        self.client_dispatch.post(message)
 
-    def _dispatch_command(self, command):
-        self._context.command = command
-        try:
-            self._route(command['payload'], command['typ'])
-            return command.get('posted', False)
-        finally:
-            self._context.command = None
+    def arm_scramble(self):
+        self.client_dispatch.arm_scramble()
 
-    def _carrier_armed(self, m):
-        if self.synth:
-            return self.synth.on_armed(m['id'], m['epoch'], m['token'])
+    def arm_sendcall(self):
+        self.client_dispatch.arm_sendcall()
 
-    def _carrier_failed(self, m):
-        # Clear an armed body before allowing another command. Agent emits cancelled
-        # for the current head; no synthetic failure can leave a stale body armed.
-        with self.commands.lock:
-            current = self.commands.current
-            if current and m['epoch'] == self.commands.epoch and m['token'] == current['token']:
-                if not current.get('native_done'):
-                    self._agent_post({'type': 'scramble-set', 'id': m['id'], 'body': None,
-                                      'epoch': m['epoch'], 'token': m['token']})
-                self.log.write(m)
+    def arm_move_dispatch(self):
+        self.client_dispatch.arm_move_dispatch()
 
     def suspend_commands(self):
         with self.relay.lock if self.relay else nullcontext():
             self.commands.session(False)
 
     def _reset_session(self, epoch, active):
-        # Agent cancellation goes first. Queued asynchronous ACKs carry their old epoch.
-        self._agent_post({'type': 'session-reset', 'epoch': epoch, 'active': active,
-                          'min_token': self.commands.serial + 1})
-        if self.synth:
-            self.synth.reset(epoch, active)
         if not active:
             self._map_conn = None
             self._closed_map_conns.clear()
@@ -233,7 +198,7 @@ class Capture(WriteBack):
     def _queue_range(self):
         """(lo, hi, origem) do bloco da fila de envio, ou None - compartilhado pela send-watch e pela
         autodescoberta (o bloco da recv-ring que o ActorDecrypt verifica)."""
-        from .sendwatch import send_queue_range
+        from .send_recovery import send_queue_range
         dec = self.dec
         ring = (dec.region or (None, None)) if dec else None   # uma leitura: nunca base nova com hi antigo
         return send_queue_range(self.opts.send_queue, ring, dec is not None)

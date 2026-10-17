@@ -7,7 +7,8 @@ import unittest
 from unittest.mock import Mock
 
 import _boot
-from relay.cli import DEFAULT_LENGTHS
+from relay.cli import DEFAULT_LENGTHS, parse_args
+from relay.capture_runtime import Capture
 from relay.packet_pipeline import WireFeed, WireFilter, load_lengths, pack_move
 from relay.xkore_transport import Relay
 
@@ -108,6 +109,26 @@ class PositionPacketDelivery(unittest.TestCase):
         new = pkt(0x0091, MAP_NAME + at(153, 93))
         self.fragmented(new, conn='new-map')
         self.assertEqual(self.delivered(), new)
+
+
+    def test_capture_worker_session_dispatch_preserves_map_position(self):
+        # Unlike the other fixtures, this enters via Capture.dispatch: this
+        # exercises active-session checks and the actual RECV routing path.
+        opts = parse_args(['--config', '/missing/offline.ini', '--inject',
+                           '--inject-call', '--move-dispatch', '--action-merge',
+                           '--scramble-bp', '18eff2', '--scramble-reg', 'auto',
+                           '--no-decrypt-actors', '--no-synth-input'])
+        capture = Capture(opts, None, self.relay, self.wire, Mock(), lambda _: None)
+        capture.commands.session(True)
+        self.assertTrue(capture.commands.active)
+        initial = pkt(0x0073, (1).to_bytes(4, 'little') +
+                      pack_move(153, 93) + bytes((0, 0)))
+        event = dict(tag='RECV', epoch=capture.commands.epoch,
+                     sock='127.0.0.1:5121', conn='cookie:map', len=len(initial),
+                     C=initial.hex(), ts=1234)
+        capture.dispatch(event)
+        self.assertFalse(capture.recv_path._feed_ready())
+        self.assertEqual(self.delivered(), initial)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,7 @@
 # Investigação de preparação do movimento 0x035F
 
+**FECHAMENTO FUNCIONAL 2026-10-17 (responsável):** o movimento `0x035F` via OpenKore/relay/dispatcher do cliente está funcionando e a trilha de movimento foi **encerrada**. As perguntas, ensaios e propostas abaixo documentam a **fase histórica da investigação**; não representam pesquisa de movimento ainda aberta. Rodadas 06b/08/09 e evidência de integração em [pré-condições](MOVEMENT_035F_PRECONDITIONS.md) §13. **Somente a cifra permanece como pesquisa ativa.**
+
 Preparação e coleta autorizada de 2026-10-15. Referência de código: commit
 `71c47ff1cbaecd8478ebe98130dddf858e1af02c`, com alteração preexistente em
 `gepard_investigation.md` que não foi usada como nova prova dinâmica.

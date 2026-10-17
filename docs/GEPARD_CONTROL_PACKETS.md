@@ -174,8 +174,7 @@ falham por **não** virem acompanhados do `8280` natural. Isso explicaria por qu
   `3804|nível(2)|skill(2)|GID(4)`; `0AF4` = `f40a|0100|skill(2)|x(2)|y(2)` — **o `0AF4` carrega
   skill+x+y no corpo**, confirmando o desenho "clique fixo + merge reescreve x,y".
 
-**Lacunas remanescentes (NÃO VERIFICADO):** que o store `gepard+0x18eff2` intercepta o buffer de ação
-no **envio natural** de `0438`/`0AF4` (só o `0437` tem o indício `INSERT→ataque`); a identidade
+**Lacunas específicas da coleta histórica de 2026-10-16 (não são falhas operacionais atuais):** naquela coleta ainda não havia captura individual do store `gepard+0x18eff2` no envio natural de `0438`/`0AF4`; o responsável confirmou as skills automáticas funcionais posteriormente. Permanecem perguntas separadas de protocolo sobre a identidade
 binária do egress de 128 B com `0x8280`; se o `control_value` varia. Captura crua (gitignored):
 `research/action_0437_0438/captures/obs8280_20261016/`.
 

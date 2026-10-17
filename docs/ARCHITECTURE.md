@@ -79,13 +79,16 @@ especiais com comprimento inválido falham explicitamente. Não se entrega o
 `0368` de OpenKore segue pelo caminho genérico: o pedido de nome que o cliente
 emite ao passar o mouse não substitui uma consulta do consumidor para seu GID.
 
-Cada comando tem token e epoch. Só há um comando nativo operacional corrente;
-as pendências limitadas preservam os demais até o evento real de conclusão.
-O próximo corpo não é armado enquanto a tecla anterior continua pressionada.
-As filas internas do agente são defesa adicional para callers diretos; corpos
-consecutivos do mesmo opcode não se substituem. Limite de capacidade produz
-falha explícita. Não há intervalo mínimo, expiração por idade, debounce ou
-cooldown imposto pelo relay. A duração de tecla necessária é preservada.
+Cada comando tem token e epoch. A via SEND admite imediatamente um quadro
+válido se não houver operação nativa corrente, sem fila Python de comandos:
+quando o cliente ainda não concluiu uma operação, o próximo quadro XKore
+permanece no buffer de remontagem TCP e a leitura é pausada até ser possível
+admiti-lo. Há exatamente um slot nativo corrente, não uma fila de 64 comandos.
+A fila de corpos dentro do agente só protege substituições nativas e callers
+diretos. Corpos consecutivos do mesmo opcode não se substituem. O próximo
+carrier só é armado após consumo/reparo e liberação da tecla anterior.
+Não há intervalo mínimo, expiração por idade, debounce ou cooldown imposto
+pelo relay. A duração de tecla necessária é preservada.
 
 **Limitação operacional observada após a refatoração:** se um carrier não for
 produzido, o comando corrente pode esperar indefinidamente e bloquear também
@@ -123,11 +126,15 @@ não pode ser retroativamente cancelado.
 
 ## 6. Concorrência, diagnóstico e pesquisa
 
-Callback Frida apenas transfere eventos a um worker. WireFeed tem alimentadora
-própria e Condition; entrada sintética tem worker próprio. Relay protege socket
-e framing com RLock; CommandPipeline protege sessão e pendências com RLock.
-A ordem é Relay.lock → commands.lock; revisão e entrega de chunks dividem a
-mesma cerca de sessão, evitando inversão e entrega tardia após troca de mapa.
+A via SEND é executada pelo thread de socket XKore e encaminha cada quadro
+por ordem de admissão, sem pacing. A via RECV usa callback Frida → worker de
+eventos → feeder WireFeed, independentemente da prontidão do SEND. Ambas podem
+progredir simultaneamente; locks curtos preservam estado de conexão e sessão.
+WireFeed mantém Condition para ordenar fragmentos de recepção; entrada sintética
+tem worker próprio. Relay protege socket e framing com RLock; CommandPipeline
+protege exclusivamente o comando em execução e o epoch com RLock. A ordem de
+locks é Relay.lock → commands.lock; revisão e entrega de chunks dividem a mesma
+cerca de sessão, evitando entrega tardia após troca de mapa.
 Os locks do decifrador protegem evidência, não cadência de jogo.
 
 O console padrão suprime tráfego contínuo e mostra operação/sessão/erros.

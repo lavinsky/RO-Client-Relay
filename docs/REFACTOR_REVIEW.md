@@ -336,3 +336,39 @@ repositório; nenhuma captura bruta integra o commit. O PR permanece Draft.
 Verificações posteriores: `bash scripts/test-offline.sh` **PASS (18 scripts)**;
 `validate-research.py`, `validate-codex.py`, revisão independente das conclusões
 e `git diff --check` **PASS**. Alteração desta etapa: somente este relatório.
+
+
+## Correção posterior: SEND sem FIFO de comandos e RECV independente (2026-10-17)
+
+**Decisão do responsável:** o OpenKore controla o pacing. O relay apenas preserva a
+ordem dos pacotes e o transporte bidirecional; não há backlog Python de 64
+comandos nem política temporal de despacho.
+
+A `CommandPipeline` mantém exclusivamente `current` (um comando nativo
+admitido), epoch/token e metadados de conclusão. Uma nova mensagem `S`, enquanto
+há trabalho nativo corrente, retorna `False` sem copiá-la para outra fila. O
+`Relay` mantém o **quadro original** em seu buffer de remontagem XKore/TCP e
+pausa a leitura desse socket até observar o evento nativo aplicável. Isso é
+backpressure de transporte e uma necessidade de ordenação, não pacing nem uma
+fila operacional. Um comando sem carrier continua podendo bloquear **SEND**;
+só um novo mecanismo de execução nativa comprovadamente ordenado poderia
+eliminar essa dependência sem trocar integridade por disponibilidade.
+
+**Full duplex:** `Relay._connect_loop` atende comandos `S` em seu próprio
+thread; o callback do Frida alimenta um worker de eventos e `WireFeed.run`
+alimenta a via `R` independentemente. Um carrier SEND pendente não pausa o
+worker de recepção nem sua entrega de frames `R`. Locks rápidos compartilham
+apenas cercas de sessão, framing e envio ao socket; não há espera ativa pela
+prontidão de SEND sob lock. Retenções de recepção para recuperar corpos
+`09FD/09FF` e filas **nativas** do scrambler não são pacing removível.
+
+**Escopo de validação:** testes de admissão em ordem com dois opcodes iguais e
+intercalados, ausência de `pending` no comando Python, transporte retomado
+após ACK, cancelamento, e teste full-duplex no qual `R` é enviado com `S`
+bloqueado. Executar suíte offline/CI. Cliente real, RTT e o bloqueio de carrier
+de 23,841 s permanecem sem nova validação; nunca considerar este refactor
+evidência de recuperação funcional ao vivo.
+
+**Nota histórica:** as referências anteriores a capacidade 64, pipeline
+global enfileirada e contagens de comandos cancelados descrevem o PR #12 no
+momento da coleta, não o modelo proposto neste adendo.

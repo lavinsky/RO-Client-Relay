@@ -70,6 +70,56 @@ w = g.WireFilter(L, set())
 acct = bytes([0x11, 0x22, 0x33, 0x44])                 # id 0x2211 unknown; 4 bytes at stream start
 assert w.push_items('a', acct + p87) == [('B', acct + p87)]
 
+# Production defaults must remove Gepard control before an XKore consumer tokenizes the RO
+# stream. Its selected kRO table lacks 4754/5395: an unknown switch discards the whole buffer,
+# including an adjacent 0AC4 login response or 02EB initial position. Debug exclusions hide
+# that warning; they do not filter bytes. Use synthetic bodies, including false packet headers.
+from types import SimpleNamespace
+from unittest.mock import patch
+from relay.cli import build_feed, parse_args, parse_ids
+from relay.packets import packet_len
+from _boot import DATA
+
+defaults = parse_args([])
+drop = parse_ids(defaults.drop_ids)
+assert {0x4754, 0x5395, 0x09fd, 0x09ff} <= drop, drop
+assert parse_ids(parse_args(['--drop-ids', '09fd,09ff']).drop_ids) == {0x09fd, 0x09ff}
+lengths = g.load_lengths(DATA + '/uaro_recvpackets.txt')
+login = b'\xc4\x0a\x08\x00test'
+position = b'\xeb\x02' + bytes(4) + g.pack_move(76, 358) + bytes(4)
+control = b'\x54\x47\x10\x00' + p87
+sync = b'\x95\x53\x08\x00' + b'\xff\x09\xff\xff'
+stream = control + login + sync + position + enc9ff + p87
+opts = SimpleNamespace(relay='127.0.0.1:2350', relay_format='xkore1',
+                       recvpackets='', feed_dump=None)
+with patch('relay.cli.Relay'), patch('relay.cli.read_lengths', return_value=lengths):
+    _, production_wire = build_feed(opts, drop)
+assert production_wire.push('login', stream) == login + position + p87
+
+partitions = [(stream[:cut], stream[cut:]) for cut in range(len(stream) + 1)]
+partitions.append(tuple(stream[i:i + 1] for i in range(len(stream))))
+for case, chunks in enumerate(partitions):
+    w = g.WireFilter(lengths, drop)
+    items = []
+    for chunk in chunks:
+        items += w.push_items('map', chunk, enc={0x09ff})
+    clear = b''.join(it[1] for it in items if it[0] == 'B')
+    assert clear == login + position + p87, (case, items)
+    enc_off = len(control + login + sync + position)
+    assert [it for it in items if it[0] == 'E'] == [('E', 0x09ff, enc9ff, enc_off)]
+    # Model the consumer's selected table: every forwarded byte must belong to a known,
+    # complete RO packet, without relying on its unknown-message recovery.
+    consumer_lengths = {p: n for p, n in lengths.items() if p not in (0x4754, 0x5395)}
+    pos, received = 0, []
+    while pos < len(clear):
+        n = packet_len(consumer_lengths, clear, pos)
+        assert n and pos + n <= len(clear), (case, pos, n)
+        received.append(int.from_bytes(clear[pos:pos + 2], 'little'))
+        pos += n
+    assert received == [0x0ac4, 0x02eb, 0x0087]
+    assert w.carried('map') == 0 and not w.conns['map']['raw']
+print('Gepard control filtered; login, initial position and actor recovery offsets preserved')
+
 # an unknown id mid-stream switches that connection to raw passthrough (fail open)
 w = g.WireFilter(L, set())
 unk = bytes([0xaa, 0xbb, 0, 0])                        # id 0xbbaa not in the table

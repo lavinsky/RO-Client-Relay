@@ -31,9 +31,10 @@ def parse_args(argv=None):
     ap.add_argument('--recvpackets', default=DEFAULT_LENGTHS,
                     help='packet-length table (the consumer recvpackets.txt format) for boundary-aligned feeding; '
                          '"" disables alignment')
-    ap.add_argument('--drop-ids', default='09fd,09ff',
+    ap.add_argument('--drop-ids', default='4754,5395,09fd,09ff',
                     help='comma-separated hex packet ids to omit from the feed (whole-packet, stays aligned). '
-                         'Default 09fd/09ff = actor packets whose bodies are encrypted (only reach the consumer '
+                         'Default 4754/5395 = Gepard control handled by the client, absent from the consumer\'s '
+                         'RO packet table; 09fd/09ff = actor packets whose bodies are encrypted (only reach the consumer '
                          'once --decrypt-actors has verified them). Global chat (02c1, npc_chat/#main) is fed; '
                          'add 02c1 here if the consumer crashes on chat from off-map senders.')
     ap.add_argument('--feed-send', action=argparse.BooleanOptionalAction, default=True,

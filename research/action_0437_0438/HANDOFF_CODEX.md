@@ -27,10 +27,7 @@ A **AI em automático não ataca/lança**, embora o merge escreva. Evidência do
   char está assentado → commita.
 
 **INFERIDO:** `035f` é "mover até o destino" (multi-tile), não "um passo". Pacear o **despacho** (já feito:
-fila FIFO `--egress-queue`, 400ms entre pacotes, +400ms após ação, drop >800ms) **não cria janela parada**
-— o cliente segue o trajeto inteiro entre despachos. A fila serializa a **ordem**, não o **efeito** do
-walk nativo contra a tecla sintética. No cliente real/xKore o próprio state-machine do cliente interrompe
-o walk pra atacar; aqui walk-nativo e ação **não se coordenam**.
+fila FIFO `--egress-queue`, 400ms entre pacotes, +400ms após ação, drop >800ms) **cria janela parada**
 
 **OBSERVADO — refinamento decisivo (responsável, 2026-10-16):** com a AI em automático, se o responsável
 **ataca MANUALMENTE pelo cliente** o mesmo monstro que o consumidor quer atacar, **para de atacar e ANDA
@@ -60,14 +57,14 @@ auto depois reataca também em alcance.
    Provável bastar **uma vez**, pra travar o 1º golpe; depois sustenta (ver `C`). Onde mexer:
    - `relay/writeback.py` `_egress_drain` (ponto único serializado): ao despachar uma ação, **suprimir os
      035f enfileirados por uma janela** (segurar/dropar `WALK_ID` enquanto `now < until`) para o char parar;
-     considerar emitir um **stop de movimento** no cliente antes do carrier. Sincronizar com a tecla (hoje
-     disparada fora do relay por `action_trigger.py`): avaliar mover o disparo pra dentro do relay (Fase 2).
+     considerar emitir um **stop de movimento** no cliente antes do carrier. A tecla sintética **já vive no
+     relay** (`--synth-input`, `relay/synth_input.py`, disparada em `_on_inbound_scramble`), então "parar de
+     andar" e "apertar a tecla" podem ser casados no mesmo relógio sem processo externo.
    - Desafio: o move-dispatch e o estado de movimento do CLIENTE podem estar **dessincronizados** da posição
      que o OpenKore acha (por isso a ação cai "na transição de chegada"). Medir essa defasagem.
-   Refs p/ a implementação: `_on_inbound_split` (`:246`) ramo `WALK_ID`+`md` → `post_move_dispatch`
-   (`:215`); ramo de ação → `_on_inbound_scramble` (`:234`). A tecla hoje é disparada FORA do relay
-   (`action_trigger.py` tailando stdout) → avaliar mover pra dentro do relay (Fase 2, `ISOLATION_SPIKE.md`)
-   p/ casar "parar de andar" e "apertar tecla" no mesmo relógio.
+   Refs p/ a implementação: `_on_inbound_split` ramo `WALK_ID`+`md` → `post_move_dispatch`; ramo de ação
+   → `_on_inbound_scramble`, que ao armar chama `self.synth.on_armed(pid)` (`relay/synth_input.py`
+   `SynthActuator`). "Parar de andar" e "apertar a tecla" podem ser casados nesse ponto, no mesmo relógio.
 1. **(complementar) Coordenar pelo OpenKore para parar em alcance (Tarefa #6).**
    `attackDistance`/`attackMaxDistance`/`route_step` p/ o bot **parar junto do mob** e atacar em alcance,
    em vez de rotear reto. Config do consumidor; não é defeito do relay. Testar `config.txt`/`mon_control`.
@@ -81,10 +78,12 @@ auto depois reataca também em alcance.
 - **Fila de egresso não resolve** este bloqueio (é estado do cliente, não ordem de despacho).
 
 ## Como rodar (ao vivo, servidor próprio)
-- Launcher: `research/action_0437_0438/run_action_merge.sh --port 27053 --wid <wid>` — sobe o relay
-  (`--move-dispatch --action-merge --egress-queue --egress-interval-ms 400 --scramble-range ''`, `python
-  -u`) + `action_trigger.py` (0437→INSERT, 0438→`9`, 0af4→F2). Pré-req: `ydotoold` rodando, janela do
-  cliente focável, gadget na 27053. Pós relogin, **ande uma vez** (recaptura passiva do `this`, DR2).
+- Launcher: `./run.sh [--port 27053] [--wid <wid>]` (ou `research/action_0437_0438/run_action_merge.sh`)
+  — UM processo: o relay com `--move-dispatch --action-merge --egress-queue --egress-interval-ms 400
+  --synth-input --synth-wid <wid> --scramble-range ''` (`python -u`). A tecla (0437→INSERT, 0438→`9`,
+  0af4→F2) é disparada pelo módulo `relay/synth_input.py`, não mais pelo sidecar `action_trigger.py`.
+  Pré-req: `ydotoold` rodando, janela do cliente focável, gadget na 27053. Pós relogin, **ande uma vez**
+  (recaptura passiva do `this`, DR2).
 - OpenKore roda em container podman (`openkore-env`); o console (`/dev/pts/7`) é do conmon → **só o
   responsável** dirige o console (host não alcança).
 - Evidência no stdout do relay: `[inject] inbound id=0x0437 … scramble body map` (arme), `[scramble] WROTE
@@ -101,5 +100,6 @@ auto depois reataca também em alcance.
 - Máx. 2 subagentes. Sem credenciais/contas/**GIDs**/IPs/capturas cruas em docs/commits (use marcador).
 - `relay_capture.conf` mantém `inject=true`/`inject-call=true` intocados; `scramble-range` **pode** ser
   sobrescrito no CLI (`--scramble-range ''`). Commit local só após teste, com paths explícitos; sem push.
-- Fontes: `agent/relay_hook_linux.js`, `relay/{cli,writeback,relay,protocol}.py`,
-  `research/action_0437_0438/{run_action_merge.sh,action_trigger.py,synth_input.py}`.
+- Fontes: `agent/relay_hook_linux.js`, `relay/{cli,writeback,relay,protocol,synth_input}.py`,
+  `research/action_0437_0438/run_action_merge.sh`. (`action_trigger.py`/`synth_input.py` em research/
+  ficaram como ferramenta manual; o disparo de produção é `relay/synth_input.py` via `--synth-input`.)

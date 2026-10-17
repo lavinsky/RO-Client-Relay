@@ -78,14 +78,36 @@ def parse_args(argv=None):
     ap.add_argument('--sendpacket-module', default='uaRO.exe',
                     help='--inject-call: the module whose base --sendpacket-rva is relative to.')
     ap.add_argument('--target-select', action=argparse.BooleanOptionalAction, default=False,
-                    help='--inject-call: emit a 0368 (CZ_REQNAME_BYGID) select-by-GID before a targeted '
-                         'action (0437 attack / 0438 skill). OFF by default: the action already carries the '
-                         'GID and the extra 0368 breaks the action on this build (observed live). Enable only '
-                         'if some build needs the click-mimic.')
+                    help='emit a 0368 (CZ_REQNAME_BYGID) select-by-GID before a targeted action (0437 '
+                         'attack / 0438 skill), on BOTH the client-SendPacket path and the --action-merge '
+                         'path (the 0368 goes out via SendPacket, the action by its own route). Dedup by '
+                         'GID. OFF by default: the action already carries the GID and live tests fired with '
+                         'and without the 0368 (refuted as a fix). Enable to re-try the click-mimic.')
     ap.add_argument('--action-merge', action=argparse.BooleanOptionalAction, default=False,
                     help='--inject-call + --scramble-bp: route consumer 0437/0438/0af4 to the scrambler '
                          'merge (one-shot body map, like 035f) instead of the client SendPacket. OFF by '
                          'default. Routing only; the client must itself build that id for it to be sent.')
+    ap.add_argument('--synth-input', action=argparse.BooleanOptionalAction, default=False,
+                    help='atuador de tecla sintética integrado ao relay (OFF por padrão): quando uma '
+                         'ação do consumidor (0437/0438/0af4) é armada no merge, injeta a tecla '
+                         '(uinput/ydotool, passa no Gepard) que faz o CLIENTE montar o carrier, que o '
+                         'scrambler reescreve. Substitui o sidecar action_trigger.py. Requer ydotoold '
+                         'rodando e a janela do cliente focável; efeito colateral = input real no seat0.')
+    ap.add_argument('--synth-wid', default='',
+                    help='--synth-input: id (hex wmctrl) da janela do cliente a focar; vazio = autodetecta '
+                         'pelo título (world of your dream / uaRO / gepard shield / steam_app_).')
+    ap.add_argument('--synth-key-0437', default='INSERT',
+                    help='--synth-input: tecla para armar o carrier do 0437 (ataque). Default INSERT.')
+    ap.add_argument('--synth-key-0438', default='9',
+                    help="--synth-input: tecla para o 0438 (perícia em alvo). Default '9' da fileira de "
+                         'cima (KEY_9=10), NÃO o do numpad.')
+    ap.add_argument('--synth-key-0af4', default='F2',
+                    help='--synth-input: tecla para o 0af4 (perícia no chão). Default F2.')
+    ap.add_argument('--synth-debounce-ms', type=int, default=500,
+                    help='--synth-input: intervalo mínimo entre disparos da MESMA ação (anti-repetição '
+                         'quando o consumidor re-arma o mesmo id em rajada). Default 500.')
+    ap.add_argument('--synth-dry', action=argparse.BooleanOptionalAction, default=False,
+                    help='--synth-input: não injeta a tecla; só registra o que faria (teste).')
     ap.add_argument('--move-dispatch', action=argparse.BooleanOptionalAction, default=False,
                     help='PoC (needs --inject): on a consumer 035f, fire the client\'s native movement '
                          'dispatcher (frame 0x11) from a main-loop PE site so the CLIENT builds, encrypts '

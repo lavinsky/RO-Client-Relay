@@ -16,6 +16,7 @@ import time
 from .packets import unpack_move
 from .protocol import (move_dispatch_msg, scramble_msg, scramble_set_msg, sendcall_emit_msg, sendcall_msg,
                        sendwatch_msg, trace_msg)
+from .synth_input import build_actuator
 
 # A watch de dados dispara uma instrução DEPOIS da escrita; o store `mov [reg],bl` tem 2 bytes.
 # O breakpoint de execução precisa cair no próprio store, com o texto claro ainda presente.
@@ -86,6 +87,10 @@ class WriteBack:
         self.autodiscover = False
         self._scramble_armed = self.scramble is not None
         self._disc_lock = threading.Lock()
+        # Atuador de tecla sintética (--synth-input, OFF por padrão): quando uma ação (0437/0438/0af4)
+        # é armada no merge, dispara a tecla que faz o cliente montar o carrier. Antes era o processo
+        # externo action_trigger.py tailando o stdout; agora é chamado direto em _on_inbound_scramble.
+        self.synth = build_actuator(opts)
         # Paceamento dos casts: o consumidor (OpenKore) re-tenta a perícia várias vezes; enfileiradas,
         # elas drenam em rajada e cada cast cancela o anterior. O agente deixa passar no máximo um cast
         # por esta janela, NO DRENO (arm_sendcall envia cast_ms). 0 desliga. (Política do lado do
@@ -261,6 +266,9 @@ class WriteBack:
         print(f"[inject] inbound id=0x{pid:04x} len={len(payload)} -> scramble body map (pre-XOR): "
               f"{payload[:16].hex()}")
         self.post(scramble_set_msg(pid, body.hex()))
+        synth = getattr(self, 'synth', None)               # --synth-input: dispara a tecla do carrier
+        if synth is not None:                              # (só ids com tecla mapeada; 035f é ignorado)
+            synth.on_armed(pid)
 
     def _egress_enqueue(self, payload, typ):
         """relay.on_inbound sob --egress-queue: enfileira o quadro do consumidor com o instante de
@@ -315,6 +323,8 @@ class WriteBack:
             self._on_inbound_scramble(payload, typ)
         elif (getattr(getattr(self, 'opts', None), 'action_merge', False) and pid in WriteBack.ACTION_MERGE_IDS
               and getattr(self, '_scramble_armed', False)):
+            if getattr(getattr(self, 'opts', None), 'target_select', False):
+                self._emit_target_select(pid, payload)  # --target-select: 0368 (seleção) antes da ação
             self._on_inbound_scramble(payload, typ)    # --action-merge: ação com alvo -> merge, não SendPacket
         elif md and not getattr(self.opts, 'inject_call', False):
             print(f'[inject] id=0x{pid:04x}: no handler under --move-dispatch without --inject-call; dropped')
@@ -330,10 +340,28 @@ class WriteBack:
             return payload[2:6]
         return None
 
+    def _emit_target_select(self, pid, payload):
+        """--target-select: emite um 0368 (CZ_REQNAME_BYGID) de seleção do alvo pela SendPacket do
+        cliente ANTES da ação, imitando o clique. Dedup por GID (só reemite quando o alvo muda) para
+        não floodar o gepard. Vale tanto na via SendPacket quanto na via merge (--action-merge).
+        OFF por padrão: o 0368 é só um PEDIDO DE NOME, não um lock de alvo, e a ação (0437/0438) já
+        carrega o GID — ao vivo o ataque saiu com e sem ele (ver REFUTADO em HANDOFF_CODEX.md); fica
+        como experimento reabilitável, sem alterar o caminho padrão."""
+        if not getattr(getattr(self, 'opts', None), 'target_select', False):
+            return
+        gid = self._target_gid(pid, payload)
+        if gid is None or gid == getattr(self, '_last_select_gid', None):
+            return
+        select = bytes([self.SELECT_ID & 0xff, self.SELECT_ID >> 8]) + gid
+        print(f"[inject] target-select 0x{self.SELECT_ID:04x} GID={gid.hex()} antes de 0x{pid:04x}")
+        self.post(sendcall_emit_msg(select.hex()))
+        self._last_select_gid = gid                    # só reemite o 0368 quando o alvo muda (anti-flood)
+
     def _on_inbound_sendcall(self, payload, typ):
         """Entrega ao agente para transmitir pela SendPacket do próprio cliente (espontâneo).
-        Para ações com alvo, emite antes um 0368 (seleção do alvo por GID) como o clique do cliente
-        faz — sem ele o cliente/gepard não honra a perícia/ataque (observado no envio real)."""
+        Para ações com alvo, emite antes um 0368 (seleção do alvo por GID) se --target-select (ver
+        _emit_target_select; OFF por padrão porque o 0368 não é necessário e já foi refutado como
+        solução)."""
         if typ != 'S' or len(payload) < 2:
             print(f"[inject] skip typ={typ!r} len={len(payload)} (need an 'S' packet with an id)")
             return
@@ -343,16 +371,6 @@ class WriteBack:
         # O paceamento dos casts (0438/0af4) é feito no DRENO do agente, não aqui: o consumidor manda
         # re-tentativas espaçadas que passariam deste filtro mas, enfileiradas, drenam juntas e cada
         # cast cancela o anterior. O agente deixa passar um cast por janela (ver cast_ms em sendcall).
-        # O 0368 (CZ_REQNAME_BYGID) pré-ação é só um PEDIDO DE NOME, não um lock de alvo; a ação
-        # (0437/0438) já carrega o GID. Injetá-lo antes QUEBRA a ação (observado live: ataque/perícia
-        # não funcionam com o 0368; sem ele o sendmsg sai e funciona). OFF por padrão; --target-select
-        # reativa o clique-mímico se algum build precisar.
-        if getattr(getattr(self, 'opts', None), 'target_select', False):
-            gid = self._target_gid(pid, payload)
-            if gid is not None and gid != getattr(self, '_last_select_gid', None):
-                select = bytes([self.SELECT_ID & 0xff, self.SELECT_ID >> 8]) + gid
-                print(f"[inject] target-select 0x{self.SELECT_ID:04x} GID={gid.hex()} antes de 0x{pid:04x}")
-                self.post(sendcall_emit_msg(select.hex()))
-                self._last_select_gid = gid            # só reemite o 0368 quando o alvo muda (anti-flood)
+        self._emit_target_select(pid, payload)         # --target-select (OFF por padrão): 0368 antes
         print(f"[inject] inbound id=0x{pid:04x} len={len(payload)} -> SendPacket: {payload[:16].hex()}")
         self.post(sendcall_emit_msg(payload.hex()))

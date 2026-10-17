@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Gatilho mínimo (teste rápido): quando o relay ARMA uma ação do consumidor (merge), dispara o
+"""SUPERSEDIDO: o gatilho agora é um MÓDULO do relay (relay/synth_input.py, flag --synth-input),
+disparado direto no ponto de arme (writeback._on_inbound_scramble) — sem 2º processo nem log
+intermediário. Use `--synth-input` no relay (ou ./run.sh). Este script fica como ferramenta manual
+de teste (tail de um log) e não é mais lançado pelo run_action_merge.sh.
+
+Gatilho mínimo (teste rápido): quando o relay ARMA uma ação do consumidor (merge), dispara o
 input virtual no cliente para gerar o carrier natural que o scrambler então reescreve.
 
 Sequência (pedida pelo responsável):

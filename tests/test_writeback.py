@@ -57,6 +57,7 @@ class FakeSend:
         self.posted.append(msg)
 
     _target_gid = Capture._target_gid
+    _emit_target_select = Capture._emit_target_select
     _on_inbound_sendcall = Capture._on_inbound_sendcall
 
 from types import SimpleNamespace
@@ -119,6 +120,7 @@ class FakeSplit:
         self.posted.append(msg)
 
     _target_gid = Capture._target_gid
+    _emit_target_select = Capture._emit_target_select
     _on_inbound_split = Capture._on_inbound_split
     _on_inbound_scramble = Capture._on_inbound_scramble
     _on_inbound_sendcall = Capture._on_inbound_sendcall
@@ -248,6 +250,40 @@ real._on_inbound_split(acts[0], 'S'); real._on_inbound_split(acts[1], 'S')
 assert real.posted == [scramble_set_msg(0x437, acts[0][2:].hex()), scramble_set_msg(0x438, acts[1][2:].hex())], real.posted
 assert not any(m == sendcall_emit_msg(a.hex()) for m in real.posted for a in acts)
 print('action-merge routing ok')
+
+
+# --- --target-select na via MERGE (--action-merge): 0368 (seleção) é emitido ANTES do 0437 --------
+class FakeMergeSel(FakeMove):
+    SELECT_ID = Capture.SELECT_ID
+    SKILL_ID = Capture.SKILL_ID
+    ACT_ID = Capture.ACT_ID
+    ACTION_MERGE_IDS = Capture.ACTION_MERGE_IDS
+
+    def __init__(self, target_select):
+        FakeMove.__init__(self, move_dispatch=False)
+        self.opts = SimpleNamespace(move_dispatch=False, inject_call=True, action_merge=True,
+                                    target_select=target_select)
+        self._scramble_armed = True
+
+    _target_gid = Capture._target_gid
+    _emit_target_select = Capture._emit_target_select
+    _on_inbound_scramble = Capture._on_inbound_scramble   # real: posta scramble-set (não o stub)
+    _on_inbound_split = Capture._on_inbound_split
+
+
+atk = bytes.fromhex('3704aabbccdd07')                      # ataque 0437 no GID aabbccdd (merge)
+on = FakeMergeSel(target_select=True)
+on._on_inbound_split(atk, 'S')
+assert on.posted == [sendcall_emit_msg('6803aabbccdd'),    # 0368 seleção primeiro...
+                     scramble_set_msg(0x0437, 'aabbccdd07')], on.posted   # ...depois o 0437 no merge
+on.posted.clear()
+on._on_inbound_split(atk, 'S')                             # mesmo alvo: 0368 não repete (dedup por GID)
+assert on.posted == [scramble_set_msg(0x0437, 'aabbccdd07')], on.posted
+# default (--target-select OFF): a via merge NÃO emite 0368 — comportamento atual inalterado
+off = FakeMergeSel(target_select=False)
+off._on_inbound_split(atk, 'S')
+assert off.posted == [scramble_set_msg(0x0437, 'aabbccdd07')], off.posted
+print('action-merge target-select ok')
 
 
 # --- egress queue (--egress-queue): FIFO serializado, nada se atropela ---------------------------

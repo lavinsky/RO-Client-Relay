@@ -478,6 +478,17 @@ function scrTrap(d) {
               entry: scrPrologue()});
         return true;
     }
+    // --- byte0 fix (merge) ---------------------------------------------------------------------
+    // O store scr.pc (mov [ecx],bl) grava UM byte em bodyp[0] DEPOIS do nosso writeByteArray, com o
+    // valor derivado do byte ORIGINAL (bl foi carregado antes do nosso write) -> body[0] revertia:
+    // ataque no GID errado (byte baixo do GID) e perícia saindo nível 1 (byte baixo do nível). Como o
+    // scrambler é ascendente (body[0] primeiro), corrigimos no hit SEGUINTE (byte1 do mesmo pacote, o
+    // store de body[0] já rodou) reescrevendo body[0] pela identidade XOR, sem conhecer o keystream
+    // nem assumir onde o XOR é aplicado: final = (valor_atual) ^ original0 ^ nosso0.
+    if (scr._fix0) {
+        var f0 = scr._fix0; scr._fix0 = null;
+        try { var c0 = f0.at.readU8(); f0.at.writeU8((c0 ^ f0.orig0 ^ f0.our0) & 0xff); } catch (e) {}
+    }
     // Find the slot pointer + which body to write. Two modes:
     //   fixed  (scr.reg is a register / sN): pointer = that reg, id at pointer+idoff (configured).
     //   auto   (scr.reg === 'auto'): scan GP registers for one that points at a slot whose id is one
@@ -518,6 +529,9 @@ function scrTrap(d) {
     try {
         bodyp.writeByteArray(body);                                 // overwrite plaintext; the in-place XOR encrypts ours
         if (oneshot && !scr.persist) delete scr.bodies[pid2];       // one-shot: client's own sends resume; persist: keep replacing
+        if (usedOff === -2 && was !== null && was.length >= 2) {    // bodyp==ecx: o store seguinte grava body[0]
+            scr._fix0 = {at: bodyp, orig0: parseInt(was.slice(0, 2), 16), our0: body[0] & 0xff};
+        }
         send({tag: 'SCRAMBLE', hit: 'wrote', pc: scr.pc.toString(), slot: bodyp.toString(), id: pid2,
               body: was, wrote: hexOf(new Uint8Array(body)), reg: usedReg, idoff: usedOff});
     } catch (e) { send({tag: 'SENDWATCH-ERR', e: 'scramble write: ' + e.message}); }

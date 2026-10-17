@@ -264,3 +264,57 @@ readiness e console **PASS (8 casos cada)**; revisão independente do patch **PA
 `validate-research.py`, `validate-codex.py` e `git diff --check` **PASS**.
 Teste ao vivo executado pelo agente **NOT RUN**. Os arquivos protegidos da cifra,
 o agente JS e a configuração permaneceram sem alterações nesta etapa.
+
+## Rodada autorizada relay-carrier-01
+
+**Origem e escopo:** coleta operacional executada pelo agente após autorização
+explícita desta rodada e liberação exclusiva da instância. Revisão executada
+`e5e7b7c`, sem diff operacional. Comando: `./run.sh --port <gadget local>
+--synth-wid <janela explícita> --out <diretório privado>/events.jsonl`.
+O OpenKore estava no automático. O cenário pretendia um ataque; três comandos
+`0437` foram armados antes da interrupção. Não houve disparo manual pelo agente.
+Essa limitação de controle exige isolar o comando antes de uma futura coleta.
+
+**OBSERVADO, tempos locais monotônicos:**
+
+| Etapa | Primeiro comando | Segundo comando |
+|---|---:|---:|
+| Recepção no relay → arme observado | 0,707 ms | 22.841,054 ms, incluindo espera na pipeline |
+| Recepção → evento `INPUT released` | 182,059 ms | 23.021,760 ms, incluindo espera na pipeline |
+| Arme → consumo após reparo aplicável | 23.840,627 ms | 582,641 ms |
+
+Foram observados três armes, três liberações de input e dois consumos. O terceiro
+estava pendente quando a coleta foi encerrada: sua ausência de terminal é um dado
+censurado pela parada, não demonstra falha permanente. A suspensão registrou 39
+comandos cancelados. Não houve erro reportado de síntese ou Frida nessa coleta.
+A recuperação de atores registrou sete resultados `ok-fresh`.
+As duas escritas reportaram `ecx`, `idoff=-2`, cujo ACK de consumo ocorre após
+`_fix0` no handler atual; isso não comprova aceitação pelo servidor.
+
+**RELATO DO RESPONSÁVEL:** o cliente sentou/levantou sem interação manual.
+**OBSERVADO:** a janela explícita estava ativa em uma amostragem. Isso reduz a
+hipótese de escolha errada por título, mas não mede foco continuamente nem o
+instante em que cada tecla chegou ou foi aceita pelo cliente.
+
+**Conclusão delimitada:** a espera global foi reproduzida com janela explícita;
+a aceitação inicial no agente foi rápida, seguida de espera longa pelo consumo
+e retenção dos comandos seguintes. São tempos locais do pipeline. Não medem
+RTT externo nem aceitação do ataque pelo servidor. Ainda não está demonstrado
+por que o primeiro carrier demorou. Não houve alteração de `_fix0`, da cifra,
+das rotas ou da configuração. O bloco `LATENCY` periódico foi emitido antes dos
+consumos; não representa o conjunto da rodada. Dois consumos não sustentam uma
+comparação robusta de p95/p99 nem uma alegação de ganho de latência.
+
+**Resultado:** reprodução do bloqueio global **FAIL operacional**; coleta de
+metadados **PASS**; ataque aceito pelo servidor **NÃO VERIFICADO**; movimento e
+skills isolados **NOT RUN**. A origem do carrier tardio permanece aberta.
+
+**Limpeza:** relay próprio encerrado por SIGTERM, unload sem erro reportado,
+liberação das teclas sintéticas retornou sucesso e cliente permaneceu aberto.
+Não foi feita leitura independente dos debug registers. Nenhuma instrumentação
+de terceiros foi removida. Evidências e handoff ficaram privados fora do
+repositório; nenhuma captura bruta integra o commit. O PR permanece Draft.
+
+Verificações posteriores: `bash scripts/test-offline.sh` **PASS (18 scripts)**;
+`validate-research.py`, `validate-codex.py`, revisão independente das conclusões
+e `git diff --check` **PASS**. Alteração desta etapa: somente este relatório.

@@ -4,7 +4,7 @@
 
 **Fonte canônica de navegação.** Revisão local de 2026-10-15 em
 `main@524b0f05fa61872e140f98ace9e503d12356641e`, reconciliada com o pacote de `bdc2a07` e o ensaio de dispatcher de `524b0f0`.
-Os quatro estudos especializados permanecem separados e completos. Históricos sanitizados
+Os estudos especializados permanecem separados e completos, incluindo o fechamento das ações. Históricos sanitizados
 ficam em `HISTORY/`; os caminhos anteriores na raiz redirecionam para esta documentação.
 
 ## Fluxo mínimo de leitura por agentes

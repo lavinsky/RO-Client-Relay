@@ -89,11 +89,23 @@ class Agent:
         self.script.post(msg)
 
     def unload(self):
-        """Unload the agent; its dispose() clears the debug registers of the send watch."""
+        """Disarm hardware breakpoints explicitly before unloading the Frida script.
+
+        A JS rpc.exports.dispose function is not called automatically by Script.unload().
+        Never leave cleanup to implicit script disposal: a remaining hardware breakpoint
+        without its exception handler can crash the client on the next hit.
+        """
         try:
-            self.script.unload()
-        except self._frida.InvalidOperationError:
-            pass
+            self.script.exports_sync.dispose()
+        except Exception as e:
+            # A detached or failed agent may not answer RPC; unloading is still required.
+            # Do not log arbitrary remote exception messages (they may contain private data).
+            print(f'[!] agent dispose failed: {type(e).__name__}')
+        finally:
+            try:
+                self.script.unload()
+            except self._frida.InvalidOperationError:
+                pass
 
 
 RECV = 'RECV'

@@ -17,8 +17,6 @@ from .synthetic_input import build_actuator
 
 
 class CommandPipeline:
-    # The only slot is native work currently awaiting completion, not a FIFO.
-    CAPACITY = 1
     ACTION_IDS = {0x035f, 0x0437, 0x0438, 0x0af4}
     TERMINAL = {'SCRAMBLE': {'consumed', 'error', 'cancelled'},
                 'SENDCALL': {'sent', 'error'},

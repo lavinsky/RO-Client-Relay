@@ -1,5 +1,7 @@
 # Coordenação da pesquisa
 
+**Atualização 2026-10-17:** somente a equipe **CIFRA** mantém investigação científica ativa; MOVER/ACT encerraram suas trilhas funcionais e os handoffs completos foram preservados em `docs/HISTORY/MOVEMENT_COMPLETE.md` e `docs/HISTORY/ACTIONS_COMPLETE.md`. O histórico de coordenação está em `docs/HISTORY/PROJECT_HANDOFFS.md`. Este protocolo permanece aplicável ao trabalho ativo de CIFRA e à integração pelo Documentador.
+
 Protocolo de trabalho solicitado pelo responsável. Complementa o AGENTS.md da raiz;
 não concede autorização para experimentos, commits ou publicação. Cada agente deve
 ler este arquivo explicitamente ao receber sua tarefa. Não é carregado automaticamente
@@ -10,7 +12,7 @@ como instrução por todos os clientes de IA.
 | Papel | Responsabilidade | Arquivos de escrita |
 |---|---|---|
 | Orquestrador | Prioridades, contratos de tarefa, decisões entre trilhas e critérios de aceitação | Este protocolo e instruções específicas, quando necessário |
-| MOVER | Diagnóstico e experimentos do movimento; implementar e testar suas sondas | `research/movement_035f/`, `tests/test_movement_preconditions.py` |
+| MOVER (histórico) | Pesquisa encerrada; instrumentos e testes históricos preservados no código | Sem nova escrita delegada; handoffs em `docs/HISTORY/MOVEMENT_COMPLETE.md` |
 | CIFRA | Produtor do byte, transformação, estado e sessão; implementar e testar suas sondas | `research/cipher/`, `tests/test_cipher_research.py` |
 | Documentador | Integrar evidências e corrigir contradições, links e estado científico | `docs/`, seguindo suas instruções locais |
 

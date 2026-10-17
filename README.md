@@ -34,4 +34,4 @@ python3 scripts/validate-codex.py
 ```
 
 Testes offline não comprovam funcionamento em cliente real. Histórico e mapa de migração
-em [auditoria documental](docs/DOCUMENTATION_AUDIT.md).
+no [arquivo integral das auditorias](docs/HISTORY/STATUS_AND_AUDIT.md).

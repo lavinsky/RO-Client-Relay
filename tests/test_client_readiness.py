@@ -40,57 +40,57 @@ class PipelineTests(unittest.TestCase):
 
     def test_disconnect_drops_only_native_work_and_rejects_stale_ack(self):
         p, d, events, resets, armed = self.make()
-        self.assertTrue(p.accept(b'\\x37\\x04first', 'S'))
-        self.assertFalse(p.accept(b'\\x38\\x04later', 'S'))
+        self.assertTrue(p.accept(b'\x37\x04first', 'S'))
+        self.assertFalse(p.accept(b'\x38\x04later', 'S'))
         old = dict(tag='SCRAMBLE', hit='consumed', token=p.current['token'], epoch=p.epoch)
         p.session(False)
-        self.assertIsNone(p.accept(b'\\x37\\x04old-session', 'S'))
+        self.assertIsNone(p.accept(b'\x37\x04old-session', 'S'))
         p.session(True)
-        self.assertTrue(p.accept(b'\\x37\\x04new', 'S'))
+        self.assertTrue(p.accept(b'\x37\x04new', 'S'))
         self.assertFalse(p.observe(old))
-        self.assertEqual(p.current['payload'], b'\\x37\\x04new')
+        self.assertEqual(p.current['payload'], b'\x37\x04new')
         self.assertEqual(len(d), 2)
         self.assertEqual(resets, [(1, True), (2, False), (3, True)])
 
     def test_busy_retains_command_in_transport_not_python_pipeline(self):
         p, d, events, *_ = self.make()
-        self.assertTrue(p.accept(b'\\x37\\x04first', 'S'))
+        self.assertTrue(p.accept(b'\x37\x04first', 'S'))
         old_serial = p.serial
-        self.assertIs(p.accept(b'\\x37\\x04second', 'S'), False)
+        self.assertIs(p.accept(b'\x37\x04second', 'S'), False)
         self.assertEqual(p.serial, old_serial)
         self.assertEqual(events[-1]['code'], 'COMMAND_BUSY')
         self.assertTrue(events[-1]['in_flight'])
         self.assertEqual(events[-1]['blocked_token'], p.current['token'])
         self.ack(p, hit='error')
         self.assertIsNone(p.current)
-        self.assertTrue(p.accept(b'\\x37\\x04second', 'S'))
-        self.assertEqual([c['payload'] for c in d], [b'\\x37\\x04first', b'\\x37\\x04second'])
+        self.assertTrue(p.accept(b'\x37\x04second', 'S'))
+        self.assertEqual([c['payload'] for c in d], [b'\x37\x04first', b'\x37\x04second'])
 
     def test_busy_is_not_a_disconnected_drop(self):
         p, *_ = self.make()
-        self.assertTrue(p.accept(b'\\x37\\x04first', 'S'))
-        self.assertIs(p.accept(b'\\x37\\x04second', 'S'), False)
+        self.assertTrue(p.accept(b'\x37\x04first', 'S'))
+        self.assertIs(p.accept(b'\x37\x04second', 'S'), False)
         p.session(False)
-        self.assertIsNone(p.accept(b'\\x37\\x04second', 'S'))
+        self.assertIsNone(p.accept(b'\x37\x04second', 'S'))
 
     def test_key_release_and_native_consumption_must_both_complete(self):
         for release_first in (False, True):
             p, d, *_ = self.make()
             p.armed = lambda m: True
-            self.assertTrue(p.accept(b'\\x37\\x04first', 'S'))
+            self.assertTrue(p.accept(b'\x37\x04first', 'S'))
             self.ack(p, hit='armed')
             first = p.current.copy()
             release = dict(tag='INPUT', hit='released', epoch=p.epoch, token=first['token'])
             if release_first:
                 p.observe(release)
-                self.assertIs(p.accept(b'\\x37\\x04second', 'S'), False)
+                self.assertIs(p.accept(b'\x37\x04second', 'S'), False)
                 self.ack(p)
             else:
                 self.ack(p)
-                self.assertIs(p.accept(b'\\x37\\x04second', 'S'), False)
+                self.assertIs(p.accept(b'\x37\x04second', 'S'), False)
                 p.observe(release)
             self.assertIsNone(p.current)
-            self.assertTrue(p.accept(b'\\x37\\x04second', 'S'))
+            self.assertTrue(p.accept(b'\x37\x04second', 'S'))
             self.assertEqual(len(d), 2)
 
     def test_missing_carrier_pauses_only_tx_and_does_not_claim_success(self):
@@ -132,14 +132,14 @@ class PipelineTests(unittest.TestCase):
                              for n in ast.walk(tree)))
         p, d, *_ = self.make()
         for _ in range(50):
-            self.assertTrue(p.accept(b'\\x37\\x04x', 'S'))
+            self.assertTrue(p.accept(b'\x37\x04x', 'S'))
             self.ack(p)
         self.assertEqual(len(d), 50)
         self.assertFalse(hasattr(p, 'pending'))
 
     def test_concurrent_ack_and_disconnect_finishes(self):
         p, d, *_ = self.make()
-        p.accept(b'\\x37\\x04x', 'S')
+        p.accept(b'\x37\x04x', 'S')
         c = p.current.copy()
         barrier = threading.Barrier(3)
         def ack():

@@ -64,6 +64,20 @@ def focus(wid, dry):
     rc, _, _ = _run(['xdotool', 'windowactivate', '--sync', wid], dry, env)
     if rc:
         raise RuntimeError('window activation failed')
+    if not dry:
+        # windowactivate --sync only waits for WM activation; verify the X11
+        # focus owner before injecting a physical uinput key into XWayland.
+        rc, stdout, _ = _run(['xdotool', 'getwindowfocus'], False, env)
+        if rc:
+            raise RuntimeError('cannot verify focused window')
+        try:
+            focused = int(stdout.strip(), 0)
+            wanted = int(wid, 0)
+        except ValueError:
+            raise RuntimeError('invalid focused window id')
+        if focused != wanted:
+            raise RuntimeError('focused window differs from uaRO (%#x != %#x)' %
+                               (focused, wanted))
 
 
 def ydotool_env():
@@ -187,11 +201,14 @@ class SynthActuator:
                     rc = send_key(key, self._dry, self._hold_ms, cancelled)
                 if rc:
                     raise RuntimeError('input failed')
-                event('[synth] token=%s focus_ms=%.3f key_ms=%.3f' %
-                      (token, (focused-began)/1e6, (time.monotonic_ns()-focused)/1e6), verbose=True)
+                event('[synth] token=%s key=%s focus_ms=%.3f key_ms=%.3f' %
+                      (token, key, (focused-began)/1e6, (time.monotonic_ns()-focused)/1e6),
+                      verbose=True)
             except Exception as e:
                 self._failure(item, e)
             finally:
+                # This is input lifecycle completion, not proof that a game
+                # carrier was emitted. Only SCRAMBLE consumed proves that.
                 if self.on_finished:
                     self.on_finished({'tag': 'INPUT', 'hit': 'released', 'id': pid,
                                       'epoch': epoch, 'token': token})

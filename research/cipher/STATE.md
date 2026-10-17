@@ -1,5 +1,23 @@
 # CIFRA — estado operacional
 
+
+<!-- CIPHER-SPECIALIST-REFERENCES-2026-10-17 -->
+
+## Direção de pesquisa prioritária — variantes reais Gepard (2026-10-17)
+
+**FONTE TÉCNICA ESPECIALIZADA — ALTA CONFIANÇA:** recebidos exemplos completos de duas variantes reais, de servidores distintos, de versões atuais do Gepard. A origem especializada não equivale a uma captura de uaRO; **não** desqualifica a validade dos exemplos. [Código e diferenças estruturais](../../docs/CIPHER_INVESTIGATION.md#cipher-specialist-20261017).
+
+**Decisão:** antes de continuar perseguindo o byte de CL isoladamente, priorizar a **identificação da família/variante, inicializador e estado**: tabela mutável de 256 bytes, três posições, seed, constantes, lógica por byte, dependência do comprimento e sessões/unidades. A cadeia POP/STACK/SLICE-12 até candidata `EBP+0x09` continua resultado observado de transporte, **não é gerador criptográfico identificado**.
+
+**Informação especializada:** valores/seed acessíveis em memória; rotina protegida por VMProtect; reconstrução baseada em hypervisor, entradas/saídas e templates aritméticos, com ferramenta especializada relatada na ordem de ~2 min. No build atual **não foi demonstrada** a correspondência do callsite/código virtualizado nem a variante A/B. A aplicação dessas informações ao uaRO segue por localizar, sem desmerecer o conhecimento recebido.
+
+**Login:** o responsável já confirmou recebimento de valores relacionados à cifra no login. A interpretação de que sejam seeds dessa família é **hipótese de mapeamento** (ID/campos/consumo não verificados); não logar credenciais.
+
+**Sequência de investigação proposta (somente planejamento documental, sem sonda nesta atualização):** (1) vetores sintéticos offline A/B, explicitando tipos, máscaras e hash; (2) assinaturas de ordem/índice/sinal/shift por operação; (3) seed recebida vs estado derivado; (4) vínculo login→inicializador→unidade/direção; (5) persistência e reset; (6) sync `0x8280` como dependência para xKore 0. **Nenhum vetor gerado nem cliente executado nesta revisão.**
+
+**Condições para promoção a uaRO:** no mesmo build e sessão, obter operações/estado antes/depois para vetores independentes e dimensões de pacote distintas. Não usar constantes de A/B como constantes atuais do uaRO até essa correspondência. `resources/` não está disponível na árvore Git versionada revisada; eventual fonte local precisa ser apresentada antes de comparar.
+
+**Histórico de execução abaixo:** estado anterior à mudança de prioridade; manter SLICE-12/limpeza/cotas/erros e pré-condições literalmente, sem tratá-los como conclusão da nova linha.
 Atualizado em 2026-10-16 após SLICE-12; protocolo `research/COORDINATION.md`.
 
 ## Estado atual e próximo recorte

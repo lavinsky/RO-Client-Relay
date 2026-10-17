@@ -1,6 +1,6 @@
 # Ferramentas de pesquisa da cifra
 
-Manual completo centralizado em [docs/CIPHER_TOOLS.md](../../docs/CIPHER_TOOLS.md):
+Manual completo centralizado em [apêndice integral de ferramentas em docs/CIPHER_INVESTIGATION.md](../../docs/CIPHER_INVESTIGATION.md#original-docs-cipher-tools-md):
 formatos, limites, privacidade, CLI, mecanismos de coleta e limpeza.
 Execute os comandos a partir da raiz do repositório.
 

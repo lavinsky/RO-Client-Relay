@@ -6,11 +6,11 @@
 
 | Unidade | Responsabilidade | Fonte verificável | Não é sua responsabilidade |
 |---|---|---|---|
-| OpenKore externo (Perl) | Escolher ações, produzir/consumir pacotes, usar seu próprio xKore 1 | `README.md` da raiz e [decisões](RESEARCH_DECISIONS.md) | O relay **não** deve reimplementar o bot/xKore |
+| OpenKore externo (Perl) | Escolher ações, produzir/consumir pacotes, usar seu próprio xKore 1 | `README.md` da raiz e [decisões](RESEARCH_STATUS.md#decisões-vigentes) | O relay **não** deve reimplementar o bot/xKore |
 | Driver `relay_capture_linux.py`/`relay/` | Conectar ao Gadget, interpretar eventos, manter ordem e identidade de conexões, reconstruir/validar pacotes, enquadrar XKore, opcionalmente pedir escrita ao cliente | `relay/runtime.py`, `relay/wire_feed.py`, `relay/relay.py`, `relay/writeback.py` | Não tentar cifrar tráfego com algoritmo não demonstrado |
 | Agente `agent/relay_hook_linux.js` | Instrumentação Frida in-process sob Wine/Proton; relatar `recvmsg`/`sendmsg`, snapshots e observações opcionais, instalar/remover sondas de execução sob controle | `agent/relay_hook_linux.js`, `relay/protocol.py` | Não deve bloquear o jogo com varreduras extensas de memória |
 | Cliente uaRO/Gepard | Produz/cifra pacotes no caminho real e mantém estado operacional de protocolo durante xKore 1 | [arquitetura legada](HISTORY/ARCHITECTURE_LEGACY.md) §§2–10, controles documentados | Não há prova da função F criptográfica para implementação sem cliente |
-| Futuro plugin OpenKore | Quando fundamentado, manejar protocolo/sessão no xKore 0 **dentro do projeto OpenKore** | [decisões](RESEARCH_DECISIONS.md) | Não pressupõe backend xKore 0 neste repositório |
+| Futuro plugin OpenKore | Quando fundamentado, manejar protocolo/sessão no xKore 0 **dentro do projeto OpenKore** | [decisões](RESEARCH_STATUS.md#decisões-vigentes) | Não pressupõe backend xKore 0 neste repositório |
 
 ```text
  servidor uaRO  ◄──── cliente uaRO (Wine/Proton) ── Frida Gadget ──► driver Python ──► OpenKore xKore 1
@@ -61,7 +61,7 @@ A figura é **esquemática**: nunca indica um canal direto de envio da rede pelo
 3. O driver sanitiza login/HTTP e dados sensíveis (`relay/safety.py`), e `ClientSendFeed` transmite somente material que atenda aos requisitos de fidelidade, enquadrado como `S`.
 4. No modo de escrita, `--feed-send` é automaticamente desativado com `--inject`, para evitar recirculação de pacotes enviados pelo próprio cliente (fonte: [arquitetura histórica §6](HISTORY/ARCHITECTURE_LEGACY.md)).
 
-**Atenção:** um `sendmsg` cujo retorno coincide com o tamanho de `035F` é evidência de transporte **correlacionado**, não prova de identidade do conteúdo sem buffer/fonte independente ([pré-condições](MOVEMENT_035F_PRECONDITIONS.md) §5).
+**Atenção:** um `sendmsg` cujo retorno coincide com o tamanho de `035F` é evidência de transporte **correlacionado**, não prova de identidade do conteúdo sem buffer/fonte independente ([pré-condições](HISTORY/MOVEMENT_COMPLETE.md#source-docs-movement-035f-preconditions-md) §5).
 
 ## 5. Caminhos de escrita e sincronização
 
@@ -94,7 +94,7 @@ O modo combinado distribui `035f` ao merge e os demais ao `SendPacket`, mantendo
 
 **Não confundir bases:** RVA do PE `uaRO.exe` em `0x400000` versus offsets do código anônimo em `0x401000` (diferença `0x1000`); base da DLL Gepard muda ao relogar. **Não hardcodar absolutos** para outros builds.
 
-**Leitura corrigida de §13 (`888764a`, preservado no pull):** houve conteúdo de buffer compatível com o destino no trap **anterior** ao store, sem prova de escrita concluída, pacote finalizado, envio ou resposta. O dispatcher tem epílogo nativo `ret 0x34` (52 bytes), enquanto a chamada usada empilha 44 bytes: desequilíbrio de 8 bytes na versão inicial. O ensaio posterior de 52 bytes (§13.5, `7a64581`) também travou, refutando nesse recorte a explicação exclusivamente por esses 8 bytes. Reentrância/contexto permanecem hipóteses. Não tratar o endereço de retorno Gepard como prova de VM sem retorno. H2/H3 continuam não isoladas; reentrância permanece hipótese. As exclusões de §12 continuam restritas ao callsite e aos 1024 B bidirecionais/128 B do registro global; TLS, indireções e offsets fora da cobertura não foram excluídos. O gate com constante `0x15E` tem unidade não identificada. Estudos completos: [MOVEMENT_035F_INVESTIGATION](MOVEMENT_035F_INVESTIGATION.md), [MOVEMENT_035F_PRECONDITIONS](MOVEMENT_035F_PRECONDITIONS.md).
+**Leitura corrigida de §13 (`888764a`, preservado no pull):** houve conteúdo de buffer compatível com o destino no trap **anterior** ao store, sem prova de escrita concluída, pacote finalizado, envio ou resposta. O dispatcher tem epílogo nativo `ret 0x34` (52 bytes), enquanto a chamada usada empilha 44 bytes: desequilíbrio de 8 bytes na versão inicial. O ensaio posterior de 52 bytes (§13.5, `7a64581`) também travou, refutando nesse recorte a explicação exclusivamente por esses 8 bytes. Reentrância/contexto permanecem hipóteses. Não tratar o endereço de retorno Gepard como prova de VM sem retorno. H2/H3 continuam não isoladas; reentrância permanece hipótese. As exclusões de §12 continuam restritas ao callsite e aos 1024 B bidirecionais/128 B do registro global; TLS, indireções e offsets fora da cobertura não foram excluídos. O gate com constante `0x15E` tem unidade não identificada. Estudos completos: [MOVEMENT_035F_INVESTIGATION](HISTORY/MOVEMENT_COMPLETE.md#source-docs-movement-035f-investigation-md), [MOVEMENT_035F_PRECONDITIONS](HISTORY/MOVEMENT_COMPLETE.md#source-docs-movement-035f-preconditions-md).
 
 ## 8. Limites do conhecimento da cifra e dos controles
 
@@ -112,7 +112,7 @@ Detalhes operacionais em [OPERATIONS](OPERATIONS.md); conjunto offline `bash scr
 
 O histórico integral da arquitetura foi movido para [HISTORY/ARCHITECTURE_LEGACY.md](HISTORY/ARCHITECTURE_LEGACY.md);
 o histórico Gepard sanitizado está em [HISTORY/GEPARD_LEGACY.md](HISTORY/GEPARD_LEGACY.md).
-Os caminhos de raiz são redirecionamentos. Mapa e prova de preservação em [DOCUMENTATION_AUDIT.md](DOCUMENTATION_AUDIT.md).
+Os caminhos de raiz antigos foram arquivados. Mapa e prova de preservação em [DOCUMENTATION_AUDIT.md](HISTORY/STATUS_AND_AUDIT.md#source-docs-documentation-audit-md).
 
 Âncoras verificáveis na revisão local: `relay/runtime.py:35` (fila), `relay/wire_feed.py:47`
 (conexões), `relay/protocol.py:124` (identidade), `relay/relay.py:14` (frame) e
@@ -145,7 +145,7 @@ protegido por Themida/WinLicense 3.XX; `gepard.dll` usa VMProtect. Foram analisa
 mesmos arquivos usados nas pesquisas atuais. Isso identifica os protetores dos arquivos,
 sem atribuir automaticamente funções ou regiões anônimas à virtualização de um deles.
 Origem: commit `77954b2`, incorporado em `origin/main@0a29193`.
-Relatório completo: [PROTECTION_FINGERPRINT_DIE.md](PROTECTION_FINGERPRINT_DIE.md).
+Relatório completo: [PROTECTION_FINGERPRINT_DIE.md](CIPHER_INVESTIGATION.md#original-docs-protection-fingerprint-die-md).
 
 ## 13. Fechamento funcional de movimento e ações — 2026-10-17
 
@@ -155,4 +155,4 @@ O fluxo de movimento atual usa `--move-dispatch` para levar o destino do OpenKor
 
 **Bug corrigido — primeiro byte:** `agent/relay_hook_linux.js:481-534` demonstra que a escrita `bodyp.writeByteArray(body)` precedia um store que ainda escrevia `bl` derivado do corpo **original** do cliente em `body[0]`. O `_fix0`, executado no hit seguinte, corrige o resultado por XOR `c0 ^ orig0 ^ our0`. Falha funcional anteriormente atribuída à seleção do alvo ou à coordenação de movimento foi **superada** pela correção desse byte. O responsável confirmou ataque e skills automáticos funcionando.
 
-**Fronteira intacta:** cliente responsável por criptografia, sessão e envio; o relay não gera o keystream. A investigação da cifra permanece aberta e é a única linha ativa. Detalhes: [ACTION_0437_0438_INVESTIGATION](ACTION_0437_0438_INVESTIGATION.md), [CIPHER_INVESTIGATION](CIPHER_INVESTIGATION.md).
+**Fronteira intacta:** cliente responsável por criptografia, sessão e envio; o relay não gera o keystream. A investigação da cifra permanece aberta e é a única linha ativa. Detalhes: [ACTION_0437_0438_INVESTIGATION](HISTORY/ACTIONS_COMPLETE.md#source-docs-action-0437-0438-investigation-md), [CIPHER_INVESTIGATION](CIPHER_INVESTIGATION.md).

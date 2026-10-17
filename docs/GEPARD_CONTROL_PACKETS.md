@@ -404,15 +404,19 @@ injetava antes de ações com alvo. O `0368` pré-ação passou a ser **gated** 
 **REFUTADO (responsável, 2026-10-16):** a hipótese "o `0368` pré-ação era o bloqueio" é **falsa**.
 **Com ou sem `0368` o `SendPacket`/`sendmsg` da ação sempre ocorria**; o problema (ação enviada mas
 **sem efeito** no servidor) é **anterior** ao `0368`. Consequência: rotear `0437`/`0438` pela
-`SendPacket` crua do cliente **não executa** ataque/perícia. A flag `--target-select` e o `0368` em
-`SKIP_IDS` continuam no código (comportamento operacional válido: o cliente já emite o `0368` sozinho
-ao passar o mouse/clicar), mas **não** são solução para ataque/perícia.
+`SendPacket` crua do cliente **não executa** ataque/perícia. A flag `--target-select`
+continua opcional, mas não é solução para ataque/perícia. **Resultado posterior
+(2026-10-17, confirmação live do responsável):** o filtro legado `SKIP_IDS`
+descartava os pedidos `0368` de identificação feitos pelo OpenKore, causando
+`[Unknown]` nos nomes de monstros. O filtro e a flag transitória `--noskipids`
+foram removidos após o teste bem-sucedido. Isso não valida a hipótese de
+pré-select obrigatório para o ataque.
 
 Fatos que permanecem:
 
 - **`0368` (CZ_REQNAME_BYGID):** OBSERVADO como **pedido de nome por GID** emitido pelo cliente ao
-  passar o mouse/clicar num alvo — não um "lock de alvo". Por isso está em `SKIP_IDS`
-  (`relay/writeback.py`) no sentido consumidor→servidor.
+  passar o mouse/clicar num alvo — não um "lock de alvo". Também é
+  encaminhado quando solicitado pelo consumidor, para identificar entidades.
 - **`0437` sentar/levantar (GID=0):** OBSERVADO funcionando via client SendPacket.
 - **`0437` ataque (GID≠0) e `0438` perícia via SendPacket crua:** pacote sai, **ação não executa**
   (relato do responsável; mecanismo do servidor NÃO VERIFICADO).

@@ -32,9 +32,6 @@ class WriteBack:
     #                                                    cast cancela o anterior, então o consumidor não
     #                                                    pode repeti-las em rajada (ver _on_inbound_sendcall).
     ACTION_MERGE_IDS = (0x0437, 0x0438, 0x0af4)         # ações com alvo roteáveis ao merge (--action-merge)
-    SKIP_IDS = (0x0368, 0x0369, 0x0193, 0x0094, 0x0360)   # tagarelice que o cliente já emite sozinho
-    #                                                    (pedido de nome por GID / tick): não reinjetamos
-    #                                                    a do consumidor, senão floda o servidor (gepard).
 
     # ---- configuração do ponto de cifragem --------------------------------------------------
     def _build_scramble(self, opts):
@@ -96,10 +93,8 @@ class WriteBack:
         # por esta janela, NO DRENO (arm_sendcall envia cast_ms). 0 desliga. (Política do lado do
         # consumidor por natureza; vive aqui até o plugin dele fazê-la.)
         self._cast_throttle = float(getattr(opts, 'cast_throttle', 0.0) or 0.0)
-        # GID do último alvo que já selecionamos (0368). Só reemitimos o 0368 quando o alvo MUDA:
-        # como todo 0368 que chega ao servidor é nosso (o do cliente/consumidor cai em SKIP_IDS),
-        # este cache reflete a seleção do lado do servidor. Sem ele, cada ataque/perícia repetida no
-        # mesmo alvo reemitiria um 0368 e flodaria o gepard (o que SKIP_IDS existe para evitar).
+        # Cache somente para --target-select: evita pedidos extras 0368 repetidos.
+        # Solicitações 0368 originadas pelo consumidor seguem normalmente.
         self._last_select_gid = None
         if not (getattr(opts, 'inject', False) and self.relay is not None):
             return
@@ -366,8 +361,6 @@ class WriteBack:
             print(f"[inject] skip typ={typ!r} len={len(payload)} (need an 'S' packet with an id)")
             return
         pid = payload[0] | payload[1] << 8
-        if pid in self.SKIP_IDS:                       # o cliente já emite isso; não reinjetar (anti-flood)
-            return
         # O paceamento dos casts (0438/0af4) é feito no DRENO do agente, não aqui: o consumidor manda
         # re-tentativas espaçadas que passariam deste filtro mas, enfileiradas, drenam juntas e cada
         # cast cancela o anterior. O agente deixa passar um cast por janela (ver cast_ms em sendcall).

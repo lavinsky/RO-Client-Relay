@@ -55,6 +55,13 @@ Estas flags **não** estão em `relay_capture.conf` (entram pelo CLI; `relay_cap
 inalterado). Uso live contra o cliente exige escopo explicitamente aprovado — validação offline por
 padrão.
 
+**Fluxo de identificação (resultado live confirmado em 2026-10-17):** os pacotes de saída
+`0368/0369/0193/0094/0360` do consumidor seguem normalmente via `SendPacket`,
+sem lista de descarte. A política legada `SKIP_IDS` e a flag temporária
+`--noskipids` foram removidas após confirmação de que esse encaminhamento
+resolveu o sintoma `[Unknown]` da identificação de monstros.
+O `--drop-ids` do fluxo servidor→consumidor e o timeout da FIFO continuam independentes.
+
 | Flag | Default | Efeito |
 |---|---|---|
 | `--move-dispatch` | OFF | Roteia o `035F` (CZ_REQUEST_MOVE) do consumidor para o **dispatcher nativo de movimento do cliente** em vez do merge pré-XOR: o cliente monta/cifra/envia o próprio `035F` e o `035F` original é dropado. Usa **DR2+DR3**; requer `--no-send-watch`. Ref.: [MOVEMENT_035F_PRECONDITIONS §13.11](HISTORY/MOVEMENT_COMPLETE.md#source-docs-movement-035f-preconditions-md). |

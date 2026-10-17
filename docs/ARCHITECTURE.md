@@ -131,12 +131,15 @@ não descreve o código atual. Frequência e latência atuais não foram medidas
 de `0437` (mínimo 7, GID não zero). Somente com `--target-select` (default OFF desde 2026-10-16)
 envia seleção `0368` antes da ação, e apenas quando o GID muda; cache `_last_select_gid` evita
 flood. A remoção do `0368` **não** fez ataque/perícia executarem (REFUTADO, ver
-[GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md)). IDs `0368/0369/0193/0094/0360` recebidos do
-consumidor são ignorados nesse caminho (`:23`, `:234`). No dreno do agente, `0438/0af4`
+[GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md)). **Atualização confirmada live
+(2026-10-17):** os IDs `0368/0369/0193/0094/0360` do consumidor são encaminhados
+sem filtro. O antigo descarte impedia a identificação de monstros e causava
+`[Unknown]`; isso é independente da hipótese de `0368` como pré-select do ataque.
+No dreno do agente, `0438/0af4`
 com intervalo desde o último cast menor que `castMs` são descartados, sem reenfileirar (`agent/relay_hook_linux.js:617`).
 A configuração de 0,8 s vira 800 ms; isso é política atual de writeback, não descoberta
 sobre requisitos criptográficos do servidor. `tests/test_writeback.py:63` cobre seleção,
-deduplicação, IDs ignorados e encaminhamento de `cast_ms` por doubles.
+deduplicação, pedidos de identificação e encaminhamento de `cast_ms` por doubles.
 
 ## 12. Proteções identificadas no build atual — conteúdo integrado pelo pull
 

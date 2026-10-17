@@ -49,7 +49,6 @@ class FakeSend:
     SKILL_ID = Capture.SKILL_ID
     ACT_ID = Capture.ACT_ID
     CAST_IDS = Capture.CAST_IDS
-    SKIP_IDS = Capture.SKIP_IDS
     def __init__(self):
         self.posted = []
 
@@ -62,9 +61,15 @@ class FakeSend:
 
 from types import SimpleNamespace
 s = FakeSend()
-# tagarelice do consumidor (pedido de nome 0368) NÃO é reinjetada
-s._on_inbound_sendcall(bytes.fromhex('680384c18e06'), 'S')
-assert s.posted == [], s.posted
+# Pedidos de identificação/sincronização passam por padrão; quadros R não são injetados.
+for packet in ('680384c18e06', '690384c18e06', '930184c18e06',
+               '940084c18e06', '600301020304'):
+    s._on_inbound_sendcall(bytes.fromhex(packet), 'S')
+    assert s.posted == [{'type': 'sendcall-emit', 'data': packet}], s.posted
+    s.posted.clear()
+    s._on_inbound_sendcall(bytes.fromhex(packet), 'R')
+    assert s.posted == [], s.posted
+print('consumer metadata and sync forwarded by default ok')
 # DEFAULT (--target-select off): ação com alvo NÃO emite 0368 (ele quebra a ação; o 0437/0438 já
 # carrega o GID). Observado live: sem o 0368 o ataque/perícia funciona.
 # ataque 0437 (GID 854b5c07 != 0): só o 0437
@@ -112,7 +117,6 @@ class FakeSplit:
     SKILL_ID = Capture.SKILL_ID
     ACT_ID = Capture.ACT_ID
     CAST_IDS = Capture.CAST_IDS
-    SKIP_IDS = Capture.SKIP_IDS
     def __init__(self):
         self.posted = []
 

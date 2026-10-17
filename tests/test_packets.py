@@ -81,6 +81,7 @@ from relay.packets import packet_len
 from _boot import DATA
 
 defaults = parse_args([])
+assert not hasattr(defaults, 'noskipids')  # filtro legado removido
 drop = parse_ids(defaults.drop_ids)
 assert {0x4754, 0x5395, 0x09fd, 0x09ff} <= drop, drop
 assert parse_ids(parse_args(['--drop-ids', '09fd,09ff']).drop_ids) == {0x09fd, 0x09ff}

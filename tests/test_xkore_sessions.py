@@ -1,5 +1,6 @@
 """Offline session ordering and fragmented XKore frames."""
 import pathlib
+import socket
 import sys
 import threading
 import unittest
@@ -71,6 +72,59 @@ class Sessions(unittest.TestCase):
         r._inbound(framed, old)
         self.assertEqual(r._in, b'')
         self.assertEqual(len(seen), 2)
+
+    def test_capacity_preserves_frame_order_and_bytes(self):
+        r = self.make()
+        r.sock = source = Mock()
+        accepted = []
+        capacity = [False]
+        def receive(payload, typ):
+            if not capacity[0]:
+                return False
+            accepted.append((payload, typ))
+            return True
+        r.on_inbound = receive
+        frames = r.frame(b'one', 'S') + r.frame(b'two', 'S')
+        r._inbound(frames, source)
+        self.assertTrue(r._inbound_paused)
+        self.assertEqual(r._in, frames)
+        r._check_dead()
+        source.recv.assert_not_called()
+        capacity[0] = True
+        r._inbound(b'', source)
+        self.assertEqual(accepted, [(b'one', 'S'), (b'two', 'S')])
+        self.assertEqual(r._in, b'')
+        self.assertFalse(r._inbound_paused)
+
+    def test_paused_shutdown_discards_unread_and_buffered_commands(self):
+        r = self.make()
+        source, peer = socket.socketpair()
+        self.addCleanup(source.close)
+        self.addCleanup(peer.close)
+        r.sock = source
+        r.on_inbound = lambda payload, typ: False
+        r._inbound(r.frame(b'blocked', 'S'), source)
+        peer.sendall(r.frame(b'unread', 'S'))
+        peer.shutdown(socket.SHUT_WR)
+        r._wait_capacity(source)
+        self.assertIsNone(r.sock)
+        self.assertEqual(r._in, b'')
+        self.assertFalse(r._inbound_paused)
+
+    def test_capacity_notification_retries_without_new_socket_data(self):
+        r = self.make()
+        source, peer = socket.socketpair()
+        self.addCleanup(source.close)
+        self.addCleanup(peer.close)
+        r.sock = source
+        r.on_inbound = lambda payload, typ: False
+        r._inbound(r.frame(b'blocked', 'S'), source)
+        seen = []
+        r.on_inbound = lambda payload, typ: seen.append(payload)
+        r.resume_inbound()
+        r._wait_capacity(source)
+        self.assertEqual(seen, [b'blocked'])
+        self.assertFalse(r._inbound_paused)
 
     def test_send_failure_disconnect_once(self):
         callback = Mock()

@@ -35,10 +35,15 @@ class Routes(unittest.TestCase):
         p = bytes.fromhex('efbe001122334455')
         c._on_inbound_split(p, 'S')
         self.assertEqual(c.posted, [{'type':'sendcall-emit','data':p.hex()}])
+        # OpenKore's CZ_REQNAME_BYGID must reach SendPacket so it can populate
+        # actor names; a separate client hover request does not satisfy it.
+        request_name = bytes.fromhex('6803a1b2c3d4')
+        c._on_inbound_split(request_name, 'S')
+        self.assertEqual(c.posted[-1], {'type':'sendcall-emit','data':request_name.hex()})
         for pid in c.SKIP_IDS:
             c._on_inbound_split(pid.to_bytes(2,'little')+b'fixture', 'S')
         c._on_inbound_split(p, 'R')
-        self.assertEqual(len(c.posted), 1)
+        self.assertEqual(len(c.posted), 2)
         self.assertEqual(sendcall_msg(0x816640), {'type':'sendcall','rva':0x816640,'module':'uaRO.exe'})
 
     def test_invalid_walk_and_no_route(self):

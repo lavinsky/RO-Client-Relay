@@ -40,9 +40,19 @@ class Relay:
         self.on_disconnect = on_disconnect             # callback() once per disconnected session
         self.generation = 0
         self._in = b''                                 # reassembly buffer for inbound frames
+        self._inbound_paused = False
+        self._wake_read, self._wake_write = socket.socketpair()
+        self._wake_read.setblocking(False)
+        self._wake_write.setblocking(False)
         self._thread = None
         if autostart:
             self.start()
+
+    def __del__(self):
+        for name in ('_wake_read', '_wake_write'):
+            wake = getattr(self, name, None)
+            if wake is not None:
+                wake.close()
 
     def start(self):
         """Start the connector once, after the owner wires session callbacks."""
@@ -59,6 +69,9 @@ class Relay:
                 self._connect()
                 if self.sock is None:
                     time.sleep(1)
+                continue
+            if self._inbound_paused:
+                self._wait_capacity(s)
                 continue
             try:                                       # wake as soon as the consumer sends (or closes),
                 ready = select.select([s], [], [], 1.0)[0]   # so inbound frames aren't held up to 1 s
@@ -78,6 +91,7 @@ class Relay:
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         with self.lock:
             self._in = b''
+            self._inbound_paused = False
             if self.aligner:
                 self.aligner.reset()
             self.generation += 1
@@ -96,58 +110,93 @@ class Relay:
         s = self.sock
         if s is None:
             return
-        data = b''
+        if self._inbound_paused:
+            return
         try:
-            while True:                                # drain the consumer->us
-                d = s.recv(0x1000, socket.MSG_DONTWAIT)
-                if d == b'':
-                    # Once EOF is known, no remaining command belongs to an
-                    # operational consumer. Cancel rather than dispatch the tail.
+            data = s.recv(0x1000, socket.MSG_DONTWAIT)
+            if not data:
+                raise ConnectionResetError('peer closed')
+            # Observe an already queued EOF before dispatching this chunk.
+            try:
+                if s.recv(1, socket.MSG_DONTWAIT | socket.MSG_PEEK) == b'':
                     raise ConnectionResetError('peer closed')
-                data += d
+            except BlockingIOError:
+                pass
+            self._inbound(data, s)
+            return
         except BlockingIOError:
-            if data:                                   # nothing more waiting = still alive
-                self._inbound(data, s)                 # reject bytes from an obsolete session
             return
         except OSError:
             print('[relay] connection dropped; will reconnect')
         self._drop_sock(s)
 
+    def resume_inbound(self):
+        """Notify capacity availability without acquiring transport/command locks."""
+        try:
+            self._wake_write.send(b'\x00')
+        except (BlockingIOError, OSError):
+            pass  # A queued wakeup already guarantees a retry.
+
+    def _wait_capacity(self, source):
+        """Wait for actual readiness or peer shutdown, including EOF behind unread bytes."""
+        descriptor = source.fileno()
+        poller = select.poll()
+        closed = select.POLLRDHUP | select.POLLHUP | select.POLLERR | select.POLLNVAL
+        try:
+            poller.register(source, closed)
+            poller.register(self._wake_read, select.POLLIN)
+            events = dict(poller.poll())
+        except (OSError, ValueError):
+            self._drop_sock(source)
+            return
+        if events.get(descriptor, 0) & closed:
+            self._drop_sock(source)
+            return
+        if self._wake_read.fileno() in events:
+            try:
+                while self._wake_read.recv(4096):
+                    pass
+            except BlockingIOError:
+                pass
+            self._inbound(b'', source)
+
     def _inbound(self, data, source=None):
-        """The consumer's reply bytes. With no on_inbound handler they are discarded (observation
-        only, the original behaviour). With one, whole frames are handed over as (payload, typ):
-        xkore1 deframes typ+len+payload ('S' = a client->server packet to inject); raw hands the
-        bytes over as one 'S' payload."""
+        """Deliver frames transactionally; False retains the complete frame for retry.
+
+        The socket reader stops while paused. At most one maximum-size partial frame
+        plus one 4096-byte read is retained; TCP applies pressure to the producer.
+        """
         if self.on_inbound is None:
             return
         with self.lock:
             if source is not None and self.sock is not source:
                 return
             self._in += data
-            frames = self._deframe()
             generation = getattr(self, 'generation', 0)
-            for payload, typ in frames:
-                if generation != getattr(self, 'generation', 0) or (source is not None and self.sock is not source):
-                    break
+            self._inbound_paused = False
+            while self._in:
+                if self.fmt == 'xkore1':
+                    if len(self._in) < 3:
+                        break
+                    typ = chr(self._in[0])
+                    length = int.from_bytes(self._in[1:3], 'little')
+                    size = 3 + length
+                    if len(self._in) < size:
+                        break
+                    payload = self._in[3:size]
+                else:
+                    payload, typ, size = self._in, 'S', len(self._in)
                 try:
-                    self.on_inbound(payload, typ)
+                    accepted = self.on_inbound(payload, typ)
                 except Exception as e:
                     print(f'[relay] inbound handler: {type(e).__name__}: {e}')
-
-    def _deframe(self):
-        """Whole frames consumed from self._in as [(payload, typ)]; a partial frame stays buffered."""
-        if self.fmt != 'xkore1':
-            d, self._in = self._in, b''
-            return [(d, 'S')] if d else []
-        out, buf, pos = [], self._in, 0
-        while pos + 3 <= len(buf):
-            typ, ln = chr(buf[pos]), buf[pos + 1] | buf[pos + 2] << 8
-            if pos + 3 + ln > len(buf):
-                break                                  # rest of this frame hasn't arrived yet
-            out.append((bytes(buf[pos + 3:pos + 3 + ln]), typ))
-            pos += 3 + ln
-        self._in = buf[pos:]
-        return out
+                    accepted = None
+                if generation != getattr(self, 'generation', 0) or (source is not None and self.sock is not source):
+                    break
+                if accepted is False:
+                    self._inbound_paused = True
+                    break
+                self._in = self._in[size:]
 
     def _drop_sock(self, s):
         with self.lock:
@@ -155,6 +204,8 @@ class Relay:
                 return
             self.sock = None
             self._in = b''
+            self._inbound_paused = False
+            self.resume_inbound()
             if self.aligner:
                 self.aligner.reset()
             try:

@@ -74,11 +74,16 @@ O verbose discrimina foco e tecla. A recuperação de atores preserva os tempos
 de evidência; não foi reduzida para melhorar benchmark. Confira a
 [comparação reproduzível](REFACTOR_REVIEW.md#latência-reprodução-e-limites).
 
-Capacidade é 64 comandos incluindo o corrente. Excesso/falha não significa
-transmissão. Se o cliente não produzir o carrier, o comando permanece pendente
-e bloqueia os seguintes por prontidão; cancelar a sessão limpa esse estado.
+Capacidade de trabalho é 64 comandos incluindo o corrente. Se a interface estiver
+cheia, o quadro XKore completo fica retido no transporte e a leitura TCP pausa até
+uma vaga abrir; o relay não descarta o comando nem cria uma fila sem limite. Se o
+cliente não produzir o carrier, o comando corrente continua pendente e bloqueia os
+seguintes por prontidão; cancelar a sessão limpa esse estado e descarta quadros
+retidos da conexão encerrada. Falha/retorno local não significa transmissão.
 O caminho genérico usa SendPacket, sem alegação de cobertura funcional universal.
-Omissões anti-duplicação `0368/0369/0193/0094/0360` são registradas. A injeção em
+O pedido de nome `0368` do consumidor segue para SendPacket; o pedido natural do
+cliente ao passar o mouse não substitui a consulta do OpenKore. Omissões
+anti-duplicação `0369/0193/0094/0360` são registradas. A injeção em
 raw é rejeitada: o transporte de comandos precisa dos frames XKore 1.
 
 ## Pesquisa e testes

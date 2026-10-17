@@ -44,7 +44,7 @@ class PipelineTests(unittest.TestCase):
         p.accept(b'\x38\x04fixture','S')
         old=dict(tag='SCRAMBLE',hit='consumed',token=p.current['token'],epoch=p.epoch)
         p.session(False)
-        self.assertFalse(p.accept(b'\x37\x04fixture','S'))
+        self.assertIsNone(p.accept(b'\x37\x04fixture','S'))
         p.session(True)
         p.accept(b'\x37\x04new','S')
         self.assertFalse(p.observe(old))
@@ -61,6 +61,14 @@ class PipelineTests(unittest.TestCase):
         self.ack(p,hit='error')
         self.assertEqual(len(d),2)
         self.assertEqual(len(p.pending),p.CAPACITY-2)
+
+    def test_capacity_rejection_is_distinguishable_from_disconnect(self):
+        p,*_=self.make()
+        for _ in range(p.CAPACITY):
+            p.accept(b'\x37\x04fixture','S')
+        self.assertIs(p.accept(b'\x37\x04overflow','S'), False)  # transport must pause, retain frame
+        p.session(False)
+        self.assertIsNone(p.accept(b'\x37\x04old-session','S'))  # disconnect must drop, never retain
 
     def test_next_body_waits_for_native_consumption_and_key_release(self):
         for release_first in (False,True):

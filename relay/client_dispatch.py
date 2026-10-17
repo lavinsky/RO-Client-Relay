@@ -23,6 +23,7 @@ class CommandPipeline:
 
     def __init__(self, dispatch, reset, log, armed=None, clock=time.monotonic_ns):
         self.dispatch, self.reset, self.log, self.armed = dispatch, reset, log, armed
+        self.resume = None
         self.clock = clock
         self.lock = threading.RLock()
         self.epoch = 0
@@ -42,15 +43,21 @@ class CommandPipeline:
             self.current = None
             self.reset(self.epoch, active)
             self.log({'tag': 'SESSION', 'epoch': self.epoch, 'active': active, 'cancelled': count})
+            self._resume_inbound()
 
     def accept(self, payload, typ):
         if typ != 'S' or len(payload) < 2:
-            return False
+            return None
         with self.lock:
-            if not self.active or len(self.pending) + bool(self.current) >= self.CAPACITY:
-                self.log({'tag': 'COMMAND', 'hit': 'error', 'e': 'disconnected' if not self.active
-                          else 'client readiness capacity exhausted', 'epoch': self.epoch,
-                          'code': 'COMMAND_CAPACITY' if self.active else 'COMMAND_DISCONNECTED',
+            if not self.active:
+                self.log({'tag': 'COMMAND', 'hit': 'drop', 'e': 'disconnected', 'epoch': self.epoch,
+                          'code': 'COMMAND_DISCONNECTED',
+                          'id': int.from_bytes(payload[:2], 'little'), 'len': len(payload)})
+                return None
+            if len(self.pending) + bool(self.current) >= self.CAPACITY:
+                self.log({'tag': 'COMMAND', 'hit': 'error', 'e': 'client readiness capacity exhausted',
+                          'epoch': self.epoch,
+                          'code': 'COMMAND_CAPACITY',
                           'id': int.from_bytes(payload[:2], 'little'), 'len': len(payload),
                           **self._blocked_metadata()})
                 return False
@@ -59,6 +66,12 @@ class CommandPipeline:
                                  'epoch': self.epoch, 'received_ns': self.clock()})
             self._next()
             return True
+
+    def _resume_inbound(self):
+        """Wake transport after a capacity/session change; wakeup must not take Relay.lock."""
+        resume = self.resume
+        if resume:
+            resume()
 
     def _blocked_metadata(self):
         """Describe readiness without exposing packet bodies or native pointers. Lock held."""
@@ -91,6 +104,7 @@ class CommandPipeline:
                           'e': type(e).__name__})
             if waiting is False and self.current is c:
                 self.current = None
+                self._resume_inbound()
             elif self.current is c:
                 break
 
@@ -128,6 +142,7 @@ class CommandPipeline:
             if c.get('native_done') and (not c.get('input_pending') or c.get('input_done')):
                 self.current = None
                 self._next()
+                self._resume_inbound()
             return True
 
     def measure(self, stage, value):
@@ -162,6 +177,7 @@ class ClientDispatcher:
         self.commands = CommandPipeline(self._dispatch_command, self._reset_session,
                                         self.log.write, self._carrier_armed)
         if self.relay:
+            self.commands.resume = getattr(self.relay, 'resume_inbound', None)
             self.relay.on_inbound = self.commands.accept if self._route else None
             self.relay.on_connect = lambda: self.commands.session(True)
             self.relay.on_disconnect = self.capture.suspend_commands
@@ -188,9 +204,10 @@ class ClientDispatcher:
 
     WALK_ID = 0x035f                                   # andar: único pacote roteado para o merge
     ACTION_MERGE_IDS = (0x0437, 0x0438, 0x0af4)         # ações com alvo roteáveis ao merge (--action-merge)
-    SKIP_IDS = (0x0368, 0x0369, 0x0193, 0x0094, 0x0360)   # tagarelice que o cliente já emite sozinho
-    #                                                    (pedido de nome por GID / tick): não reinjetamos
-    #                                                    a do consumidor, senão floda o servidor (gepard).
+    # The client can also request a name on hover, but OpenKore's 0368 carries
+    # its own GID lookup request and must reach the server through SendPacket.
+    # Keep only packets whose duplicate policy was established independently.
+    SKIP_IDS = (0x0369, 0x0193, 0x0094, 0x0360)
 
     # ---- configuração do ponto de cifragem --------------------------------------------------
     def _build_scramble(self, opts):

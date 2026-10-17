@@ -113,6 +113,24 @@ SEND cifrado a um token por tamanho; correlação de resposta/rede fica **NÃO
 VERIFICADA** quando não há identidade independente. Não atribuir esses tempos a
 cifra ou rede externa por subtração especulativa.
 
+### Diagnóstico de fila e consulta de atores — 2026-10-17
+
+Na rodada autorizada anterior, uma ação ficou armada e teve `INPUT released` em
+182 ms; o evento nativo `SCRAMBLE consumed` veio 23,841 s após o armamento. A
+amostra confirma que o dispatcher aguardou o evento terminal nativo, não apenas
+a duração configurada de 120 ms da tecla. Isso é compatível com o bloqueio da
+cabeça da fila relatado pelo responsável, mas não identifica por que o cliente
+demorou a produzir o evento. O caminho continua serializado pela integridade do
+carrier; não foi adicionado timeout que pudesse avançar sem consumo confirmado.
+
+Foi corrigida uma perda independente: ao chegar à capacidade 64, o transporte
+retirava quadros do buffer mesmo quando o dispatcher recusava o comando. Agora
+retém o quadro e os seguintes em ordem, pausa as leituras TCP até abrir capacidade
+e descarta esse estado somente no encerramento da conexão. O pedido `0x0368` vindo
+do OpenKore também deixa de ser omitido pelo filtro genérico, para permitir a
+consulta do GID solicitado. Testes offline cobrem ambos; lista de atores e o
+motivo do atraso nativo seguem sem validação ao vivo nesta revisão.
+
 Origem dos ~400 ms mostrados pelo OpenKore: **NÃO IDENTIFICADA no consumidor
 instalado**, cuja revisão/plugin de medição não foi fornecida. Conferido código
 público OpenKore `51de1ddfc4449ae5217f6886de702f87ca934030`:

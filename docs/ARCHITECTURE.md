@@ -69,12 +69,15 @@ injeção exige mensagens de pacote XKore 1; raw é observação.
 | `035F` | dispatcher nativo na thread do cliente | retorno do dispatcher |
 | `0437`, `0438`, `0AF4` | corpo one-shot no carrier natural, pré-XOR | corpo consumido, `_fix0` aplicado quando necessário e tecla liberada |
 | Demais | SendPacket nativa com contexto capturado | retorno da chamada, sem promessa de envio/aceitação |
-| `0368/0369/0193/0094/0360` | omissão observável herdada | cliente já produz esses pedidos; evita duplicação |
+| `0368` | SendPacket genérica | pedido de nome por GID do OpenKore; retorno da função não confirma entrega |
+| `0369/0193/0094/0360` | omissão observável herdada | regras de duplicação separadas permanecem |
 
 Não existe allowlist fechada de quatro pacotes para entrada. O fallback genérico
 não demonstra que todos os pacotes têm suporte funcional no servidor. Pacotes
 especiais com comprimento inválido falham explicitamente. Não se entrega o
 `035F` cru à SendPacket: o cliente monta o movimento no dispatcher funcional.
+`0368` de OpenKore segue pelo caminho genérico: o pedido de nome que o cliente
+emite ao passar o mouse não substitui uma consulta do consumidor para seu GID.
 
 Cada comando tem token e epoch. Só há um comando nativo operacional corrente;
 as pendências limitadas preservam os demais até o evento real de conclusão.

@@ -1,5 +1,41 @@
 # CIFRA — estado operacional
 
+## Rodada de sessão autorizada — GEPARD-SESSION-20261017-01
+
+Nova tarefa do responsável nesta conversa: inventariar login → entrada → dez segundos
+no mapa e investigar controles. Base `d3baabe` com instrumentos locais adicionais;
+builds e resultados canônicos em [GEPARD_CONTROL_PACKETS](../../docs/GEPARD_CONTROL_PACKETS.md).
+
+OBSERVADO: A (login/10 s) = 191 mensagens; B = 113 no recorte final, porém retorno à
+seleção em 3,078 s invalida estadia contínua; D (10 s no mapa atual) = 10 mensagens
+sem movimento/ataque/skills. Catálogo A/B/D: 69 pares direção/ID; 65 declarações de
+parser conhecidas e quatro controles. C aguardou nova entrada por 300 s, expirou e
+foi excluída. Os arquivos originais e limitações de cada revisão foram preservados.
+
+`4754` R/40 B seguido de `C392` S/72 B no login/mapa: papéis de negociação/ACK
+INFERIDOS, corpos opacos. `5395` R/12 B com campos 1/1 compatível com LGP histórico;
+R/16 B com código 4: em seis amostras, @12 acompanhou milissegundos (erro adjacente
+máximo 10 ms em 2.451.850 ms). Relógio INFERIDO; origem/eco ainda desconhecidos.
+@8 não acompanha o tempo; nonce/seed/checksum continuam HIPÓTESES.
+`8280` S/128 B também observado em repouso. Nada identifica o gerador da cifra.
+72 hipóteses literais de referência não produziram ACK plausível; isso não refuta
+a família nem parâmetros/layouts desconhecidos do uaRO.
+
+Artefatos privados 0700/0600: `/tmp/gepard-session-20261017/`; corpos somente dos
+controles, nunca em docs/fixtures. Coletores encerrados, unload/detach confirmados;
+nenhum HW BP/input foi armado. A autorização cobre esta auditoria na instância
+confirmada, não publicação ou escrita no protocolo. Nova repetição manual foi
+solicitada ao responsável após timeout; sem sonda mantida aguardando indefinidamente.
+
+Próximo discriminador científico: consumidor de `5395` código 4, leitura de @8,
+separada do relógio candidato @12, e ligação à inicialização de estado ou temporização;
+não transportar layout/constantes de 2016.
+Instrumentos: `session_packets.py` (captura limitada/metadados e controle de janela),
+`packet_semantics.py` (declarações literais e herança OpenKore).
+Verificações finais: `bash scripts/test-offline.sh` PASS (14 scripts),
+`python3 scripts/validate-research.py` PASS, `python3 scripts/validate-codex.py` PASS,
+`git diff --check` PASS. Histórico anterior preservado abaixo.
+
 
 <!-- CIPHER-SPECIALIST-REFERENCES-2026-10-17 -->
 

@@ -1,5 +1,175 @@
 # Investigação da cifra uaRO/Gepard — 2026-10-15
 
+
+<!-- CIPHER-SPECIALIST-REFERENCES-2026-10-17 -->
+
+<a id="cipher-specialist-20261017"></a>
+
+## Referências especializadas da família Gepard — prioridade vigente (2026-10-17)
+
+### Procedência e alcance epistemológico
+
+**FONTE TÉCNICA ESPECIALIZADA — ALTA CONFIANÇA.** Foram recebidos dois algoritmos reais de **servidores distintos** e uma descrição técnica de como especialistas reconstruíram rotinas Gepard contemporâneas. Os relatos sobre estrutura, variação por servidor e técnica de análise são conhecimento técnico especializado e devem orientar diretamente a pesquisa, não ser tratados como conjectura genérica.
+
+**ALGORITMOS DE REFERÊNCIA FORNECIDOS POR ESPECIALISTA — A e B.** Os exemplos completos estão reproduzidos literalmente abaixo: constantes, inicialização, índice de tabela, operações, ordem, máscaras e corpo do hash. São **variantes reais de referência**, não implementação validada como idêntica ao uaRO.
+
+**PENDENTE DE IDENTIFICAÇÃO NO uaRO.** Ainda não estão demonstrados, para o build investigado, qual variante/arranjo de operações é empregado, quais constantes e seeds lhe correspondem, como se parametrizam as unidades de envio/recepção/sincronização, quais eventos inicializam ou reinicializam o estado e quais bytes do login alimentam esses campos. Isso delimita a aplicabilidade dos exemplos, **sem diminuir sua confiabilidade como referências**.
+
+As variantes foram informadas como representantes de **versões atuais do Gepard**. Entre servidores, a família conserva semelhança matemática, mas diferenças podem atingir **ordem e dependência de operações**, além de constantes e seeds. A informação especializada afirma que seeds/valores de inicialização ficam acessíveis na memória e que as operações de cifra são protegidas por virtualização **VMProtect**. Um pesquisador especializado teria recuperado operações virtualizadas com instrumentação de **hypervisor**, análise de entradas/saídas e *templates* de operações aritméticas/lógicas (`+`, `-`, `*`, `/`, `%`, `^`); foi relatado um fluxo de ferramenta que identifica essas transformações em cerca de **dois minutos**. Esse tempo é desempenho atribuído à ferramenta especializada, **não prazo ou benchmark reproduzido** neste projeto. A aplicação exata dessas técnicas ao build uaRO, em um ponto de execução específico, continua por localizar.
+
+**Mudança estratégica:** identificar **variante, constantes, seed, estado e eventos de transição** de uma família matemática concretamente descrita é agora a linha prioritária, sem exigir como pressuposto a desvirtualização integral da DLL. A linhagem anterior CL/POP/STACK/SLICE permanece evidência observada de *transporte* e de store final, não evidência de identificação da função geradora.
+
+### Variante A — transcrição integral da referência
+
+O bloco a seguir foi preservado **literalmente**, inclusive o identificador inicial `ngt`, o marcador `ALGORITHM_DATA_HASH: None` e os dois `DATA_HASH_CONST_*`. **Não** deduzir desse par de constantes que uma função hash estivesse ativa: o próprio exemplar indica `None` nesse campo.
+
+````text
+ngt
+#define SESSION_CONST_1 0xB9028DC4
+#define SESSION_CONST_2 0xF1359265
+
+#define ALGO_KEY_1 0x0F
+#define ALGO_KEY_2 0x64
+#define ALGO_KEY_3 0xBE
+
+#define DATA_HASH_CONST_1 0xBED5C268
+#define DATA_HASH_CONST_2 0x3B060DE6
+
+
+--------------------------------------------------------------------------------
+ALGORITHM_DATA_HASH:
+--------------------------------------------------------------------------------
+None
+
+
+--------------------------------------------------------------------------------
+ALGORITHM_UNIT_INIT:
+--------------------------------------------------------------------------------
+# Initialize unit keys
+for i in range(256):
+    valueA = (session_const_1 * seed) & 0xffffffff
+    valueB = (session_const_2 * i) & 0xffffffff
+    seed = ((valueA + valueB) & 0xffffffff)
+    seed &= 0xffffffff
+    keys[i] = (seed >> 7) & 0xff
+# Initialize unit positions
+pos1 = seed % 20
+pos2 = seed % 30
+pos3 = seed % 50
+
+--------------------------------------------------------------------------------
+ALGORITHM_UNIT_ENC_DEC:
+--------------------------------------------------------------------------------
+for i in range(data_length):
+    pos1 = (pos1 + ((keys[pos3] - ALGO_KEY_1) & 0xFF)) & 0xFF
+    keys[pos3] = (keys[pos3] ^ pos1) & 0xFF
+    pos2 = (pos2 - ((keys[pos3] * ALGO_KEY_2) & 0xFF)) & 0xFF
+    keys[pos1] = (keys[pos1] ^ pos2) & 0xFF
+    pos2 = (pos2 - ((pos3 * ALGO_KEY_3) & 0xFF)) & 0xFF
+    data[i] ^= keys[pos1]
+    data[i] &= 0xff
+    pos1 = (pos1 ^ ((pos3 + (data_length % 0xFF)) & 0xFF)) & 0xFF
+    pos3 = (pos3 + 1) & 0xFF
+````
+
+### Variante B — transcrição integral da referência
+
+Preservados os tipos e expressões tal como recebidos. O `#define DATA_HASH_CONST_1` traz **duas alternativas** (`0x6C6FFD4F`, `0xEC6FFD4F`), sem uma escolhida; é um **trecho de referência**, não código C++ autocontido/compilável tal como transcrito. Não escolher implicitamente uma dessas alternativas. A função de hash da Variante B está presente como código de referência, sem comprovação de que corresponda à rotina usada no uaRO.
+
+````cpp
+#define ALGO_KEY_1  0x13
+#define ALGO_KEY_2  0xA1
+#define ALGO_KEY_3  0x58
+
+void gepard_enc_dec( unsigned char* data, std::uint32_t data_size, struct gepard_crypt_unit* unit)
+{
+    for ( unsigned int i = 0; i < data_size; ++i )
+    {
+        unit->pos_1 += unit->key[ unit->pos_2 ] - ALGO_KEY_1;
+        unit->key[ unit->pos_3 ] ^= unit->pos_1;
+        unit->pos_2 += unit->key[ unit->pos_3 ] * ALGO_KEY_2;
+        unit->key[ unit->pos_1 ] ^= unit->pos_2;
+        unit->pos_2 += unit->pos_1 * ALGO_KEY_3;
+        data[ i ] ^= unit->key[ unit->pos_1 ];
+        unit->pos_1 ^= unit->pos_2 + (data_size % 0xFF);
+        unit->pos_3++;
+    }
+}
+
+#define SESSION_CONST_1 0xE746213E
+#define SESSION_CONST_2 0x68D5E061
+
+void gepard_session_unit( unsigned int seed, struct gepard_crypt_unit* unit, unsigned int SESSION_CONST_1, unsigned int SESSION_CONST_2 )
+{
+    unsigned int i;
+
+    for ( i = 0; i < 256; ++i )
+    {
+        unit->key[ i ] = ( ( ( seed = seed * SESSION_CONST_1 + SESSION_CONST_2 * i ) >> 10 ) & 0xFF );
+    }
+
+    unit->pos_1 = seed % 20;
+    unit->pos_2 = seed % 30;
+    unit->pos_3 = seed % 50;
+}
+
+#define DATA_HASH_CONST_1 // Any possibility: 0x6C6FFD4F, 0xEC6FFD4F
+#define DATA_HASH_CONST_2 0x592926D2
+
+unsigned int gepard_get_data_hash(const unsigned char* data, unsigned int data_size)
+{
+    unsigned int i, result_hash = DATA_HASH_CONST_1;
+
+    for (i = 0; i < data_size; ++i)
+    {
+        result_hash = result_hash * DATA_HASH_CONST_2 + data[i];
+    }
+
+    return result_hash;
+}
+````
+
+### Diferenças estruturais que não podem ser normalizadas
+
+| Aspecto | Variante A | Variante B | Consequência investigativa |
+|---|---|---|---|
+| Geração da tabela `key[0..255]` | `seed=(C1*seed+C2*i)&0xffffffff`, byte `(seed >> 7)&0xff` | atribuição com aritmética de `unsigned int`, byte `(seed >> 10)&0xFF` | Shift e constantes específicos; **não** trocar só constantes |
+| Posições iniciais | `seed % 20`, `% 30`, `% 50` | Mesmo conjunto de módulos | Semelhante, mas insuficiente para provar equivalência |
+| Atualização de `pos1` | `pos1 += keys[pos3] - K1` | `pos_1 += key[pos_2] - K1` | Dependência de índice **distinta** |
+| Primeira mutação de tabela | `keys[pos3] ^= pos1` | `key[pos_3] ^= pos_1` | Mesma forma textual, porém posições/estado anteriores diferem |
+| Atualização inicial de `pos2` | **subtrai** `keys[pos3]*K2` | **soma** `key[pos_3]*K2` | Sinal da operação muda |
+| Atualização posterior de `pos2` | **subtrai** `pos3*K3` | **soma** `pos_1*K3` | Operando e sinal diferentes |
+| Aplicação ao dado | `data[i] ^= keys[pos1]` e máscara de 8 bits | `data[i] ^= unit->key[unit->pos_1]` | XOR em ambas; tipo efetivo de posições em B requer definição da struct |
+| Realimentação | `pos1 ^= pos3 + (data_length % 0xFF)` | `pos_1 ^= pos_2 + (data_size % 0xFF)` | Dependência de posição **distinta** |
+| Hash | `ALGORITHM_DATA_HASH: None`, apesar de constantes nomeadas | Rotina polinomial com `DATA_HASH_CONST_2=0x592926D2`; `CONST_1` ambígua | Não atribuir hash ativo à A nem escolher hash inicial da B |
+
+O exemplar A explicita máscaras `& 0xFF` para as posições. Na Variante B, a largura/narrowing de `unit->pos_*` depende da declaração de `struct gepard_crypt_unit`, **não fornecida**. Para criar vetores offline fiéis, fixar a semântica de tipos/truncamentos antes de equiparar resultados, registrar versão da interpretação e não reescrever os trechos originais. Valores de seed e corpos de referência devem ser **sintéticos**, sem capturas de sessão reais.
+
+### Modelo-alvo, prioridades e critério de identificação
+
+**Família de trabalho prioritária:** tabela mutável de 256 bytes, três posições de estado, inicialização a partir de seed e constantes, operações por byte, XOR de dados, dependência do comprimento e possível persistência do estado. Separar **constantes do servidor/variante**, **seed por sessão**, **estado derivado**, **unidade/direção (envio, recepção, sincronização)** e **gatilhos de reinicialização**. Nem identidade de unidades nem persistência estão demonstradas para uaRO.
+
+1. **Comparação estrutural offline:** desenvolver vetores de referência para A e B, documentando seed sintética, dados, comprimento (incluindo 0, 1 e limites próximos de 255), resultado, posições e tabela antes/depois, largura aritmética e hipóteses de tipo da Variante B. **Planejamento; não executado nesta revisão.**
+2. **Assinaturas discriminatórias no uaRO:** buscar, quando houver janela de pesquisa aprovada, a ordem efetiva de leitura/mutação das três posições e da tabela, a direção das somas/subtrações, o deslocamento na inicialização e a fonte do termo de comprimento. Capturas de CL por transporte não isolam por si tais estruturas.
+3. **Parâmetros do login:** está **confirmado pelo responsável** que valores relacionados à cifra chegam ao cliente durante login; a proposta de que sejam seeds específicas desta família é **HIPÓTESE DE CORRESPONDÊNCIA**, não a observação do campo. Exigir ID, direção, fase, layout, sequência e consumo/inicializador, **sem capturar credenciais**.
+4. **Estado e ciclo de vida:** observar se a tabela/posições evoluem continuamente por unidade, por direção e por sessão; identificar reset, relogin, negociação e eventos de sincronização. Um valor em memória não prova que é a seed inicial; distinguir a seed de estado já derivado.
+5. **Validação entre variantes:** antes de declarar que um algoritmo de referência representa uaRO, confrontar **mais de um vetor independente** e o estado antes/depois, com build e sessão definidos, incluindo comprimentos diferentes, reconexão e controle da direção. Sem isso, classificação **PENDENTE DE IDENTIFICAÇÃO**.
+6. **`0x8280`:** conservar análise de sync periódico e unidades separadas de inicialização/sincronização como **dependência da cifra para xKore 0**, sem afirmar que seja preâmbulo obrigatório de ações ou chave da sessão.
+
+**Comparação com `resources/`:** a árvore de arquivos versionados de `main` revisada nesta atualização **não contém uma pasta `resources/`** com código-fonte para esse cotejo. Qualquer fonte presente apenas localmente/ignorada precisará ser fornecida/referenciada antes da análise; não foram inferidos seus conteúdos. Há documentação histórica Gepard 2016 em [HISTORY/GEPARD_LEGACY.md](HISTORY/GEPARD_LEGACY.md), cuja equivalência com o build atual continua não demonstrada.
+
+### Perguntas técnicas ainda discriminatórias
+
+- Há seed independente por unidade criptográfica ou por direção?
+- Os valores recebidos no login são seeds, parâmetros de derivação ou estado já inicializado? Qual campo chega a qual rotina consumidora?
+- Estado/tabela/posições são contínuos entre pacotes? Quais eventos reinicializam cada unidade?
+- A ferramenta especializada reconstrói a sequência/dependências completas ou classifica uma seleção de templates com parâmetros? A descrição disponível favorece reconstrução de função por templates, **sem especificação instrumentada da ferramenta**.
+- As rotinas hash/autenticação são usadas, quando, e com quais parâmetros? Em B, qual das duas constantes iniciais possíveis se aplica?
+- Qual a declaração da struct e a semântica de truncamento em B? Que diferenças de build/servidor condicionam a variante?
+
+**Mapa de leituras:** [RESEARCH_STATUS.md](RESEARCH_STATUS.md) (prioridade executiva), [research/cipher/STATE.md](../research/cipher/STATE.md) (último recorte executado), [research/cipher/HANDOFF.md](../research/cipher/HANDOFF.md) (próxima tarefa), [GEPARD_CONTROL_PACKETS.md](GEPARD_CONTROL_PACKETS.md) (controle, login, sync). Novos ensaios não foram realizados nesta edição documental. O corpus anterior, inclusive os negativos, segue preservado integralmente nas seções abaixo e nos arquivos históricos.
+
+---
 **Estado 2026-10-17:** esta é a **única linha de pesquisa ainda aberta**, por decisão do responsável; movimento `035F` e ações automáticas `0437/0438/0AF4` estão funcionais. O bug de byte zero no merge do Frida foi corrigido por `_fix0` (`agent/relay_hook_linux.js:481-534`), **sem** identificar o produtor de keystream, estado de sessão ou inicialização. Não confundir correção local dos bytes com descoberta do algoritmo. [Conclusão funcional](HISTORY/ACTIONS_COMPLETE.md#source-docs-action-0437-0438-investigation-md).
 
 > **Integração 2026-10-16:** [entregas conferidas e limites](#integração-documental--cifra-20261016-pop-03) atualizam os checkpoints anteriores; relatos, consistência de artefatos e prova independente permanecem distintos.

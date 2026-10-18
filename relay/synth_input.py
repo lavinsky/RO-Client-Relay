@@ -147,6 +147,18 @@ class SynthActuator:
             print('[synth] janela do cliente wid=%s' % self._wid, flush=True)
         return self._wid
 
+    def send_before_packet(self, key):
+        """Synchronous barrier: focus and finish key release before sendcall is queued."""
+        with self._lock:
+            wid = self._resolve_wid()
+            if wid is None:
+                raise RuntimeError('game window unavailable')
+            self._focus(wid, self._dry)
+            rc = self._send(key, self._dry, self._hold_ms)
+            if rc != 0:
+                raise RuntimeError('synthetic key failed (exit %s)' % rc)
+            print('[itemuse] input %s completed before SendPacket' % key, flush=True)
+
     def on_armed(self, pid):
         """Ponto de entrada do relay: se `pid` tem tecla mapeada e passou o debounce, enfileira o
         disparo. Ids sem tecla (ex.: 035f andar) são ignorados. Não bloqueia o chamador."""

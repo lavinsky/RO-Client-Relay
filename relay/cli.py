@@ -102,6 +102,10 @@ def parse_args(argv=None):
     ap.add_argument('--synth-wid', default='',
                     help='--synth-input: id (hex wmctrl) da janela do cliente a focar; vazio = autodetecta '
                          'pelo título (world of your dream / uaRO / gepard shield / steam_app_).')
+    ap.add_argument('--itemuse-input', action=argparse.BooleanOptionalAction, default=False,
+                    help='Before each consumer 0439, synchronously press a game key and release it.')
+    ap.add_argument('--itemuse-input-key', default='END',
+                    help='Game key pressed before SendPacket 0439 (default END).')
     ap.add_argument('--synth-key-0437', default='INSERT',
                     help='--synth-input: tecla para armar o carrier do 0437 (ataque). Default INSERT.')
     ap.add_argument('--synth-key-0438', default='9',

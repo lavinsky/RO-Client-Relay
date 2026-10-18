@@ -212,7 +212,7 @@ class WriteBack:
         if getattr(self.opts, 'inject_call', False) and self.relay is not None:
             cast_ms = int(getattr(self, '_cast_throttle', 0.0) * 1000)
             self.post(sendcall_msg(self.sendcall_rva, getattr(self.opts, 'sendpacket_module', 'uaRO.exe'),
-                                   cast_ms=cast_ms))
+                                   cast_ms=cast_ms, demand=getattr(self.opts, 'sendcall_demand', False)))
             print(f'[*] --inject-call: do one in-client 0437/0438 action to capture the send object (this)'
                   f'{f"; casts pacejados a {cast_ms}ms no dreno" if cast_ms else ""}')
 
@@ -224,13 +224,25 @@ class WriteBack:
                                         site=getattr(self.opts, 'move_dispatch_site', None)))
             print('[*] --move-dispatch: walk once in-client so the dispatcher `this` is captured (passive)')
 
+    def recapture_sendcall(self, reason='session transition'):
+        """Fail closed on map/session changes: invalidate the old native SendPacket this."""
+        if getattr(self.opts, 'inject_call', False) and self.relay is not None:
+            self.post({'type': 'sendcall', 'recapture': True, 'reason': reason, 'delayMs': max(0, int(getattr(self.opts, 'map_settle_ms', 1500)))})
+            print(f'[*] --inject-call: {reason}; SendPacket invalidado, aguardando recaptura nativa')
+
+    def on_map_boundary(self, conn, pid, off, pkt):
+        """Recognized ZC map transition (0091/0092) in the tokenized inbound stream."""
+        if pid not in (0x0091, 0x0092):
+            return
+        self.recapture_sendcall(f'map packet 0x{pid:04x}')
+        # A single trigger in the agent invalidates BOTH SendPacket and move-dispatch.
+
     def recapture_move_dispatch(self):
         """Pós reconexão/relogin: o `this` capturado do dispatcher aponta para objeto de mapa já
         liberado; firá-lo congela o cliente. Zera e re-arma a captura passiva (DR2) para recapturar
         no próximo passo in-client. Ligado em relay.on_connect (só dispara em RE-conexão)."""
-        if getattr(self.opts, 'move_dispatch', False) and self.relay is not None:
-            self.post(move_dispatch_msg(recapture=True))
-            print('[*] --move-dispatch: reconexão detectada; `this` zerado — ande uma vez p/ recapturar')
+        self.recapture_sendcall('relay connection change')
+        # resetNativeSession invalidates BOTH native contexts, then waits 5000 ms.
 
     def post_move_dispatch(self, x, y):
         self.post(move_dispatch_msg(x, y))

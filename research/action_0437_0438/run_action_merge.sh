@@ -32,7 +32,7 @@ set -euo pipefail
 # Without --port, let relay/agent.py find the uaRO Gadget's actual listen port
 # (frida-gadget-32.config starts at 27052 and picks the next free port).
 PORT=""
-WID=0x05200001
+WID=""
 DRY=""
 TSEL=""
 DEMAND=""
@@ -55,10 +55,11 @@ PY="${FRIDA_PY:-$HOME/.venv-frida/bin/python}"
 SYNTH_DRY=""
 [ -n "$DRY" ] && SYNTH_DRY="--synth-dry"
 PORT_ARGS=()
-[ -n "$PORT" ] && PORT_ARGS=(--port "$PORT")
+[ -n "$PORT" ] && PORT_ARGS+=(--port "$PORT")
+[ -n "$WID" ] && PORT_ARGS+=(--synth-wid "$WID")
 
-echo "[run] relay: --move-dispatch --action-merge --egress-queue --synth-input $TSEL --scramble-range '' (resto da conf), port=${PORT:-auto}, wid=$WID"
-echo "[run] atuador de tecla integrado ao relay: 0437→INSERT 0438→9(fileira de cima) 0af4→F2 $SYNTH_DRY"
+echo "[run] relay: configuracao padrao via relay_capture.conf, port=${PORT:-auto}, wid=${WID:-config}"
+echo "[run] teclas e modos de acao lidos de relay_capture.conf"
 [ -n "$TSEL" ] && echo "[run] EXPERIMENTO --target-select: 0368 (seleção por GID) emitido antes de 0437/0438"
 # UM processo só: o atuador de tecla agora é um módulo do relay (--synth-input), disparado direto no
 # ponto de arme (relay/synth_input.py). Não há mais sidecar nem log intermediário tail-ado.
@@ -66,5 +67,4 @@ echo "[run] atuador de tecla integrado ao relay: 0437→INSERT 0438→9(fileira 
 # --egress-queue: serializa o despacho (FIFO, 400ms entre pacotes, +400ms após ação) p/ o 035f do
 # move-dispatch não atropelar o 0437/0438 — no cliente real/xKore o fluxo ordenado já faz isso.
 tail -f /dev/null | "$PY" -u "$ROOT/relay_capture_linux.py" "${PORT_ARGS[@]}" \
-    --move-dispatch --action-merge \
-    --synth-input --synth-wid "$WID" $SYNTH_DRY $TSEL $DEMAND --scramble-range ''
+    $SYNTH_DRY $TSEL $DEMAND

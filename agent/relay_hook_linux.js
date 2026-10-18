@@ -258,8 +258,9 @@ function hwClear(owner) {
 var sessionBlockedUntil = 0, sessionGeneration = 0;
 function sessionReady() { return Date.now() >= sessionBlockedUntil; }
 function resetNativeSession(reason, delayMs) {
-    if (delayMs === undefined) delayMs = 5000;
+    if (delayMs === undefined) delayMs = 1500;
     sessionGeneration++;
+    scDemandScheduled = false;
     sessionBlockedUntil = Date.now() + delayMs;
     if (scSend !== null) {
         scSend.queue.length = 0; scSend.fn = null; scSend['this'] = null;
@@ -642,7 +643,7 @@ var scSend = null;                              // {pc, fn, this, queue:[[bytes]
 var scDraining = false;                         // re-entrancy guard
 var scDemand = false, scDemandScheduled = false, scDemandUnavailable = false;
 function requestSendCallDrain() {
-    if (!scDemand || scDemandUnavailable || scDemandScheduled || scSend === null ||
+    if (!sessionReady() || !scDemand || scDemandUnavailable || scDemandScheduled || scSend === null ||
         scSend.fn === null || scSend['this'] === null || !scSend.tid || !scSend.queue.length) return;
     if (typeof Process.runOnThread !== 'function') {
         scDemandUnavailable = true;
@@ -650,12 +651,16 @@ function requestSendCallDrain() {
         return;
     }
     scDemandScheduled = true;
+    var epoch = sessionGeneration;
     // Experimental: Frida interrupts the captured game thread, even when it is
     // not at a known safe point. The original event-driven drain remains active.
-    Process.runOnThread(scSend.tid, function () { drainSendCall(); }).then(function () {
+    Process.runOnThread(scSend.tid, function () {
+        if (epoch !== sessionGeneration || !sessionReady()) return;
+        drainSendCall();
+    }).then(function () {
         scDemandScheduled = false;
         // Work arrived while the callback was running: schedule another pass.
-        if (scSend !== null && scSend.queue.length) requestSendCallDrain();
+        if (epoch === sessionGeneration && scSend !== null && scSend.queue.length) requestSendCallDrain();
     }, function (e) {
         scDemandScheduled = false;
         scDemandUnavailable = true; // fail closed to the existing safe-point drain

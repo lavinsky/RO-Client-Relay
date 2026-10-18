@@ -227,7 +227,7 @@ class WriteBack:
     def recapture_sendcall(self, reason='session transition'):
         """Fail closed on map/session changes: invalidate the old native SendPacket this."""
         if getattr(self.opts, 'inject_call', False) and self.relay is not None:
-            self.post({'type': 'sendcall', 'recapture': True, 'reason': reason, 'delayMs': 5000})
+            self.post({'type': 'sendcall', 'recapture': True, 'reason': reason, 'delayMs': max(0, int(getattr(self.opts, 'map_settle_ms', 1500)))})
             print(f'[*] --inject-call: {reason}; SendPacket invalidado, aguardando recaptura nativa')
 
     def on_map_boundary(self, conn, pid, off, pkt):

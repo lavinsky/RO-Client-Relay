@@ -33,13 +33,17 @@ def resolve_socket(path="", path_file=""):
             raise GamescopeEISError("cannot read EIS path file: %s" % e) from e
     if not path:
         raise GamescopeEISError("Gamescope EIS socket not provided; refusing to send to desktop seat")
-    if "\\x00" in path or "\\n" in path:
+    if chr(0) in path or chr(10) in path:
         raise GamescopeEISError("invalid EIS socket path")
     if not os.path.isabs(path):
         runtime = os.environ.get("XDG_RUNTIME_DIR")
         if not runtime:
             raise GamescopeEISError("XDG_RUNTIME_DIR missing for relative EIS socket")
         path = os.path.join(runtime, path)
+    # Never route to the KDE compositor's own EIS socket, even if a private
+    # locator file or a symlink mistakenly points at it. Fail closed.
+    if not os.path.basename(os.path.realpath(path)).startswith('gamescope-'):
+        raise GamescopeEISError('EIS target is not a Gamescope socket: %s' % path)
     try:
         if not stat.S_ISSOCK(os.stat(path).st_mode):
             raise GamescopeEISError("EIS target is not a Unix socket: %s" % path)
@@ -177,18 +181,23 @@ class GamescopeEIS:
                 self.close()
                 self._connect()
             dev = self.dev
-            # Always try key-up, including if an exception occurs after key-down.
             try:
-                self.api.key(dev, int(keycode), True)
-                self.api.frame(dev, self.api.now(self.ctx))
-                self.api.dispatch(self.ctx)  # flush key-down BEFORE the 120ms hold
-                time.sleep(max(0, hold_ms) / 1000.0)
-            finally:
-                self.api.key(dev, int(keycode), False)
-                self.api.frame(dev, self.api.now(self.ctx))
-                self.api.dispatch(self.ctx)  # always flush key-up
-            self._drain_events()
-            if not self.ready:
+                # Always try key-up, including if an exception occurs after key-down.
+                try:
+                    self.api.key(dev, int(keycode), True)
+                    self.api.frame(dev, self.api.now(self.ctx))
+                    self.api.dispatch(self.ctx)  # flush key-down BEFORE the 120ms hold
+                    time.sleep(max(0, hold_ms) / 1000.0)
+                finally:
+                    self.api.key(dev, int(keycode), False)
+                    self.api.frame(dev, self.api.now(self.ctx))
+                    self.api.dispatch(self.ctx)  # always flush key-up
+                self._drain_events()
+                if not self.ready:
+                    raise GamescopeEISError("EIS keyboard disconnected during event")
+                return 0
+            except BaseException:
+                # Transport/key failure must not leave a stale 'ready' context
+                # reused on the next synthetic action.
                 self.close()
-                raise GamescopeEISError("EIS keyboard disconnected during event")
-            return 0
+                raise

@@ -148,7 +148,10 @@ class ActorDecrypt:
         if self.base is not None or self.quick_busy:
             return
         self.quick_busy = True
-        rel = [(it[3] - cstart + 4, it[3] - cstart + len(it[2])) for it in items if it[0] == 'E']
+        # 0x0229 has only a 2-byte clear header; its payload starts at +2.
+        # Mask *all* encrypted body bytes during quick ring discovery.
+        rel = [(it[3] - cstart + self.FIXED_ENC.get(it[1], 4),
+                it[3] - cstart + len(it[2])) for it in items if it[0] == 'E']
         threading.Thread(target=self.quick_discover, args=(conn, C, rel), name='actor-quick', daemon=True).start()
 
     def quick_discover(self, conn, C, enc_rel):

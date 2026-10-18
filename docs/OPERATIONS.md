@@ -280,3 +280,61 @@ verifica a descoberta da porta do Gadget sem impor política de
 offline, não valida transmissão criptográfica ou conformidade do uaRO.
 `research/movement_035f/` usa agora caminhos relativos à raiz para
 `data/uaro_recvpackets.txt`, sem modificar experimentos concluídos.
+
+## Auditoria regressiva de limites e falhas — 2026-10-18
+
+**Escopo e procedência:** revisão estática do código Python do relay, da
+CLI/configuração, do cliente EIS e dos contratos de eventos com o agente
+Frida; testes **sintéticos offline**, sem execução do uaRO, sem rede do
+servidor, sem acesso à memória do cliente. Além da suíte histórica, foram
+adicionados **105 testes nomeados em nove módulos `tests/test_edge_*.py`**,
+com milhares de entradas geradas deterministicamente para propriedades
+de framing e coordenadas. `node --check` confirma somente **sintaxe**
+do agente JS, não o comportamento em tempo de execução do Frida.
+
+| Superfície | Novos limites verificados |
+|---|---|
+| `relay/packets.py` | Length table, `VAR`, fragmentação em todos os pontos de corte, byte por byte, preâmbulo de seleção de personagem, desconhecidos, offsets e isolamento por conexão, milhares de round-trips de coordenadas |
+| `relay/relay.py` | XKore com 0/1/65535/65536 bytes, 90 sequências de fragmentos aleatórios, desconexões em `sendall()`, reconexão, callback uma única vez, erro no consumidor |
+| `relay/actors.py` / `wire_feed.py` | Intervalos de velocidade/tipo de ator, validação `09ff` e `0229`, bytes claros vs. cifrados, cópia anterior confiável, timeout, duplicação, stream limitado, snapshots e FIFO por conexão |
+| `relay/gamescope_eis.py` / `synth_input.py` | Socket 0600, tipo de arquivo, input somente no Gamescope, rejeição de socket KDE e symlink, perda/pausa de dispositivo, timeout, soltura da tecla, falhas de pressão/foco, debounce, worker e descoberta tardia da janela |
+| `relay/writeback.py` | `0439` de 8 bytes (tabela), barreira síncrona antes de `SendPacket`, drop em erro, roteamento exclusivo de `035f`, merge, SendPacket, GIDs, `0091/0092` e quadros não `S` |
+| `relay/safety.py`, `console.py`, `sendwatch.py` | Sigilo de credenciais e tokens nas duas direções da conexão de login, HTTP, remoção de dados binários/pointer, logs concorrentes e rejeição de janelas de escrita inválidas |
+| `relay/cli.py`, `protocol.py`, `agent.py` e JS | Precedência INI/CLI e booleanos, mensagens nativas, descoberta de Gadget, eventos Frida mockados e análise sintática do JS |
+
+**Defeitos confirmados por testes sintéticos e corrigidos no código:**
+`Relay.send()` não disparava `on_disconnect` quando a desconexão era
+detectada em `sendall()`; o legado `ydotool` podia sinalizar sucesso
+após falha de `key-down` ou focar incorretamente, e não repetia a
+descoberta de janela ausente; seu worker não observava código de erro
+do sender. Em EIS, rejeitam-se agora nomes de socket do KDE, bytes
+de controle em caminhos e reutilização de contexto após exceção.
+`0x0439` malformado é descartado antes de tecla/SendPacket; login
+`RECV` recebe redação de material sensível; `SendWatch` rejeita
+metadados de escrita incompletos sem falhar; a descoberta rápida
+de atores mascara o corpo `0229` a partir do byte +2, não +4.
+A correção de isolamento por identidade de conexão veio também dos
+commits paralelos `695a85a`/`7c039e5`, já presentes no checkout;
+os novos testes a mantêm protegida. Esses resultados são
+**OBSERVADOS EM TESTES OFFLINE**, não equivalem à confirmação em jogo.
+
+**Limitações e riscos remanescentes:** não há teste dinâmico da VM do
+Gepard, validade de `this` sob realocação do cliente, ordenação
+de instruções Frida/hardware breakpoints, foco real do KDE/Proton,
+sincronização do algoritmo de cifra, nem cenário integral de
+reconexão em servidor vivo. `PacketAligner.find_alignment` ainda
+pode esperar um falso candidato incompleto antes de buscar outro
+offset (contrato conservador de sincronização); alterá-lo exige
+um discriminador de alinhamento validado para não descartar bytes
+legítimos. A suíte detecta regressões **modeladas**, não garante
+ausência de defeitos em execução real.
+
+**Execução:** `bash scripts/test-offline.sh`,
+`python3 scripts/validate-research.py`,
+`python3 scripts/validate-codex.py`,
+`node --check agent/relay_hook_linux.js` (se Node estiver instalado),
+`git diff --check`. O arquivo de sessão
+`itemuse_input_marks.json` foi incluído no `.gitignore` para
+evitar publicação acidental. Esta auditoria não altera
+`inject=true`, `inject-call=true` ou os demais valores
+operacionais validados em `relay_capture.conf`.

@@ -15,17 +15,26 @@ def plaintext_guess(w, C, buf=None, base=None):
     """The encryptor overwrites the body in place, one byte per write, from one pc (the trailing run
     of >= 2 same-pc hits). The window right before that run's first write holds the plaintext, if its
     id matches the sent packet. None when the window doesn't have that shape. Hex in, hex out."""
+    if not isinstance(w, dict) or not isinstance(C, str):
+        return None
     hits = w.get('hits') or []
-    if len(hits) < 2:
+    if not isinstance(hits, (list, tuple)) or len(hits) < 2:
         return None
-    enc = hits[-1]['pc']
-    i = len(hits) - 1
-    while i > 0 and hits[i - 1]['pc'] == enc:
-        i -= 1
-    last = packet_at(hits[-1]['win'], buf, base)
-    if i == 0 or len(hits) - i < 2 or last[:4] != C[:4]:      # an encryptor run is >= 2 byte writes
+    if any(not isinstance(h, dict) or not isinstance(h.get('pc'), str)
+           or not isinstance(h.get('win'), str) for h in hits):
         return None
-    P = packet_at(hits[i - 1]['win'], buf, base)
+    try:
+        enc = hits[-1]['pc']
+        i = len(hits) - 1
+        while i > 0 and hits[i - 1]['pc'] == enc:
+            i -= 1
+        last = packet_at(hits[-1]['win'], buf, base)
+        if i == 0 or len(hits) - i < 2 or last[:4] != C[:4]:
+            return None
+        P = packet_at(hits[i - 1]['win'], buf, base)
+    except (ValueError, TypeError, IndexError):
+        # An incomplete/malformed write window is not evidence of plaintext.
+        return None
     n = min(len(P), len(C))
     return P if P[:4] == C[:4] and P[:n] != C[:n] else None
 

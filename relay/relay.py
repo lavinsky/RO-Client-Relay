@@ -173,6 +173,7 @@ class Relay:
 
     def send(self, data, typ='R'):
         data = self.frame(data, typ)
+        disconnected = False
         with self.lock:
             s = self.sock
             if s is None:
@@ -188,11 +189,20 @@ class Relay:
                 except OSError:
                     pass
                 self.sock = None
-                return
-            self.sent += len(data)
-            if self.dump:                              # exact framed bytes the consumer got, for offline replay
-                self.dump.write(data)
-                self.dump.flush()
+                disconnected = True
+            else:
+                self.sent += len(data)
+                if self.dump:                          # exact framed bytes the consumer got, for offline replay
+                    self.dump.write(data)
+                    self.dump.flush()
+        # The native-dispatch lifecycle relies on this callback even when the
+        # disconnect is discovered by sendall(), rather than recv()/select().
+        # Call it outside the lock (the handler can post messages and recapture).
+        if disconnected and self.on_disconnect is not None:
+            try:
+                self.on_disconnect()
+            except Exception as e:
+                print(f'[relay] on_disconnect error: {e}')
 
 
 class PacketAligner:

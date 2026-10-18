@@ -50,7 +50,9 @@ def _hex_head(h, n=8):
 def sanitize(m):
     """Strip credential-bearing bytes from a message before it is logged or printed.
     Login-socket sends and anything HTTP-shaped keep only their first 2 bytes."""
-    sensitive = is_login_sock(m.get('sock', '')) and m.get('tag', '').startswith('SEND')
+    # Inbound login replies may contain session credentials/tokens too.
+    # Preserve only the non-sensitive prefix for both directions.
+    sensitive = is_login_sock(m.get('sock', '')) and m.get('tag', '').startswith(('SEND', 'RECV'))
     is_http = m.get('tag') == 'RECV-HTTP' or looks_like_http(_hex_head(m.get('C', '')))
     if sensitive or is_http:                     # HTTP: by content, not just by port
         for k in ('C', 'P'):

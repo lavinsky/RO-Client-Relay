@@ -47,13 +47,15 @@ VENV=/caminho/do/venv ./run.sh
 
 A precedência declarada é **defaults internos CLI → `relay_capture.conf` → argumentos CLI**. O arquivo INI usa `[capture]`; `--config ARQUIVO` aponta alternativa. O driver encerra ao receber EOF no stdin; `run.sh` mantém stdin aberto. Encerramento normal por Ctrl-C/SIGTERM, liberando a instrumentação; evitar kill abrupto enquanto registradores de depuração permanecerem armados.
 
-## Flags de pesquisa do CLI (fora da config; exigem autorização para uso live)
+## Flags do CLI e valores operacionais do INI
 
 **Status corrigido 2026-10-17:** operação funcional de movimento, ataque automático e skills automáticas de alvo/chão **confirmada pelo responsável**. A falha anterior foi causada pelo primeiro byte sobregravado no agente Frida, corrigido em `agent/relay_hook_linux.js:481-534`; não foi seleção de alvo. Única pesquisa aberta: cifra. A tabela abaixo registra parâmetros de CLI (OFF por padrão onde indicado); **não** instrui teste live.
 
-Estas flags **não** estão em `relay_capture.conf` (entram pelo CLI; `relay_capture.conf` permanece
-inalterado). Uso live contra o cliente exige escopo explicitamente aprovado — validação offline por
-padrão.
+A tabela descreve os **defaults internos do CLI**, não os valores
+efetivos de `relay_capture.conf`; o arquivo operacional contém diversas
+dessas flags e prevalece sobre os defaults. Argumentos explícitos do CLI
+sobrescrevem ambos. Uso live contra o cliente exige escopo autorizado;
+validação de manutenção é offline por padrão.
 
 **Fluxo de identificação (resultado live confirmado em 2026-10-17):** os pacotes de saída
 `0368/0369/0193/0094/0360` do consumidor seguem normalmente via `SendPacket`,
@@ -69,10 +71,14 @@ O `--drop-ids` do fluxo servidor→consumidor e o timeout da FIFO continuam inde
 | `--move-dispatch-site` | `0x4dcba0` | Fire-site de main-loop do `uaRO.exe` (hex). |
 | `--target-select` | OFF | Reativa o `0368` (seleção por GID) **antes** de ações com alvo (`0437` ataque / `0438` perícia). **Default OFF** (o cliente já emite o `0368` sozinho). A leitura de que o `0368` pré-ação bloqueava ataque/perícia foi **REFUTADA** pelo responsável em 2026-10-16: o `sendmsg` da ação sai com ou sem `0368`, e a ação continua **sem efeito** via SendPacket crua. Ligar/desligar a flag **não** resolve ataque/perícia (ver [GEPARD_CONTROL_PACKETS](GEPARD_CONTROL_PACKETS.md)). |
 | `--action-merge` | OFF | Arma corpo de `0437/0438/0AF4` do consumidor no store do scrambler, pré-XOR; requer carrier natural correspondente do cliente. Ações automáticas funcionais após `_fix0`. |
-| `--synth-input` | OFF | Atuador interno de entrada sintética via `uinput`/`ydotool`; precisa de ambiente autorizado, janela focável e `ydotoold`. |
+| `--synth-input` | OFF | Atuador interno de carriers de ação; a via depende de `--synth-backend`. Na configuração operacional validada está ON. |
+| `--synth-backend` | `ydotool` | Seleciona `ydotool`/seat0 legado ou `gamescope-eis` via libei/socket privado; a config operacional validada usa `gamescope-eis`. |
+| `--synth-eis-socket` / `--synth-eis-socket-file` | vazios | Indicação direta do socket EIS ou arquivo de localização 0600 criado pelo wrapper; não usar ambos. Erro se não houver EIS no backend selecionado, sem fallback ao KDE. |
+| `--itemuse-input` / `--itemuse-input-key` | OFF / `END` | Com `0x0439`, pressiona e solta a tecla sincronicamente *antes* do pedido SendPacket; impede envio se não completar. Config operacional validada: ON / `END`. |
 | `--synth-key-0437` / `--synth-key-0438` / `--synth-key-0af4` | `INSERT` / `9` / `F2` | Teclas padrão para produzir o carrier; `9` corresponde à fileira superior. |
 | `--synth-debounce-ms` / `--synth-dry` | `500` / OFF | Antirrepetição em milissegundos; modo `dry` registra sem enviar input. |
 | `--egress-queue` | OFF | FIFO para quadros de egresso `S` (não `R`); ordenação, **não** causa/correção do defeito de byte zero. |
+| `--sendcall-demand` | consulte CLI | Solicitação sob demanda do envio nativo; a configuração validada mantém `false`. Não confundir com `inject-call`, que permanece ligado. |
 | `--egress-interval-ms` / `--egress-action-gap-ms` / `--egress-max-age-ms` | `400` / `400` / `800` | Intervalos e descarte de quadro envelhecido na FIFO; não garantem por si só término do movimento. |
 
 **Orçamento de debug registers (x86 = 4 HW BP).** Com `--move-dispatch`, os 4 slots são:
@@ -215,3 +221,62 @@ pode restringir o uso dos periféricos enquanto a janela tiver foco; não
 presumir que o EIS resolva a digitação manual. `Super+G` é interceptado
 pelo KDE. O relay EIS envia ao Gamescope sem ativar a janela no KDE. Os testes offline de sintaxe/mocks não alteram
 o estado do cliente.
+
+## Gamescope EIS e configuração operacional validada
+
+**CONFIRMADO PELO RESPONSÁVEL (2026-10-17):** as alterações e a
+configuração presente na pasta original funcionam no ambiente utilizado.
+A documentação e os testes offline não constituem uma repetição instrumental
+dessa execução. [Arquitetura e limites](ARCHITECTURE.md#14-integração-operacional-gamescope-eis-2026-10-17).
+
+A seção `[capture]` do `relay_capture.conf` validado mantém:
+
+```ini
+inject = true
+inject-call = true
+move-dispatch = true
+action-merge = true
+egress-queue = false
+sendcall-demand = false
+map-settle-ms = 1500
+synth-input = true
+synth-backend = gamescope-eis
+synth-eis-socket-file = /run/user/1000/ro-relay-gamescope-eis.path
+synth-key-0437 = INSERT
+synth-key-0438 = 9
+synth-key-0af4 = F2
+itemuse-input = true
+itemuse-input-key = END
+```
+
+`synth-wid` permanece no INI como compatibilidade, porém é **ignorado**
+quando `synth-backend = gamescope-eis`. Esta publicação **não recomenda**
+substituir os valores validados por defaults internos. `egress-queue=false`
+foi preservado; o teste de launcher foi corrigido para verificar apenas seu
+contrato de inicialização em vez de impor `true`.
+
+**Sequência:** Steam abre Gamescope Wayland com `-g
+--force-grab-cursor`, executa `scripts/gamescope-eis-session.sh` e
+passa o Proton/uaRO ao wrapper. Dentro do compositor, `LIBEI_SOCKET`
+é publicado num arquivo 0600 em `XDG_RUNTIME_DIR`; o arquivo é removido
+ao final da sessão. O relay lê o socket por
+`--synth-eis-socket-file`. Para login, usar mouse/teclado com a janela
+ativa; depois, o relay pode enviar eventos ao compositor sem ativar o
+KDE. A captura física com `-g` e `--force-grab-cursor` pode dificultar
+temporariamente a troca de janelas.
+
+**Diagnóstico:** se o arquivo/socket EIS sumir, o envio de tecla
+falhará explicitamente, **sem voltar ao ydotool**. `--synth-dry`
+testa o mapeamento sem enviar eventos. Eventos `THIS-CONTEXT`
+denunciam suspeita de contexto nativo inválido, sem identificar
+automaticamente a causa. `RECV-PLAIN-UNAVAILABLE` indica conteúdo
+cifrado sem cópia verificada; não representa dados descriptografados.
+
+**Teste e cobertura:** `tests/test_gamescope_eis.py` valida
+isolamento do socket, permissões 0600, frame press/release e ausência
+de side effect no KDE em `dry`. `tests/test_launcher_gadget_port.py`
+verifica a descoberta da porta do Gadget sem impor política de
+`egress-queue`. `bash scripts/test-offline.sh` cobre os contratos
+offline, não valida transmissão criptográfica ou conformidade do uaRO.
+`research/movement_035f/` usa agora caminhos relativos à raiz para
+`data/uaro_recvpackets.txt`, sem modificar experimentos concluídos.

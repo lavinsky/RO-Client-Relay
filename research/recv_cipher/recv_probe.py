@@ -8,10 +8,15 @@ import frida
 
 JS = r'''
 'use strict';
-var calls=0, maxCalls=80, hooks=[];
+var calls=0, maxCalls=160, hooks=[];
+var fdKinds={};
 function locate(addr){
   try { var m=Process.findModuleByAddress(addr); return m ? m.name+'+'+addr.sub(m.base).toString() : addr.toString(); }
   catch(_) { return addr.toString(); }
+}
+function fdKind(fd){
+  // FD numbers only; avoid file-system calls inside a recv hook.
+  return 'unclassified';
 }
 function note(kind, data){ send(Object.assign({kind:kind,ms:Date.now(),tid:Process.getCurrentThreadId()},data)); }
 var found=[];
@@ -19,7 +24,7 @@ var found=[];
   try {var f=Module.findGlobalExportByName(name); if(!f || found.some(function(x){return x.equals(f)}))return;found.push(f);
     var hook=Interceptor.attach(f,{onEnter:function(args){this.fd=args[0].toInt32();this.retloc=this.returnAddress;this.caller=locate(this.retloc);this.wanted=calls<maxCalls && !/libxcb|libwayland|libX11|libpulse|libasound/i.test(this.caller);},
       onLeave:function(rv){if(!this.wanted || rv.toInt32()<=0)return; calls++;
-       note('recv', {fn:name,bytes:rv.toInt32(),return_pc:this.caller,return_address:this.retloc.toString()});
+       note('recv', {fn:name,bytes:rv.toInt32(),return_pc:this.caller,return_address:this.retloc.toString(),fd:this.fd,fd_kind:fdKind(this.fd)});
       }});hooks.push(hook);note('armed',{fn:name,address:f.toString()});
   } catch(e){note('error',{fn:name,error:String(e)});}
 });

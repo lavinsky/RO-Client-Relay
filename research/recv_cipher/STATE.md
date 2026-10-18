@@ -13,3 +13,5 @@
 
 - **Rodada RC-20261018-02, observada:** sonda Frida Gadget `recv_probe.py`, 5s sem filtro: 80 eventos do subsistema gráfico; 8s filtrada: 15 eventos do callsite `ntdll.so+0x980e8` e 3 de PipeWire; limpeza RPC `ok:true`, sem erro. Fontes privadas: `artifacts/recv-frida-callsite.jsonl` e `recv-frida-filtered.jsonl`.
 - **Próximo passo:** correlacionar recepção de rede real à cópia plaintext do cliente; nenhum escritor nem fronteira de decifragem identificado ainda.
+
+- **RC-20261018-03:** 54 recepções/8s: FD 194 (46, `ntdll.so+0x980e8`), FD 36 (8, `ntdll.so+0x4eb5e`). Ambos sem classificação de socket; evidência `artifacts/recv-fd-correlation.jsonl`. Próximo experimento: classificar descritores por `/proc/PID/fd` fora do hook, sem ptrace.

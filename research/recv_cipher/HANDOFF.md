@@ -19,3 +19,7 @@
 - **Observado:** Frida Gadget conectado sem ptrace; 80 chamadas gráficas na primeira janela (5s). Após filtro, 15 chamadas `ntdll.so+0x980e8`, 3 PipeWire em 8s. Ambas limpas com `rpc stop` e `errors=0`.
 - **Não verificado:** esses callsites decifram ou processam `09FD/09FF/0229`; são evidência somente de recepção da camada Wine.
 - **Próxima discriminação:** identificar FD/socket e payload id de entrada sem dados privados persistidos; localizar a fronteira da cópia do ring antes de propor Interceptor de plaintext.
+
+## RC-20261018-03
+
+54 recepções via Frida, 46 FD 194/`ntdll.so+0x980e8` e 8 FD 36/`ntdll.so+0x4eb5e`, sem erro; classificação do FD inconclusiva. Não há prova de decifragem. Sonda passa a registrar apenas FD/callsite; classificar externamente por `/proc` antes de selecionar watchpoint.

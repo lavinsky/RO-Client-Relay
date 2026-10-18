@@ -28,7 +28,7 @@ def new_chunk(sock, conn, items, cstart, d):
       res     None while undecided, then {item index: decrypted packet or None (drop)}"""
     return {'sock': sock, 'conn': conn, 'items': items, 'cstart': cstart, 'd': d,
             'enc': any(it[0] == 'E' for it in items), 't': time.time(), 'snaps': [], 'closed': None,
-            'B': {}, 'tfinal': None, 'ev': collections.defaultdict(list), 'res': None}
+            'B': {}, 'Bsafe_items': set(), 'tfinal': None, 'ev': collections.defaultdict(list), 'res': None}
 
 
 class WireFeed:
@@ -140,7 +140,10 @@ class WireFeed:
                     self.cond.wait(self.IDLE_WAIT)
                 held = [e for e in self.pending if e['enc'] and e['res'] is None]
             for e in held:                             # poll every held chunk's slots, not just the head
-                e['res'] = self.dec.settle(e, time.time(), self.delay)
+                result = self.dec.settle(e, time.time(), self.delay)
+                with self.cond:
+                    if e['res'] is None:
+                        e['res'] = result
             if self._feed_ready():
                 time.sleep(self.POLL)                  # head chunk still waiting for its evidence
             if self.report_stats and time.time() - last_stats > self.STATS_EVERY:

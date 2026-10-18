@@ -137,6 +137,7 @@ class ActorDecrypt:
             a = self.slot(e['d'], it[3], e['cstart'], base)
             if pre is not None and pre[1] == base and 0 <= a - base and a - base + len(it[2]) <= len(pre[0]):
                 e['B'][i] = pre[0][a - base:a - base + len(it[2])]
+                e.setdefault('Bsafe_items', set()).add(i)
                 e['Bsafe'] = True
             else:
                 e['B'][i] = self.read(a, len(it[2]))
@@ -358,6 +359,9 @@ class ActorDecrypt:
             ev.sort(key=lambda x: x[0])
             V = next((P for T, P in reversed(ev) if self.copy_ok(pkt, P)), None)
             B = e['B'].get(i)
+            # A capture made BEFORE recv processing gives independent evidence of a
+            # transition from the pre-decrypt bytes. If the pre-image is unavailable,
+            # don't upgrade a plausible-looking cached ring slot to verified plaintext.
             if V is not None and i in e['B'] and V != B:
                 with self.lock:
                     out[i] = self._accept(V, 'fresh', True)
@@ -365,5 +369,5 @@ class ActorDecrypt:
             # the slot never changed: with a pre-decrypt image that's proof the copy there is stale
             out[i] = self.resolve(e['conn'], pid, pkt, off, e['cstart'], exp_d=e['d'],
                                   live=closed is None, snaps=e['snaps'],
-                                  stale=B if e.get('Bsafe') else None)
+                                  stale=B if i in e.get('Bsafe_items', set()) else None)
         return out

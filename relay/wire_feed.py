@@ -84,7 +84,7 @@ class WireFeed:
         closed_at = m.get('ts') or time.time() * 1000
         with self.cond:
             for p in self.pending:                     # the next chunk can now overwrite their slots
-                if p['sock'] == sock and p['closed'] is None:
+                if p['conn'] == conn and p['closed'] is None:
                     p['closed'] = closed_at
             self.pending.append(e)
             self.cond.notify()
@@ -99,7 +99,7 @@ class WireFeed:
         items = self.wire.push_items(conn, C, ActorDecrypt.ENC)
         for it in items:
             if it[0] == 'E':
-                dec.note_enc(conn, it[3], len(it[2]))
+                dec.note_enc(conn, it[3], len(it[2]), it[1])
                 if diag:
                     diag.on_packet(conn, sock, it[1], it[2], it[3], cstart, left, t_in)
         base = dec.base

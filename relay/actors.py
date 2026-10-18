@@ -45,7 +45,8 @@ class ActorDecrypt:
     location, stats and `fed`; code outside it reads `self.base` once into a local, because
     the ring can be dropped (set to None) for rediscovery at any moment. Code that needs both
     ends reads `self.region` instead: (base, hi) replaced in one assignment, never torn."""
-    ENC = (0x09fd, 0x09ff)
+    ENC = (0x09fd, 0x09ff, 0x0229)
+    FIXED_ENC = {0x0229: 2}  # fixed 15-byte packet: 2-byte clear ID only
     CTX = 64                                           # wire bytes compared on each side of a candidate
     HDR = 0x40                                         # ring offset of a chunk that starts clean
     STREAM_KEEP = 0x20000                              # recent wire bytes kept per connection
@@ -105,11 +106,19 @@ class ActorDecrypt:
         self.chain[conn] = (d, len(C))
         return start, d
 
-    def note_enc(self, conn, off, L):
-        self.spans[conn].append((off + 4, off + L))   # body only; id+len are cleartext
+    def note_enc(self, conn, off, L, pid=None):
+        head = self.FIXED_ENC.get(pid, 4)
+        self.spans[conn].append((off + head, off + L))   # body only; id+len are cleartext
 
     def copy_ok(self, pkt, P):
-        return len(P) == len(pkt) and P[:4] == pkt[:4] and P != pkt and valid_actor(P)
+        if len(pkt) < 2 or len(P) != len(pkt) or P == pkt:
+            return False
+        pid = pkt[0] | (pkt[1] << 8)
+        if pid == 0x0229:
+            # Only the ID is known clear; never treat arbitrary bytes as verified.
+            # The fixed packet carries an actor GID in bytes 2..5; preserve it.
+            return len(pkt) == 15 and P[:6] == pkt[:6]
+        return P[:4] == pkt[:4] and valid_actor(P)
 
     def slot(self, d, off, cstart, base=None):
         """Ring address where this packet's decrypted copy should be."""
@@ -241,11 +250,12 @@ class ActorDecrypt:
         if exp_d is None:
             exp_d = self.HDR
         ring = self.base or bufbase
-        hdr = pkt[:4]
+        pid = pkt[0] | (pkt[1] << 8)
+        hdr = pkt[:self.FIXED_ENC.get(pid, 4)]
         i = buf.find(hdr)
         while i != -1:
             P = buf[i:i + L]
-            if len(P) == L and P != pkt and valid_actor(P):
+            if len(P) == L and self.copy_ok(pkt, P):
                 pre, post = self._ctx(buf, i, conn, off, L)
                 sc = pre + post
                 if P[5:9] in near:

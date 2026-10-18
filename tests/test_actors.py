@@ -161,3 +161,12 @@ got = [r[i] for i, it in enumerate(e2['items']) if it[0] == 'E']
 print('chained (left>0) ->', [p[-24:].rstrip(b'\0') for p in got if p], dict(d.stats))
 assert got == [a1, a2]
 print('ALL PASS')
+
+# Fixed-length encrypted 0229 is recognized independently of actor validators.
+p229 = bytes.fromhex('290263ef2000') + bytes.fromhex('010203040506070809')
+plain229 = bytes.fromhex('290263ef2000') + bytes.fromhex('000000001000000000')
+assert len(p229) == 15 == len(plain229)
+assert 0x0229 in g.ActorDecrypt.ENC
+assert d.copy_ok(p229, plain229)
+assert not d.copy_ok(p229, p229)
+assert not d.copy_ok(p229, bytes.fromhex('290200000000') + plain229[6:])

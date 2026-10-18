@@ -1,0 +1,19 @@
+# Pesquisa: plaintext na recepção cifrada
+
+Trilha isolada para localizar a fronteira de texto claro dos pacotes de entrada (`0x09FD`, `0x09FF`, `0x0229` e outros ainda não identificados), sem alterar o relay de produção.
+
+## Execução
+
+Com uaRO aberto, relay fechado e CEserver ativo:
+
+```bash
+bash research/recv_cipher/run_probe.sh
+```
+
+O script identifica PID e início da instância, verifica CEserver e mapeamento do ring em cache, realiza um *smoke test* de depuração com até cinco eventos e grava evidência privada em `artifacts/<data-hora>/`. Não instala `Interceptor`, breakpoint de execução ou watchpoint, nem identifica por si só o escritor do plaintext.
+
+## Próximo experimento
+
+Usar um watchpoint **de escrita** em byte do corpo de um pacote cifrado confirmado enquanto ocorre uma recepção real. Registrar PC/thread, endereço, valor antes/depois, instante e relação com `recvmsg`, mantendo limite de eventos e limpeza comprovada. Somente depois utilizar `--probe-at <PC>` para examinar uma rotina candidata. Não usar endereço do ring como endereço de função. A instrumentação deste experimento ainda não foi implementada/validada.
+
+As capturas são confidenciais: não versionar dumps, IPs, nomes ou payloads reais.

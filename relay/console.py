@@ -1,5 +1,6 @@
 """The sanitized JSONL capture log and the one-line console view of each message."""
 import json
+import threading
 import time
 
 from .safety import sanitize
@@ -17,7 +18,10 @@ def show(m):
               f"queue_len={m.get('queue_len', '-')} chunk_len={m.get('chunk_len', '-')}")
         return
     if tag == 'RECV-PLAIN':
-        print(f"[<= PLAIN{'?' if m.get('uncertain') else ' '}] id=0x{i} len={m['len']:<4} @{m.get('dest','?')} C={m['C'][:32]}... P={m['P'][:48]}...")
+        payload = m.get('P', m.get('C', ''))
+        print(f"[<= PLAIN{'?' if m.get('uncertain') else ' '}] id=0x{i} len={m['len']:<4} @{m.get('dest','?')} P={payload[:48]}...")
+    elif tag == 'RECV-PLAIN-UNAVAILABLE':
+        print(f'[<= PLAIN INDISPONIVEL] id=0x{i} — APENAS RECV CIFRADO; plaintext nao recuperado')
     elif tag == 'SEND':
         print(f"[=> SEND ] id=0x{i} len={m['len']:<4} {m['C'][:48]}...")
     elif tag == 'SEND-PLAIN':
@@ -111,6 +115,7 @@ class CaptureLog:
 
     def __init__(self, path):
         self.path = path
+        self._lock = threading.Lock()
         self.f = open(path, 'w', buffering=1)          # line-buffered: survives os._exit on detach
 
     def write(self, m):
@@ -118,5 +123,6 @@ class CaptureLog:
         m.pop('data', None)                            # binary attachments never go to the log
         m.pop('ptr', None)
         sanitize(m)
-        self.f.write(json.dumps(m) + '\n')
-        show(m)
+        with self._lock:
+            self.f.write(json.dumps(m) + '\n')
+            show(m)

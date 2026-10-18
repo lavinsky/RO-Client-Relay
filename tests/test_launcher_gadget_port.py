@@ -41,9 +41,9 @@ class GadgetPortLauncherTests(unittest.TestCase):
         self.assertTrue(opts.move_dispatch)
         self.assertTrue(opts.action_merge)
         self.assertTrue(opts.synth_input)
-        self.assertTrue(opts.egress_queue)
+        # egress-queue is deliberately selectable in relay_capture.conf;
+        # this test concerns launch arguments and Gadget port discovery.
         self.assertNotIn("<--move-dispatch>", args)
-        # Egress queue is optional in the local launcher; test only Gadget discovery.
 
     def test_explicit_port_override_is_preserved(self):
         args = self.launcher_args("--port", "27053")

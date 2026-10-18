@@ -27,7 +27,7 @@ import time
 
 import frida
 
-TABLE = "/var/home/bazzite/Documentos/Projetos/improvement/data/uaro_recvpackets.txt"
+TABLE = Path(__file__).resolve().parents[2] / "data" / "uaro_recvpackets.txt"
 
 
 def load_lengths(path):

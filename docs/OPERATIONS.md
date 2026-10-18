@@ -164,3 +164,54 @@ meio da sessão foi diagnóstico histórico, não prova de ausência de outros d
 Cuidados históricos completos (incluindo espera de ~6 s após SIGTERM, falsos positivos de
 `pgrep`, sondas e registradores) em [arquitetura histórica §§8–11](HISTORY/ARCHITECTURE_LEGACY.md).
 “Seguro” nesses registros significa apenas sobrevivência no recorte, sem garantia geral.
+
+## Input sintético em Gamescope isolado (backend experimental EIS)
+
+O atuador existente mantém **`--synth-backend ydotool` como padrão** (usa seat0,
+altera foco do KDE). Para isolar eventos do mouse/teclado do desktop, selecionar
+`--synth-backend gamescope-eis` em conjunto com `--synth-input`.
+Esse backend usa **libei/EIS**, exige um socket do Gamescope **explicitamente**
+selecionado, não usa `wmctrl`, `xdotool`, `ydotool` nem move o foco do host.
+Não há fallback para seat0. O suporte libei no Gamescope depende da versão/build.
+
+Exemplo para as opções de inicialização do jogo no Steam (adapte o diretório
+do repositório e do Gadget; **não use duas instâncias com o mesmo path file**):
+
+```sh
+gamescope --backend wayland -g --force-grab-cursor -W 1280 -H 720 -w 1280 -h 720 -r 60 -- /var/home/bazzite/Documentos/Projetos/RO-Client-Relay/scripts/gamescope-eis-session.sh env LD_PRELOAD=/var/home/bazzite/Documentos/Projetos/RO-Client-Relay/relay/resources/frida-gadget-32.so %command%
+```
+
+O wrapper é executado **dentro do Gamescope** e escreve o valor `LIBEI_SOCKET`
+num arquivo privado (0600) em `$XDG_RUNTIME_DIR/ro-relay-gamescope-eis.path`.
+O arquivo é removido ao encerrar a sessão. Isso não concede acesso ao teclado
+principal: apenas publica um nome de socket. Se necessário, defina
+`RO_RELAY_EIS_FILE` para criar um arquivo distinto por sessão.
+
+Ao iniciar o relay na **versão que contém este backend**, acrescente
+**às flags já utilizadas**:
+
+```sh
+--synth-input --synth-backend gamescope-eis \
+--synth-eis-socket-file /run/user/1000/ro-relay-gamescope-eis.path
+```
+
+Também é possível passar `--synth-eis-socket /run/user/1000/gamescope-N-ei`
+diretamente. Não combine as duas opções. `--synth-dry` permite confirmar
+mapeamento sem conectar ao socket e sem produzir eventos.
+
+**Critérios de segurança e compatibilidade:** cada comando envia código evdev
+para o *seat virtual do Gamescope* (pressão, frame, espera padrão 120 ms,
+soltura, frame). A entrega ao **uaRO/Gepard** permanece a ser verificada em
+teste autorizado: o fato de o Gamescope aceitar EIS não comprova que a
+aplicação reconheça a tecla. Se a sessão Gamescope fechar ou o dispositivo
+EIS não estiver disponível, a ação **falha e é registrada**, sem redirecionar
+a entrada ao KDE. O cliente deve permanecer em foco **dentro** do Gamescope,
+não necessariamente no KDE. Preferência operacional solicitada:
+**`--backend wayland -g --force-grab-cursor`** em janela, para capturar teclado
+e cursor enquanto o Gamescope estiver ativo e permitir a digitação no jogo.
+O funcionamento do login deve ser validado na sessão real; os dois backends
+já apresentaram dificuldades com teclado antes desse ajuste. A captura
+pode restringir o uso dos periféricos enquanto a janela tiver foco; não
+presumir que o EIS resolva a digitação manual. `Super+G` é interceptado
+pelo KDE. O relay EIS envia ao Gamescope sem ativar a janela no KDE. Os testes offline de sintaxe/mocks não alteram
+o estado do cliente.

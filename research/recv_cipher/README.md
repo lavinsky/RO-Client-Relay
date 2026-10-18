@@ -10,7 +10,7 @@ Com uaRO aberto, relay fechado e CEserver ativo:
 bash research/recv_cipher/run_probe.sh
 ```
 
-O script identifica PID e início da instância, verifica CEserver e identidade (PID + tempo de inicio) do processo Wine/Proton, realiza um *smoke test* de depuração com até cinco eventos e grava evidência privada em `artifacts/<data-hora>/`. Não instala `Interceptor`, breakpoint de execução ou watchpoint, nem identifica por si só o escritor do plaintext.
+O script identifica PID e início da instância, verifica CEserver e identidade (PID + tempo de inicio) do processo Wine/Proton, registra apenas inventário do processo via `/proc` e grava evidência privada em `artifacts/<data-hora>/`. Não instala `Interceptor`, breakpoint de execução ou watchpoint, nem identifica por si só o escritor do plaintext.
 
 ## Próximo experimento
 
@@ -18,4 +18,4 @@ Usar um watchpoint **de escrita** em byte do corpo de um pacote cifrado confirma
 
 As capturas são confidenciais: não versionar dumps, IPs, nomes ou payloads reais.
 
-O cache `.relay_actor_ring` é deliberadamente ignorado após reinícios: a região precisa ser redescoberta na nova instância antes de qualquer watchpoint. O teste do depurador não confirma responsividade gráfica do jogo.
+O cache `.relay_actor_ring` é deliberadamente ignorado após reinícios: a região precisa ser redescoberta na nova instância antes de qualquer watchpoint. **Proibido nesta trilha:** `cecli debug trace`, attach do depurador CEserver ou qualquer uso de `ptrace`, pois congela o cliente Wine/Proton.

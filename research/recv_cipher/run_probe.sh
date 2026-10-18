@@ -4,7 +4,6 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 umask 077
-command -v cecli >/dev/null || { echo 'ERRO: cecli ausente' >&2; exit 2; }
 command -v python3 >/dev/null || exit 2
 if pgrep -f '[/]relay_capture_linux.py' >/dev/null; then
   echo 'ERRO: relay em execucao. Feche o relay antes da sondagem.' >&2; exit 3
@@ -46,18 +45,27 @@ if current != start or state in ('Z','X') or 'uaro.exe' not in cmd:
 PYID
 }
 check_identity
-cecli server info > "$OUT/ceserver.json"
-cecli process info --pid "$PID" > "$OUT/process.json"
-# Cached ring addresses belong to a past process instance and cannot be
-# independently validated as the current decrypt ring. Never probe a stale base.
-echo 'Endereco de ring em cache ignorado: exige redescoberta por evidencia da sessao atual.' | tee "$OUT/ring_note.txt"
+# Nunca anexar depurador CEserver/ptrace: congela o uaRO sob Wine/Proton.
+# Apenas inventario read-only via /proc e ro_ops; sem leitura de /proc/PID/mem.
 check_identity
-# A trace is a bounded debugger attach/detach smoke-test; it does NOT reveal the writer PC.
-check_identity
-cecli --timeout 10s debug trace --pid "$PID" --events 5 --event-timeout 1s --continue auto --yes > "$OUT/debug_trace.json"
-python3 - "$OUT/debug_trace.json" <<'PY'
+python3 - "$PID" > "$OUT/proc_status.json" <<'PYSTATUS'
 import json,sys
-j=json.load(open(sys.argv[1])); d=j.get('data',{})
-print('Debug trace:', 'OK' if j.get('ok') else 'FALHOU', '| eventos:', d.get('event_count'), '| timeout:', d.get('timed_out'))
-PY
+pid=int(sys.argv[1]); result={'pid':pid}
+for line in open(f'/proc/{pid}/status'):
+    if line.startswith(('Name:', 'State:', 'Threads:', 'TracerPid:')):
+        key,value=line.split(':',1)
+        result[key]=value.strip()
+print(json.dumps(result))
+PYSTATUS
+if python3 - "$OUT/proc_status.json" <<'PYTRACER'
+import json,sys
+j=json.load(open(sys.argv[1]))
+raise SystemExit(0 if j.get('TracerPid') == '0' else 1)
+PYTRACER
+then
+  echo 'Inventario concluido; nenhum depurador foi anexado.'
+else
+  echo 'ATENCAO: processo possui TracerPid nao-zero; nenhuma sonda executada.' >&2
+  exit 4
+fi
 echo "Coleta encerrada. Compartilhe apenas o resumo; revise os arquivos em: $OUT"

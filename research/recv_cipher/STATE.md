@@ -10,3 +10,6 @@
 - **Próxima etapa:** identificar PC escritor com watchpoint delimitado, após revisão de sua implementação e condições de desarme.
 
 - **Restrição confirmada pelo responsável:** ptrace congela o cliente; não executar CEserver debug trace/attach ou sondas baseadas em ptrace.
+
+- **Rodada RC-20261018-02, observada:** sonda Frida Gadget `recv_probe.py`, 5s sem filtro: 80 eventos do subsistema gráfico; 8s filtrada: 15 eventos do callsite `ntdll.so+0x980e8` e 3 de PipeWire; limpeza RPC `ok:true`, sem erro. Fontes privadas: `artifacts/recv-frida-callsite.jsonl` e `recv-frida-filtered.jsonl`.
+- **Próximo passo:** correlacionar recepção de rede real à cópia plaintext do cliente; nenhum escritor nem fronteira de decifragem identificado ainda.

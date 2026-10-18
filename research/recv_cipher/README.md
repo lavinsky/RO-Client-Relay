@@ -19,3 +19,9 @@ Usar um watchpoint **de escrita** em byte do corpo de um pacote cifrado confirma
 As capturas são confidenciais: não versionar dumps, IPs, nomes ou payloads reais.
 
 O cache `.relay_actor_ring` é deliberadamente ignorado após reinícios: a região precisa ser redescoberta na nova instância antes de qualquer watchpoint. **Proibido nesta trilha:** `cecli debug trace`, attach do depurador CEserver ou qualquer uso de `ptrace`, pois congela o cliente Wine/Proton.
+
+## Frida Gadget: observação de entrada (rodada RC-20261018-02)
+
+`recv_probe.py` instala temporariamente Interceptors em chamadas libc `recvmsg`, `__recvmsg64`, `recv` e `recvfrom`, apenas para registrar callsite, thread e quantidade de bytes. Não coleta payloads e exclui ruído conhecido XCB/Wayland. Tem teto de 80 eventos e duração máxima de 15 segundos; o script principal executa 8 segundos. O mecanismo **não** identifica ainda o escritor ou plaintext, nem arma watchpoint de dados. A execução é in-process através do Gadget (sem attach ptrace/CEserver). Arquivos em `artifacts/` são privados e ignorados pelo Git.
+
+Na coleta inicial, o callsite `ntdll.so+0x980e8` apareceu 15 vezes após filtrar o ruído gráfico. Isto evidencia um caminho de recepção via Wine, **não** a rotina de decifragem do uaRO. A conclusão requer associação posterior aos pacotes cifrados.

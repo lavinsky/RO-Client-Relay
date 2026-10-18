@@ -13,3 +13,9 @@
 **Limpeza:** nenhum recurso de depuração deixado armado por esta preparação.
 
 **Próximo passo:** executar `bash research/recv_cipher/run_probe.sh`; em seguida planejar watchpoint de escrita dirigido e limitado.
+
+## RC-20261018-02
+
+- **Observado:** Frida Gadget conectado sem ptrace; 80 chamadas gráficas na primeira janela (5s). Após filtro, 15 chamadas `ntdll.so+0x980e8`, 3 PipeWire em 8s. Ambas limpas com `rpc stop` e `errors=0`.
+- **Não verificado:** esses callsites decifram ou processam `09FD/09FF/0229`; são evidência somente de recepção da camada Wine.
+- **Próxima discriminação:** identificar FD/socket e payload id de entrada sem dados privados persistidos; localizar a fronteira da cópia do ring antes de propor Interceptor de plaintext.

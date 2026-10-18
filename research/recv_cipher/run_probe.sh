@@ -69,3 +69,13 @@ else
   exit 4
 fi
 echo "Coleta encerrada. Compartilhe apenas o resumo; revise os arquivos em: $OUT"
+# Passive libc/Wine recv callsite observation via Frida Gadget; no ptrace.
+if [[ "${RECV_FRIDA_PROBE:-1}" == "1" ]]; then
+  PORT="$(python3 - "$OUT/discover.json" <<'PYPORT'
+import json,sys
+j=json.load(open(sys.argv[1]));print(j['data']['port'])
+PYPORT
+)"
+  check_identity
+  python3 research/recv_cipher/recv_probe.py --port "$PORT" --out "$OUT/recv_callsites.jsonl" --seconds 8
+fi

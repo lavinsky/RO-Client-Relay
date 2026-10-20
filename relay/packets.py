@@ -55,6 +55,8 @@ class WireFilter:
         self.L, self.drop = lengths, drop
         self.conns = {}                                # conn -> {'buf', 'start', 'raw', 'off'}
         self.on_packet = None                          # callback(conn, pid, stream_offset, packet)
+        self.on_diag = None                            # optional passive packet-boundary log
+        self.diag_socks = {}                           # connection -> server socket for redaction
         self._map_seen = False                         # server phase: map traffic was observed
         self._char_return = set()                      # subsequent char TCP identities
 
@@ -64,6 +66,7 @@ class WireFilter:
         Only suppress the bare four-byte AID preamble on this transition. Never suppress
         an actual recognized packet or any payload within it.
         """
+        self.diag_socks[str(conn)] = sock
         if sock.endswith(':5121'):
             self._map_seen = True
         elif sock.endswith(':6121') and self._map_seen and conn not in self.conns:
@@ -102,6 +105,14 @@ class WireFilter:
                     pos = 4; st['start'] = False
                     continue
                 pid = buf[pos] | (buf[pos + 1] << 8)
+                if self.on_diag:
+                    self.on_diag({'tag': 'RECV-BOUNDARY', 'event': 'unknown',
+                                  'conn': str(conn), 'offset': st['off'] + pos,
+                                  'id': f'{pid:04x}', 'previous': st.get('last_id'),
+                                  'after_09ff': st.get('last_id') == '09ff',
+                                  'remaining': len(buf)-pos,
+                                  'prefix': buf[pos:pos+16].hex(),
+                                  'preceding': buf[max(0,pos-16):pos].hex()})
                 print(f'[wire] conn {conn}: unknown id 0x{pid:04x} - passing this connection through raw')
                 st['raw'] = True
                 out += buf[pos:]; pos = len(buf)
@@ -111,6 +122,15 @@ class WireFilter:
             st['start'] = False
             pid = buf[pos] | (buf[pos + 1] << 8)
             pkt = buf[pos:pos + L]
+            if self.on_diag and (pid == 0x09ff or st.get('last_id') == '09ff'):
+                self.on_diag({'tag': 'RECV-BOUNDARY', 'event': 'frame',
+                              'conn': str(conn), 'offset': st['off'] + pos,
+                              'id': f'{pid:04x}', 'previous': st.get('last_id'),
+                              'length': L, 'end': st['off'] + pos + L,
+                              'next_prefix': buf[pos+L:pos+L+16].hex(),
+                              'tail': pkt[-8:].hex(),
+                              'next_available': len(buf)-pos-L})
+            st['last_id'] = f'{pid:04x}'
             if self.on_packet:
                 self.on_packet(conn, pid, st['off'] + pos, pkt)
             if pid in enc:

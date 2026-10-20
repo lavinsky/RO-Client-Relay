@@ -75,8 +75,11 @@ def focus(wid, dry):
     env = dict(os.environ)
     env.setdefault('DISPLAY', ':0')
     # Gerência de janela (não é XTEST input): ativa/levanta a janela XWayland do cliente.
-    _run(['wmctrl', '-i', '-a', wid], dry, env)
-    _run(['xdotool', 'windowactivate', wid], dry, env)
+    rc1, _, _ = _run(['wmctrl', '-i', '-a', wid], dry, env)
+    rc2, _, _ = _run(['xdotool', 'windowactivate', wid], dry, env)
+    # A failed focus must NOT be followed by a global seat0 key event.
+    if rc1 or rc2:
+        raise RuntimeError('não foi possível focar janela do cliente (%d/%d)' % (rc1, rc2))
     if not dry:
         time.sleep(0.25)
 
@@ -97,11 +100,12 @@ def send_key(name, dry, hold_ms=120):
         raise RuntimeError('socket ydotoold ausente: %s — inicie o ydotoold (ver cabeçalho)' % sock)
     # OBSERVADO (2026-10-16): press+release colados (0 ms) NÃO registram no cliente uaRO; é preciso
     # SEGURAR a tecla ~120 ms. Então: press, hold_ms, release (duas chamadas ydotool via uinput).
-    _run(['ydotool', 'key', '%d:1' % code], dry, env)
-    if not dry:
+    rc_press, _, _ = _run(['ydotool', 'key', '%d:1' % code], dry, env)
+    if not dry and rc_press == 0:
         time.sleep(hold_ms / 1000.0)
-    rc, _, _ = _run(['ydotool', 'key', '%d:0' % code], dry, env)
-    return rc
+    # Always attempt release, including when the press failed.
+    rc_release, _, _ = _run(['ydotool', 'key', '%d:0' % code], dry, env)
+    return rc_press or rc_release
 
 
 # ---- atuador integrado ----------------------------------------------------------------------
@@ -138,8 +142,10 @@ class SynthActuator:
     def _resolve_wid(self):
         if self._wid_resolved:
             return self._wid
-        self._wid_resolved = True
         self._wid = find_wid(self._wid_explicit)
+        # A session may start before the client window exists: retry on a
+        # later action rather than caching 'not found' for the entire process.
+        self._wid_resolved = self._wid is not None
         if self._wid is None:
             print('[synth] janela do cliente não encontrada (passe --synth-wid; '
                   'synth_input --list) — tecla não injetada', flush=True)
@@ -184,7 +190,9 @@ class SynthActuator:
                 print('[synth] armed id=0x%04x -> tecla %s%s'
                       % (pid, key, ' (DRY)' if self._dry else ''), flush=True)
                 self._focus(wid, self._dry)
-                self._send(key, self._dry, self._hold_ms)
+                rc = self._send(key, self._dry, self._hold_ms)
+                if rc not in (None, 0):
+                    raise RuntimeError('synthetic key failed (exit %s)' % rc)
             except Exception as e:
                 print('[synth] erro ao injetar %s: %s: %s' % (key, type(e).__name__, e), flush=True)
 

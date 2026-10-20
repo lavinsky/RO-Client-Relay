@@ -7,7 +7,7 @@ import sys
 from . import ROOT
 from .agent import Agent, pick_port, pid_of_port
 from .config import DEFAULT_CONFIG, load_config_defaults
-from .console import CaptureLog
+from .console import CaptureLog, install_console_filter
 from .packets import WireFilter, load_lengths
 from .relay import Relay
 from .runtime import Capture
@@ -23,6 +23,8 @@ def parse_args(argv=None):
     ap.add_argument('--name', default='uaRO.exe')
     ap.add_argument('--port', type=int)
     ap.add_argument('--out', default=os.path.join(ROOT, 'relay_log.jsonl'))
+    ap.add_argument('--verbose', action=argparse.BooleanOptionalAction, default=False,
+                    help='show all console diagnostics and packet hex (default: concise console; JSONL unchanged)')
     ap.add_argument('--relay', default='127.0.0.1:2350',
                     help='feed decrypted server->client packets to this host:port ("" disables). '
                          'Default is the consumer XKore 1 listener (XKore_port, default 2350).')
@@ -44,7 +46,7 @@ def parse_args(argv=None):
     ap.add_argument('--decrypt-actors', action=argparse.BooleanOptionalAction, default=True,
                     help='--wire: fill in the encrypted 09fd/09ff bodies from the client\'s decrypted '
                          'recv ring (verified against the cleartext stream; unverifiable ones are dropped)')
-    ap.add_argument('--actor-delay', type=float, default=0.15,
+    ap.add_argument('--actor-delay', type=float, default=0.30,
                     help='max seconds a chunk with 09fd/09ff is held waiting for its decrypted copy '
                          '(later chunks queue behind it, so the consumer still gets the exact stream order)')
     ap.add_argument('--probe-actors', action='store_true',
@@ -263,6 +265,7 @@ def build_feed(a, drop):
 
 def main(argv=None):
     a = parse_args(argv)
+    install_console_filter(a.verbose)
     relay, wire = build_feed(a, parse_ids(a.drop_ids))
 
     port = a.port or pick_port(a.name)
@@ -271,7 +274,7 @@ def main(argv=None):
     if pid is None and reads_memory:
         sys.exit(f'[!] no process found listening on gadget port {port} (needed to read its memory)')
 
-    log = CaptureLog(a.out)
+    log = CaptureLog(a.out, verbose=a.verbose)
     capture = None
 
     def on_message(payload):                           # Frida's thread: queue only

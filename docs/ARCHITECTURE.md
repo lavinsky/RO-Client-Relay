@@ -1,6 +1,6 @@
 # Arquitetura técnica do RO-Client-Relay
 
-> **Base documental:** revisão estática de 2026-10-15 (`main@524b0f05fa61872e140f98ace9e503d12356641e`); **atualizada em 2026-10-17** para o PR #20 (integração Gamescope EIS, operação e diagnósticos). A revisão documental não realizou experimento vivo. Dados técnicos anteriores preservados em [HISTORY/ARCHITECTURE_LEGACY.md](HISTORY/ARCHITECTURE_LEGACY.md), com ressalvas sobre hipóteses históricas. Estado científico em [RESEARCH_STATUS.md](RESEARCH_STATUS.md).
+> **Base documental:** revisão estática de 2026-10-15 (`main@524b0f05fa61872e140f98ace9e503d12356641e`); **atualizada em 2026-10-17 para o PR #20 e auditada novamente em 2026-10-20** contra `origin/main@9ee7ef5` e o checkout `aa69a6a` com alterações ainda não commitadas (integração Gamescope EIS, operação e diagnósticos). A revisão documental não realizou experimento vivo. Dados técnicos anteriores preservados em [HISTORY/ARCHITECTURE_LEGACY.md](HISTORY/ARCHITECTURE_LEGACY.md), com ressalvas sobre hipóteses históricas. Estado científico em [RESEARCH_STATUS.md](RESEARCH_STATUS.md).
 
 ## 1. Fronteiras de responsabilidade
 
@@ -32,7 +32,7 @@ A figura é **esquemática**: nunca indica um canal direto de envio da rede pelo
 | `relay/runtime.py` | `Capture` instancia pipeline, despacha mensagens, coordena threads/estado |
 | `relay/wire_feed.py` | `WireFeed`: ordenação de trechos `RECV`, espera limitada por conteúdo verificado; `ClientSendFeed`: caminho de envio observado |
 | `relay/packets.py` | Tamanhos e fragmentação de pacote, `WireFilter`, `pack_move`, `unpack_pos2`, `MoveTracker` |
-| `relay/actors.py` | `ActorDecrypt`: ring e aceitação somente de cópias decifradas verificadas (`09fd`/`09ff`) |
+| `relay/actors.py` | `ActorDecrypt`: descoberta dinâmica do ring na sessão atual, aceitação conservadora de `09FD`/`09FF`/`0229`/`043F`/`0983` e telemetria |
 | `relay/synth_input.py` e `relay/gamescope_eis.py` | Atuador de carriers de ações; backend selecionável `ydotool`/seat0 ou `gamescope-eis`/libei (socket explicitamente indicado, sem fallback ao KDE) |
 | `scripts/gamescope-eis-session.sh` | Wrapper executado dentro do Gamescope: publica `LIBEI_SOCKET` num arquivo de localização privado e limpa-o ao fim da sessão |
 | `relay/relay.py` | Frames XKore, conexão/reconexão, alinhamento opcional |
@@ -44,13 +44,15 @@ A figura é **esquemática**: nunca indica um canal direto de envio da rede pelo
 | `agent/relay_hook_linux.js` | Instala e remove hooks/snapshots/instrumentação conforme mensagens; observa a própria thread do cliente |
 | `data/uaro_recvpackets.txt` | Referência de tamanhos para framing; **não** especifica por si só semântica de sessão |
 | `research/cipher/`, `research/movement_035f/` | Ferramentas e análises experimentais, separadas da lógica operacional |
+| `research/recv_cipher/` | Sonda isolada de plaintext recebido, correlacionador, snapshots e auditorias; não incorpora automaticamente o pipeline de produção |
+| `scripts/watch-uaro-stop.py`, `scripts/audit-game-stop-signals.sh` | Monitor de processo Linux e auditoria opcional de syscalls de sinal, iniciados por `run.sh` |
 
 ## 3. Recepção: servidor → cliente → quadro `R`
 
 1. O cliente recebe dados em um socket; o agente reporta `RECV` e snapshots correspondentes da ring de recepção **antes** da modificação relevante.
 2. `WireFeed.on_recv`/`WireFilter` acumulam segmentos por conexão e aplicam a tabela conhecida para delinear os pacotes; não buscar um ID plausível arbitrário para resincronizar um fluxo inválido.
-3. Corpos reconhecidamente claros são encaminhados; `09fd`/`09ff`, cujos corpos exigem acesso às cópias do cliente, criam itens pendentes.
-4. A thread alimentadora espera até um limite configurável (documentação original refere padrão `--actor-delay` de 0,15 s), durante o qual `ActorDecrypt` tenta ler/verificar a cópia já decifrada em `/proc/<pid>/mem`.
+3. Corpos reconhecidamente claros são encaminhados; `09FD`/`09FF`/`0229`/`043F`/`0983`, cujos corpos exigem uma cópia verificável do cliente, criam itens cifrados pendentes.
+4. A thread alimentadora espera até um limite configurável (checkout de 2026-10-20: `--actor-delay` de **0,30 s**, mais eventual janela curta de confirmação), durante o qual `ActorDecrypt` tenta ler/verificar a cópia já decifrada em `/proc/<pid>/mem`.
 5. Se a verificação não se sustentar, **não fabricar o corpo decifrado**: descartar o pacote não confirmado; preservar ordem de chegada para os demais.
 6. O `Relay` enquadra o fluxo como quadros `R` para o consumidor XKore 1. A identidade da conexão é mantida internamente para tokenização e reconstrução; o frame contém tipo, comprimento e payload, sem campo de ID de conexão (`relay/relay.py:14`).
 
@@ -73,7 +75,7 @@ A figura é **esquemática**: nunca indica um canal direto de envio da rede pelo
 | `--inject` + `--scramble-bp` / merge | Substitui corpo de pacote **já montado pelo próprio cliente**, no store pré-transformação, normalmente com DR0; uso único por padrão | `035f` na pilha, 3 bytes de destino | **Reativo**: requer que o cliente produza naturalmente um `035f`; não sintetiza intenção autônoma |
 | Autodescoberta opcional | Watch de escrita em ações de fila para recuperar PC do store, depois migrar a BP de execução para a posição real | `0437`/`0438` conforme fluxo documentado | Endereços/faixas dependem do build; não tratar offsets antigos como universais |
 
-O modo combinado distribui `035f` ao merge e os demais ao `SendPacket`, mantendo canais de debug distintos. `--inject-persist` é inadequado como regra automática para andar porque repetiria o destino em todos os passos naturais. Sem alteração explícita do responsável, preservar **`inject = true` e `inject-call = true` em `relay_capture.conf`**, apesar de defaults internos distintos.
+Na configuração atual, `--move-dispatch` encaminha `035F` ao dispatcher nativo, `--action-merge` encaminha `0437/0438/0AF4` ao merge pré-XOR com carrier sintético, e os outros pacotes compatíveis podem seguir por `SendPacket` nativo. A versão antiga de `035F` via merge continua como caminho histórico, não como roteamento operacional atual. `--inject-persist` é inadequado como regra automática para andar porque repetiria o destino em todos os passos naturais. Sem alteração explícita do responsável, preservar **`inject = true` e `inject-call = true` em `relay_capture.conf`**, apesar de defaults internos distintos.
 
 **Cuidado terminológico:** chamar o breakpoint `gepard+0x18eff2` de *store de corpo* não prova que a operação criptográfica é realizada nessa própria instrução. A investigação mais recente encontrou uma cadeia de **cópias de bytes** que antecede o store sem identificar o produtor criptográfico ([CIPHER_INVESTIGATION](CIPHER_INVESTIGATION.md)).
 
@@ -218,3 +220,26 @@ científica, seus resultados históricos ou o fluxo de produção.
 responsável**, não novas restrições de protocolo. A trilha científica ativa
 continua exclusivamente a cifra; evidência e distinções em
 [RESEARCH_STATUS](RESEARCH_STATUS.md).
+
+
+## 15. Recepção dinâmica, novos IDs e proveniência (revisão 2026-10-20)
+
+**OBSERVADO NO CÓDIGO:** `relay/actors.py` não carrega mais o arquivo antigo `.relay_actor_ring` na inicialização. A base do ring é descoberta por evidência da sessão atual: pesquisa assíncrona dentro de mapeamentos anônimos privados graváveis (inclusive RWX no Wine), com alinhamento da base em página, correspondência de cabeçalho e validação do candidato em plaintext. Endereço de sessão anterior ou início do mapeamento, isoladamente, não bastam. O mecanismo possui backoff, invalidade após 20 falhas não verificadas consecutivas e `ring_epoch` para impedir que uma pré-imagem de época anterior seja tomada por evidência atual. Ver [detalhes e sequência de resultados](DYNAMIC_ACTOR_RING.md).
+
+**IDs tratados como cifrados pelo pipeline:** `09FD`/`09FF` (variáveis, 4 bytes de cabeçalho em claro); `0229` (15 bytes), `043F` (25 bytes) e `0983` (29 bytes), para os quais o código considera somente o ID de 2 bytes como claro. Os três últimos exigem validação específica de tamanho/ID/alteração/GID não nulo **e** evidência contextual ou de pré-imagem/slot/tempo. Em especial, o GID de `0229` no wire está cifrado e não precisa ser igual ao GID plaintext. Estrutura plausível não basta para autenticar a cópia. Fontes: `relay/actors.py:215-231,484-681`, `relay/wire_feed.py`, `tests/test_0229_provenance.py`, `tests/test_043f_recovery.py`, `tests/test_0983_recovery.py`.
+
+**Validação de nome:** `cp1252` é a única decodificação candidata utilizada; a aplicação aceita letras, números, ASCII imprimível e um conjunto limitado de pontuação Unicode, com padding NUL estrito. `walk_speed` aceita `0..2000`. A exceção de nome totalmente vazio vale somente para `09FF`, com GID não nulo e leitura nova do slot previsto, pré-imagem segura, mesma base/época do ring e limite temporal anterior à recepção seguinte. Ela **não** relaxa a busca genérica ou a validação de snapshots. O servidor pode usar outra codificação: **NÃO VERIFICADO**. `tests/test_empty_actor_name.py` e `tests/test_actor_dynamic_ring.py` protegem esses contratos offline.
+
+**Telemetria:** `ACTOR-RECOVERY` diferencia recuperado/perdido, motivo, polls, snapshots, primeira/última leitura, validações e contagem de rejeições de mapeamento. `RECV-BOUNDARY` registra fronteiras no map server e fragmentos hexadecimais do fluxo; esses **são dados de sessão**, não publicáveis como documentação. A opção `--verbose` só seleciona saída de terminal; o JSONL sanitizado é mantido. Dados insuficientes produzem `RECV-PLAIN-UNAVAILABLE`, jamais plaintext inventado.
+
+**NÃO VERIFICADO:** correção semântica definitiva dos buffs/status e do estado `sitting` no consumidor. O reconhecimento de `043F`/`0983` no código não prova que cada campo de estado esteja correto em execuções reais.
+
+## 16. Instrumentação, proteção RX e supervisão externa (2026-10-20)
+
+O agente `agent/relay_hook_linux.js` inclui `overlapsRecvRing()`: bloqueia writes de merge TX cujo intervalo intersecte um ring RX registrado, inclusive a correção `_fix0`; registra `SCRAMBLE blocked-rx-ring`. Isso reduz escritas cruzadas **apenas quando o ring está conhecido**; ausência de ring registrado não prova ausência de região RX. Também emite `BP-TELEMETRY` de arme/desarme, falhas e resumos limitados de hits; PCs e TIDs dependem da sessão, e a medição não garante ausência de overhead.
+
+`run.sh` inicia um processo watchdog externo `scripts/watch-uaro-stop.py`, que observa o estado do **processo Linux** `T/t` (parado/trace-stopped), não a inatividade do personagem. Após 3 segundos envia um `SIGCONT` por episódio, rechecando processo/estado. Um processo retomado pode ficar com a sessão/cifra dessincronizada: isso **não é uma recuperação de protocolo**. Quando o cache sudo não interativo está disponível, o launcher também inicia auditoria de syscalls de sinal via `scripts/audit-game-stop-signals.sh`, limitada aos filtros e privilégios de `auditctl`. Encerramento normal tenta limpar monitores e regras. Detalhes em [OPERATIONS](OPERATIONS.md#watchdog-e-auditoria-de-sinais-linux).
+
+A trilha `research/recv_cipher/` investiga a captura **do plaintext já decifrado pelo cliente**, sem recuperar a função criptográfica. É uma sonda independente, com Frida, snapshots, correlacionador, possível watchpoint/hook de escrita explicitamente habilitado e auditoria. Amostras de 2026-10-18/19 incluem resultados quase completos e outras de 0 recuperação sob carga; não existe prova de captura perfeita. Ver [estado da trilha](../research/recv_cipher/STATE.md) e [panorama canônico](RESEARCH_STATUS.md).
+
+**Limite da revisão:** testes offline e leitura estática verificam contratos e sintaxe; não demonstram aceitação pelo servidor, segurança temporal de todos os hooks, ausência de regressão no uaRO ou geração independente do keystream Gepard.

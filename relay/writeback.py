@@ -374,6 +374,11 @@ class WriteBack:
             print(f"[inject] skip typ={typ!r} len={len(payload)} (need an 'S' packet with an id)")
             return
         pid = payload[0] | payload[1] << 8
+        # 0439 is fixed at 8 bytes in data/uaro_recvpackets.txt. Never
+        # trigger a key or native SendPacket with malformed item-use bytes.
+        if pid == 0x0439 and len(payload) != 8:
+            print(f'[itemuse] 0x0439 invalid length ({len(payload)}B): dropped')
+            return
         # O paceamento dos casts (0438/0af4) é feito no DRENO do agente, não aqui: o consumidor manda
         # re-tentativas espaçadas que passariam deste filtro mas, enfileiradas, drenam juntas e cada
         # cast cancela o anterior. O agente deixa passar um cast por janela (ver cast_ms em sendcall).

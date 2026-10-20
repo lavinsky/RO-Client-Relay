@@ -134,3 +134,9 @@ assert w.push_items('s', p87[:7]) == [] and w.carried('s') == 7
 assert w.push_items('s', p87[7:]) == [('B', p87)] and w.carried('s') == 0
 print('WireFilter ok')
 print('ALL PASS')
+
+# Fixed-size encrypted 0229 must be held intact across TCP fragments.
+w229 = g.WireFilter({0x0229: 15, 0x0087: 12}, set())
+p229 = bytes.fromhex('290263ef2000010203040506070809')
+assert w229.push_items('p229', p229[:7], enc={0x0229}) == []
+assert w229.push_items('p229', p229[7:], enc={0x0229}) == [('E', 0x0229, p229, 0)]

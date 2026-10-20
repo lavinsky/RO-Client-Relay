@@ -17,3 +17,6 @@ backup_*/
 
 # Artefatos de terceiros (gadget Frida, consumidor OpenKore) - nao versionados
 relay/resources/
+
+# Marcas temporais de sessão para diagnóstico de uso de item (dados locais)
+itemuse_input_marks.json

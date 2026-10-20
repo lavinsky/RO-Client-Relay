@@ -5,6 +5,8 @@
 
 <a id="cipher-specialist-20261017"></a>
 
+**Nota de escopo (auditoria 2026-10-20):** o trabalho recente em `research/recv_cipher/` recupera e correlaciona cópias de **plaintext já produzidas pelo cliente**; mesmo quando uma captura acerta todos os candidatos da sua janela, ela não identifica a função de keystream, seeds, estado interno nem a variante A/B do uaRO. A cifra independente continua **PENDENTE DE IDENTIFICAÇÃO**. [Estado](RESEARCH_STATUS.md#revisão-do-checkout--2026-10-20) e [sonda](../research/recv_cipher/STATE.md). As transcrições matemáticas A/B abaixo permanecem inalteradas.
+
 ## Referências especializadas da família Gepard — prioridade vigente (2026-10-17)
 
 ### Procedência e alcance epistemológico

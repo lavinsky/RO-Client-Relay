@@ -1,6 +1,6 @@
 # Operação, configuração e validação — RO-Client-Relay
 
-> Revisão documental: **2026-10-15**, `main@524b0f05fa61872e140f98ace9e503d12356641e`. Transcrição dos comandos publicados em [`../README.md`](../README.md), [`../ARCHITECTURE.md`](HISTORY/ARCHITECTURE_LEGACY.md), [`../relay_capture.conf`](../relay_capture.conf). **Não foram executados contra o cliente durante esta revisão.** Uso somente em ambientes com autorização explícita.
+> Revisão documental: **2026-10-15**, `main@524b0f05fa61872e140f98ace9e503d12356641e`; atualização auditada em **2026-10-20** contra `origin/main@9ee7ef5`. Transcrição dos comandos publicados em [`../README.md`](../README.md), [`../ARCHITECTURE.md`](HISTORY/ARCHITECTURE_LEGACY.md), [`../relay_capture.conf`](../relay_capture.conf). **Não foram executados contra o cliente durante esta revisão.** Uso somente em ambientes com autorização explícita.
 
 ## Pré-requisitos e instalação
 
@@ -38,11 +38,11 @@ O relay usa como padrão publicado `127.0.0.1:2350` e quadros `R` (servidor→co
 
 ```sh
 ./run.sh                     # lê relay_capture.conf quando opções não sobrescritas
-./run.sh --no-inject         # exemplo: leitura apenas, ignorando escrita da config
+./run.sh --raw --no-inject   # leitura apenas; o wrapper normal não recebe --no-inject
 # Com stdin mantido aberto, como documentado:
 tail -f /dev/null | ~/.venv-frida/bin/python relay_capture_linux.py
 # Troca do ambiente virtual:
-VENV=/caminho/do/venv ./run.sh
+FRIDA_PY=/caminho/do/python ./run.sh
 ```
 
 A precedência declarada é **defaults internos CLI → `relay_capture.conf` → argumentos CLI**. O arquivo INI usa `[capture]`; `--config ARQUIVO` aponta alternativa. O driver encerra ao receber EOF no stdin; `run.sh` mantém stdin aberto. Encerramento normal por Ctrl-C/SIGTERM, liberando a instrumentação; evitar kill abrupto enquanto registradores de depuração permanecerem armados.
@@ -74,7 +74,7 @@ O `--drop-ids` do fluxo servidor→consumidor e o timeout da FIFO continuam inde
 | `--synth-input` | OFF | Atuador interno de carriers de ação; a via depende de `--synth-backend`. Na configuração operacional validada está ON. |
 | `--synth-backend` | `ydotool` | Seleciona `ydotool`/seat0 legado ou `gamescope-eis` via libei/socket privado; a config operacional validada usa `gamescope-eis`. |
 | `--synth-eis-socket` / `--synth-eis-socket-file` | vazios | Indicação direta do socket EIS ou arquivo de localização 0600 criado pelo wrapper; não usar ambos. Erro se não houver EIS no backend selecionado, sem fallback ao KDE. |
-| `--itemuse-input` / `--itemuse-input-key` | OFF / `END` | Com `0x0439`, pressiona e solta a tecla sincronicamente *antes* do pedido SendPacket; impede envio se não completar. Config operacional validada: ON / `END`. |
+| `--itemuse-input` / `--itemuse-input-key` | OFF / `END` | Com `0x0439`, pressiona e solta a tecla sincronicamente *antes* do pedido SendPacket; impede envio se não completar. Default do CLI: OFF / `END`; configuração local atual: ON / `F2` (mudança posterior, não presumir validação live). |
 | `--synth-key-0437` / `--synth-key-0438` / `--synth-key-0af4` | `INSERT` / `9` / `F2` | Teclas padrão para produzir o carrier; `9` corresponde à fileira superior. |
 | `--synth-debounce-ms` / `--synth-dry` | `500` / OFF | Antirrepetição em milissegundos; modo `dry` registra sem enviar input. |
 | `--egress-queue` | OFF | FIFO para quadros de egresso `S` (não `R`); ordenação, **não** causa/correção do defeito de byte zero. |
@@ -246,7 +246,7 @@ synth-key-0437 = INSERT
 synth-key-0438 = 9
 synth-key-0af4 = F2
 itemuse-input = true
-itemuse-input-key = END
+itemuse-input-key = F2
 ```
 
 `synth-wid` permanece no INI como compatibilidade, porém é **ignorado**
@@ -280,3 +280,104 @@ verifica a descoberta da porta do Gadget sem impor política de
 offline, não valida transmissão criptográfica ou conformidade do uaRO.
 `research/movement_035f/` usa agora caminhos relativos à raiz para
 `data/uaro_recvpackets.txt`, sem modificar experimentos concluídos.
+
+## Auditoria regressiva de limites e falhas — 2026-10-18
+
+**Escopo e procedência:** revisão estática do código Python do relay, da
+CLI/configuração, do cliente EIS e dos contratos de eventos com o agente
+Frida; testes **sintéticos offline**, sem execução do uaRO, sem rede do
+servidor, sem acesso à memória do cliente. Além da suíte histórica, foram
+adicionados **105 testes nomeados em nove módulos `tests/test_edge_*.py`**,
+com milhares de entradas geradas deterministicamente para propriedades
+de framing e coordenadas. `node --check` confirma somente **sintaxe**
+do agente JS, não o comportamento em tempo de execução do Frida.
+
+| Superfície | Novos limites verificados |
+|---|---|
+| `relay/packets.py` | Length table, `VAR`, fragmentação em todos os pontos de corte, byte por byte, preâmbulo de seleção de personagem, desconhecidos, offsets e isolamento por conexão, milhares de round-trips de coordenadas |
+| `relay/relay.py` | XKore com 0/1/65535/65536 bytes, 90 sequências de fragmentos aleatórios, desconexões em `sendall()`, reconexão, callback uma única vez, erro no consumidor |
+| `relay/actors.py` / `wire_feed.py` | Intervalos de velocidade/tipo de ator, validação `09ff` e `0229`, bytes claros vs. cifrados, cópia anterior confiável, timeout, duplicação, stream limitado, snapshots e FIFO por conexão |
+| `relay/gamescope_eis.py` / `synth_input.py` | Socket 0600, tipo de arquivo, input somente no Gamescope, rejeição de socket KDE e symlink, perda/pausa de dispositivo, timeout, soltura da tecla, falhas de pressão/foco, debounce, worker e descoberta tardia da janela |
+| `relay/writeback.py` | `0439` de 8 bytes (tabela), barreira síncrona antes de `SendPacket`, drop em erro, roteamento exclusivo de `035f`, merge, SendPacket, GIDs, `0091/0092` e quadros não `S` |
+| `relay/safety.py`, `console.py`, `sendwatch.py` | Sigilo de credenciais e tokens nas duas direções da conexão de login, HTTP, remoção de dados binários/pointer, logs concorrentes e rejeição de janelas de escrita inválidas |
+| `relay/cli.py`, `protocol.py`, `agent.py` e JS | Precedência INI/CLI e booleanos, mensagens nativas, descoberta de Gadget, eventos Frida mockados e análise sintática do JS |
+
+**Defeitos confirmados por testes sintéticos e corrigidos no código:**
+`Relay.send()` não disparava `on_disconnect` quando a desconexão era
+detectada em `sendall()`; o legado `ydotool` podia sinalizar sucesso
+após falha de `key-down` ou focar incorretamente, e não repetia a
+descoberta de janela ausente; seu worker não observava código de erro
+do sender. Em EIS, rejeitam-se agora nomes de socket do KDE, bytes
+de controle em caminhos e reutilização de contexto após exceção.
+`0x0439` malformado é descartado antes de tecla/SendPacket; login
+`RECV` recebe redação de material sensível; `SendWatch` rejeita
+metadados de escrita incompletos sem falhar; a descoberta rápida
+de atores mascara o corpo `0229` a partir do byte +2, não +4.
+A correção de isolamento por identidade de conexão veio também dos
+commits paralelos `695a85a`/`7c039e5`, já presentes no checkout;
+os novos testes a mantêm protegida. Esses resultados são
+**OBSERVADOS EM TESTES OFFLINE**, não equivalem à confirmação em jogo.
+
+**Limitações e riscos remanescentes:** não há teste dinâmico da VM do
+Gepard, validade de `this` sob realocação do cliente, ordenação
+de instruções Frida/hardware breakpoints, foco real do KDE/Proton,
+sincronização do algoritmo de cifra, nem cenário integral de
+reconexão em servidor vivo. `PacketAligner.find_alignment` ainda
+pode esperar um falso candidato incompleto antes de buscar outro
+offset (contrato conservador de sincronização); alterá-lo exige
+um discriminador de alinhamento validado para não descartar bytes
+legítimos. A suíte detecta regressões **modeladas**, não garante
+ausência de defeitos em execução real.
+
+**Execução:** `bash scripts/test-offline.sh`,
+`python3 scripts/validate-research.py`,
+`python3 scripts/validate-codex.py`,
+`node --check agent/relay_hook_linux.js` (se Node estiver instalado),
+`git diff --check`. O arquivo de sessão
+`itemuse_input_marks.json` foi incluído no `.gitignore` para
+evitar publicação acidental. Esta auditoria não altera
+`inject=true`, `inject-call=true` ou os demais valores
+operacionais validados em `relay_capture.conf`.
+
+
+## Configuração e telemetria atuais — auditoria 2026-10-20
+
+**OBSERVADO NO ARQUIVO LOCAL (não presume validação live desta revisão):**
+
+| Chave / recurso | Checkout atual | Consequência |
+|---|---|---|
+| `inject`, `inject-call` | `true`, `true` | Preservados conforme decisão do responsável |
+| `move-dispatch`, `action-merge` | `true`, `true` | Movimento pela cadeia nativa; carriers de ações via merge |
+| `egress-queue`, `sendcall-demand` | `false`, `false` | Sem FIFO adicional de egresso; sem drenagem nativa sob demanda |
+| `synth-input`, `synth-backend` | `true`, `gamescope-eis` | Entrada direcionada ao socket privado do Gamescope, sem fallback automático ao KDE |
+| `itemuse-input`, `itemuse-input-key` | `true`, **`F2`** | A tecla de uso de item mudou desde a confirmação de 2026-10-17 (`END`). **Não atribuir validação live anterior a F2.** O default interno da CLI ainda é `END` |
+| `actor-delay` | **`0.30` s** (config e CLI) | Aumenta oportunidade de cópia, mas retém o fluxo ordenado e não impede overwrite |
+| `verbose` | **`false`** | Terminal conciso; `--verbose` habilita diagnóstico amplo, sem alterar registros JSONL |
+| `scramble-bp` | `18eff2` | Offset relativo ao Gepard no build estudado; não universal |
+| `map-settle-ms` | `1500` | Tempo configurado para transição/recaptura nativa |
+
+A configuração permanece em `relay_capture.conf`; nenhuma chave foi modificada pela auditoria documental. A tabela histórica acima, sob **Configuração observada no checkout local**, documenta o recorte de 2026-10-15/17 e **não prevalece** sobre esta seção para valores mais recentes.
+
+**Execução real do wrapper:** `./run.sh` reconhece apenas um conjunto restrito de opções (`--port`, `--wid`, `--dry`, `--target-select` e suas formas documentadas de desativação, `--sendcall-demand` e `--no-sendcall-demand`). Para utilizar qualquer outra flag do driver, usar `./run.sh --raw --no-inject` ou `./run.sh --raw --verbose`. O comando antes documentado `./run.sh --no-inject` **não é aceito pelo wrapper normal**. A variável reconhecida para selecionar o Python é `FRIDA_PY`, não `VENV`.
+
+A opção `--verbose` habilita exibição detalhada do tráfego no terminal. O modo conciso omite linhas de alta frequência, mas não os erros relevantes; o arquivo `relay_log.jsonl` mantém eventos sanitizados. Os registros `RECV-BOUNDARY` podem conter prefixos/sufixos hexadecimais do tráfego real do mapa; não copiá-los para documentos públicos. `ACTOR-RECOVERY` classifica `status`, `reason`, `attempts`, `first_read`, `last_read`, `candidate_seen`, `usable_snapshots` e estatísticas de validação, sem corpos completos nesses campos. Ambos são diagnósticos, não provas de decifragem de todos os pacotes.
+
+**Caminho de recepção:** `09FD`/`09FF`/`0229`/`043F`/`0983` agora são roteados para recuperação de cópia cifrada, sob validação; as entradas de `drop-ids` só devem ser alteradas após conferir o contrato do tokenizer e a tabela. O estado de `sitting`, buffs e flags de `opt1/opt2/option` continuam sujeitos à verificação semântica: sucesso em teste de plaintext não significa que o consumidor interpretou corretamente o status.
+
+**Testes executados antes desta edição:** `bash scripts/test-offline.sh` PASS (37 scripts); `python3 scripts/validate-research.py`, `python3 scripts/validate-codex.py`, `git diff --check`, `bash -n` dos scripts de lançamento e `node --check` dos JS PASS. Além da suíte principal, `python3 research/recv_cipher/test_ring_correlator.py` e `test_audit_write_trace.py` PASS. `python3 research/recv_cipher/validate_0229.py` requer caminho de arquivo de log como argumento; não foi executado sobre captura privada nesta auditoria. Nenhuma rodada live foi iniciada.
+
+**Checagem passiva live de 20/10/2026:** os arquivos `relay_log.jsonl` e `../OpenKore-upstream/logs/console.txt` foram consultados **sem reiniciar nem instrumentar o cliente**; há registros simultâneos de atividade do OpenKore e recuperações de `09FD/09FF/0983/043F/0229` no relay de 18:37 a 19:30 BRT, com 115 misses preservados. [Tabela quantitativa, classificação e limitações](RESEARCH_STATUS.md#verificação-passiva-dos-logs-de-produção--2026-10-20-18371930-brt). As capturas permaneceram no computador e fora do Git.
+
+## Watchdog e auditoria de sinais Linux
+
+`./run.sh` inicia por padrão `scripts/watch-uaro-stop.py --threshold 3 --interval 0.25`. O monitor observa a **situação do processo Linux**, com códigos `T` (stopped) e `t` (traced/stopped), não uma personagem parado em jogo. Confere novamente nome `uaRO.exe` e estado antes de enviar `SIGCONT`; um único sinal por episódio, para não inundar a sessão. Esse mecanismo **não corrige congelamentos sem SIGSTOP** ou falta de progresso do game loop. Depois de `SIGCONT`, a cifra ou protocolo podem estar dessincronizados e exigir reconexão/relogin; não há garantia de re-sincronização automática.
+
+Se `sudo -n true` já passa, o launcher pode iniciar automaticamente `scripts/audit-game-stop-signals.sh` para registrar syscalls `kill`, `tgkill` e `tkill` por PID via `auditctl`, em b32/b64; sem credenciais sudo previamente disponíveis ele prossegue sem pedir senha. Trata-se de **instrumentação privilegiada**, que depende de auditd/auditctl e da compatibilidade dos filtros do kernel. O launcher tenta remover suas próprias regras no término regular, mas um término abrupto pode deixar regras instaladas; conferir o estado do sistema antes de reabilitar a sonda. A auditoria não observa todas as fontes de parada nem demonstra quem enviou `SIGSTOP` numa sessão passada.
+
+**Não confundir dois tipos de monitoramento:** `ACTOR-RECOVERY`/snapshots tratam de pacotes de recepção; o watchdog trata do estado de processo. `BP-TELEMETRY` informa arme/desarme/hits limitados de HW BP, não identifica por si só origem causal de freezes. O código `agent/relay_hook_linux.js` protege escritas TX de sobreposição **com rings RX registrados**; isso não prova isolamento quando a região ainda não foi encontrada.
+
+## Sonda independente de recepção e critérios de aceitação
+
+O caminho experimental `research/recv_cipher/` possui um correlacionador de ring por FD, snapshots pré-sobrescrita, adaptador de `ActorDecrypt`, auditoria de cobertura, telemetria opcional e sondas explícitas de escrita. **Não executar a partir de manutenção documental.** A execução live exige escopo autorizado, verificação de identidade do processo e exclusividade de instrumentação; os watchpoints e `RECV_WRITE_PC` não estão habilitados por padrão. Não transferir base de ring, PC ou snapshot entre reinícios.
+
+Amostras de 2026-10-19 variaram de **0/76** recuperados na coleta com 70 `09FF` até **221/224 `09FF` e 14/16 `09FD`** em outra janela. Outros rastros confirmaram escritas compatíveis no slot, mas não proveniência única nem ganho causal generalizável. Para considerar uma melhoria validada: comparar **mesma carga, build e critérios**, ordenar por identidade de conexão, contar vistos/recuperados/misses/duplicações e verificar que conteúdos ambíguos não chegam ao OpenKore. Fonte de execução: [STATE da sonda](../research/recv_cipher/STATE.md); métodos: [README da sonda](../research/recv_cipher/README.md); síntese de arquitetura: [Recuperação dinâmica](DYNAMIC_ACTOR_RING.md).

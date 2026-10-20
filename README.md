@@ -9,6 +9,8 @@ sem cliente, com futura integração no projeto OpenKore.
 - [Estado atual das pesquisas](docs/RESEARCH_STATUS.md)
 - [Arquitetura](docs/ARCHITECTURE.md)
 - [Operação, instalação e diagnóstico](docs/OPERATIONS.md)
+- [Recuperação dinâmica de atores e evidências](docs/DYNAMIC_ACTOR_RING.md)
+- [Resumo da auditoria e alterações locais de 2026-10-20](docs/RESEARCH_STATUS.md#revisão-do-checkout--2026-10-20)
 - [Regras dos agentes](AGENTS.md)
 
 ## Setup rápido
@@ -21,9 +23,9 @@ O OpenKore é instalado separadamente.
 
 Configure seu xKore 1 conforme [operação](docs/OPERATIONS.md#openkore-e-enquadramento-xkore).
 Com cliente e consumidor prontos, `./run.sh` usa `relay_capture.conf`;
-`./run.sh --no-inject` desativa escrita nessa execução. Os valores intencionais
+`./run.sh --raw --no-inject` desativa escrita nessa execução (o wrapper normal não reconhece `--no-inject`). Os valores intencionais
 `inject = true` e `inject-call = true` do arquivo permanecem preservados.
-O movimento via merge continua reativo; a cifra independente permanece não resolvida.
+Na configuração atual, `035F` segue o dispatcher nativo e `0437`/`0438`/`0AF4` usam carriers com merge; a cifra independente permanece não resolvida.
 
 ## Testes
 

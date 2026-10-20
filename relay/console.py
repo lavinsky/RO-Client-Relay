@@ -11,7 +11,72 @@ def _pid(v):
     return f'0x{v:04x}' if isinstance(v, int) else '?'
 
 
-def show(m):
+# Console filtering never changes the sanitized JSONL capture or packet delivery.
+# Only known high-frequency success/debug lines are hidden. Unknown lines, failures,
+# warnings and startup status remain visible by default.
+_NOISY_PREFIXES = ('[inject] skip typ=', '[inject] inbound ', '[inject] target-select ',
+                   '[inject] 035f -> native dispatch', '[synth] armed ',
+                   '[sendcall] SENT ', '[move   ]', '[actor] stats:',
+                   '[send] stats:', '[move] stats:', '[synth/eis] DRY ',
+                   '  $ ', '[itemuse] input ')
+
+
+def concise_line(line):
+    clean = line.lstrip()
+    if clean.startswith(('[!]', '[frida error]', '[relay] connection dropped',
+                         '[relay] consumer gone', '[egress] drop', '[egress] dispatch error',
+                         '[actor] 20 unverified', '[actor] decrypted recv ring')):
+        return True
+    return not clean.startswith(_NOISY_PREFIXES)
+
+
+class _FilteredStdout:
+    """Line-wise, thread-safe filter for diagnostic prints outside CaptureLog."""
+    def __init__(self, stream):
+        self.stream = stream
+        self.lock = threading.RLock()
+        self.parts = {}
+
+    def write(self, value):
+        tid = threading.get_ident()
+        with self.lock:
+            text = self.parts.pop(tid, '') + value
+            *lines, remainder = text.split('\n')
+            for line in lines:
+                if concise_line(line):
+                    self.stream.write(line + '\n')
+            if remainder:
+                self.parts[tid] = remainder
+        return len(value)
+
+    def flush(self):
+        with self.lock:
+            self.stream.flush()
+
+    def __getattr__(self, key):
+        return getattr(self.stream, key)
+
+
+def install_console_filter(verbose=False):
+    import sys
+    if isinstance(sys.stdout, _FilteredStdout):
+        sys.stdout = sys.stdout.stream
+    if not verbose:
+        sys.stdout = _FilteredStdout(sys.stdout)
+
+
+def show(m, verbose=True):
+    if not verbose:
+        tag = m.get('tag')
+        if tag == 'RECV-PLAIN-UNAVAILABLE':
+            print(f"[recv] plaintext indisponível id=0x{m.get('id', '?')}")
+        elif tag == 'RECV-LOST':
+            print(f"[recv] pacote perdido id=0x{m.get('id', '?')} len={m.get('len', '?')}")
+        elif tag == 'SENDCALL' and m.get('hit') in ('error', 'failed', 'exception'):
+            print(f"[sendcall] {m.get('hit')}: {m.get('e', 'erro')}")
+        elif tag == 'TRACE' and m.get('erro'):
+            print(f"[trace] erro: {m.get('erro')}")
+        return
     tag, i = m.get('tag'), m.get('id', '????')
     if tag == 'ITEMUSE-STAGE':
         print(f"[itemuse] {m.get('ts')} {m.get('stage')} item_index={m.get('item_index')} "
@@ -113,7 +178,8 @@ def show(m):
 class CaptureLog:
     """Writes each message, sanitized, as one JSON line, and prints it. Worker thread only."""
 
-    def __init__(self, path):
+    def __init__(self, path, verbose=True):
+        self.verbose = verbose
         self.path = path
         self._lock = threading.Lock()
         self.f = open(path, 'w', buffering=1)          # line-buffered: survives os._exit on detach
@@ -125,4 +191,4 @@ class CaptureLog:
         sanitize(m)
         with self._lock:
             self.f.write(json.dumps(m) + '\n')
-            show(m)
+            show(m, verbose=self.verbose)

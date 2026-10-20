@@ -46,7 +46,7 @@ PYID
 }
 check_identity
 # Nunca anexar depurador CEserver/ptrace: congela o uaRO sob Wine/Proton.
-# Apenas inventario read-only via /proc e ro_ops; sem leitura de /proc/PID/mem.
+# Inventario e correlacao somente leitura via /proc; sem ptrace ou escrita de memoria.
 check_identity
 python3 - "$PID" > "$OUT/proc_status.json" <<'PYSTATUS'
 import json,sys
@@ -77,5 +77,5 @@ j=json.load(open(sys.argv[1]));print(j['data']['port'])
 PYPORT
 )"
   check_identity
-  python3 research/recv_cipher/recv_probe.py --port "$PORT" --out "$OUT/recv_callsites.jsonl" --seconds 8
+  python3 research/recv_cipher/recv_probe.py --pid "$PID" --port "$PORT" --out "$OUT/recv_callsites.jsonl" --seconds "${RECV_PROBE_SECONDS:-12}" --max-calls "${RECV_PROBE_MAX_CALLS:-160}"
 fi

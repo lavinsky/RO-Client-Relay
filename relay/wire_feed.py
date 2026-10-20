@@ -183,6 +183,28 @@ class WireFeed:
                             'conn': e['conn'], 'id': packet_id,
                             'reason': 'only-encrypted-recv-available',
                         })
+                    self.log.write({
+                        'tag': 'ACTOR-RECOVERY', 'conn': e['conn'], 'id': packet_id,
+                        'status': 'recovered' if plain else 'missed',
+                        'reason': e.get('reasons', {}).get(i, 'unclassified'),
+                        'attempts': e.get('polls', 0),
+                        'snapshots': len(e['snaps']),
+                        'first_valid_ms': e.get('first_valid_ms', {}).get(i),
+                        'elapsed_ms': round((time.time() - e['t']) * 1000, 2),
+                        'ring_known': self.dec is not None and self.dec.base is not None,
+                        'first_read': e.get('first_read', {}).get(i),
+                        'last_read': e.get('last_read', {}).get(i),
+                        'candidate_seen': e.get('candidate_seen', {}).get(i),
+                        'usable_snapshots': e.get('snapshot_read_count', {}).get(i, 0),
+                        'next_recv_before_decision': e['closed'] is not None,
+                        'preimage_safe': i in e.get('Bsafe_items', set()),
+                        'evidence_validation': e.get('evidence_validations', {}).get(i),
+                        'name_rejection': e.get('name_rejection', {}).get(i),
+                        'failure_evidence': (e.get('failure_evidence', {}).get(i)
+                                             if not plain else None),
+                        'ring_mapping_rejections': (self.dec.stats.get('ring-rejected-unsafe-mapping', 0) if self.dec is not None else 0),
+                        'ring_mapping_unavailable': (self.dec.stats.get('ring-mapping-unavailable', 0) if self.dec is not None else 0),
+                    })
             if data:
                 self.relay.feed(data)
 

@@ -1,10 +1,14 @@
 # Documentação técnica — RO-Client-Relay
 
-**Entrada principal de documentação.** Em 2026-10-17, as pesquisas de **movimento `0x035F` e ações `0x0437`/`0x0438`/`0x0AF4` foram encerradas como funcionais** pelo responsável. A **única investigação ativa é a cifra uaRO/Gepard**. O defeito do ataque automático era a reescrita incorreta do primeiro byte pelo store do scrambler, corrigida em `agent/relay_hook_linux.js:481-534` (não seleção de alvo). [Estado canônico](RESEARCH_STATUS.md).
+**Entrada principal de documentação.** Em 2026-10-17, as pesquisas de **movimento `0x035F` e ações `0x0437`/`0x0438`/`0x0AF4` foram encerradas como funcionais** pelo responsável. A **única investigação criptográfica científica ativa é a cifra uaRO/Gepard**; a trilha de engenharia de recuperação do plaintext recebido é distinta e está documentada separadamente. O defeito do ataque automático era a reescrita incorreta do primeiro byte pelo store do scrambler, corrigida em `agent/relay_hook_linux.js:481-534` (não seleção de alvo). [Estado canônico](RESEARCH_STATUS.md).
 
 ## Ordem de leitura
 
 Para toda tarefa: [AGENTS.md do projeto](../AGENTS.md) → [Estado e decisões](RESEARCH_STATUS.md) → documento temático → fonte específica (`arquivo:linha`). A pesquisa ativa também lê [research/COORDINATION.md](../research/COORDINATION.md), [research/cipher/STATE.md](../research/cipher/STATE.md) e o [handoff corrente](../research/cipher/HANDOFF.md).
+
+## Auditoria de atualização — 2026-10-20
+
+A comparação recente foi feita contra `origin/main@9ee7ef5`, não contra a `main` local desatualizada. O estado atualizado de recepção, guardas TX/RX, novas sondas, watchdog e configurações está em [RESEARCH_STATUS](RESEARCH_STATUS.md#revisão-do-checkout--2026-10-20), com contratos em [ARCHITECTURE](ARCHITECTURE.md#15-recepção-dinâmica-novos-ids-e-proveniência-revisão-2026-10-20), operação em [OPERATIONS](OPERATIONS.md) e histórico técnico da ring em [DYNAMIC_ACTOR_RING](DYNAMIC_ACTOR_RING.md). A pesquisa de extração de plaintext em `research/recv_cipher/` é **instrumentação experimental separada** da identificação do algoritmo Gepard: esta continua a única investigação criptográfica científica ativa. Testes offline não equivalem à validação live.
 
 ## Documentos ativos
 
@@ -13,6 +17,7 @@ Para toda tarefa: [AGENTS.md do projeto](../AGENTS.md) → [Estado e decisões](
 | [RESEARCH_STATUS.md](RESEARCH_STATUS.md) | Único panorama de estado, decisões, classificação e evidências essenciais | Qualquer tarefa ou subagente |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Fluxos de cliente/Frida/driver/OpenKore; memória, threads, writeback e limites do xKore 0 | Arquitetura, programação e revisão |
 | [OPERATIONS.md](OPERATIONS.md) | Configuração, execução, flags, dependências e testes offline | Instalação, operação e diagnóstico |
+| [DYNAMIC_ACTOR_RING.md](DYNAMIC_ACTOR_RING.md) | Registro técnico cronológico da descoberta e recuperação do ring de recepção, limites, validação de nomes e novos IDs | Bugs de atores, buffs e proveniência RX |
 | [CIPHER_INVESTIGATION.md](CIPHER_INVESTIGATION.md) | Pesquisa científica de cifra **ativa**; inclui integralmente o antigo manual `CIPHER_TOOLS.md` e fingerprint `PROTECTION_FINGERPRINT_DIE.md` | Agente CIFRA, verifier e pesquisa |
 | [GEPARD_CONTROL_PACKETS.md](GEPARD_CONTROL_PACKETS.md) | Inventário de protocolo, pacote periódico `0x8280`, distinção entre histórico e build atual | Protocolo, cifra e futuro plugin |
 | [AGENTS.md](AGENTS.md) | Regras breves de documentação e preservação de evidências | Documentador |

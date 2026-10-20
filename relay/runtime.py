@@ -50,6 +50,7 @@ class Capture(WriteBack):
             if self.dec:
                 print(f'[*] --decrypt-actors: 09fd/09ff bodies from the client recv ring (hold <= {opts.actor_delay*1000:.0f}ms)')
                 self.dec.on_ring = self._on_ring_found
+            wire.on_diag = (lambda m: log.write(m) if wire.diag_socks.get(m['conn'], '').endswith(':5121') else None)  # map-only; no login bytes
             self.moves = MoveTracker(log)              # decodifica o destino do 0087 (texto claro)
             recv_cbs = ([probe.on_packet] if probe else []) + [self.moves.on_recv_packet, self.on_map_boundary]
             wire.on_packet = recv_cbs[0] if len(recv_cbs) == 1 else \
@@ -138,6 +139,15 @@ class Capture(WriteBack):
         return self.sendwatch is not None and self._sw_posted is None
 
     def report_stats(self):
+        if not getattr(self.opts, 'verbose', False):
+            if self.dec and self.dec.stats:
+                stats = self.dec.stats
+                recovered = sum(value for key, value in stats.items() if key.startswith('ok-'))
+                failures = stats.get('unverified', 0) + stats.get('no-ring', 0)
+                ring = 'ready' if self.dec.base is not None else 'searching'
+                print(f'[summary] ring={ring} recovered={recovered} '
+                      f'unverified={failures} invalid_rings={stats.get("ring-rejected-unsafe-mapping", 0)}')
+            return
         if self.dec and self.dec.stats:
             print(f'[actor] stats: {dict(self.dec.stats)}')
         if self.sendwatch and self.sendwatch.stats:

@@ -34,6 +34,70 @@ if [ "${1:-}" = "--raw" ]; then RAW=1; shift; fi
 PY="${FRIDA_PY:-$HOME/.venv-frida/bin/python}"
 [ -x "$PY" ] || PY="python3"
 
+# Auditoria opcional: nunca solicitar senha interativamente ou impedir o jogo.
+# Para ativar: sudo -v antes de ./run.sh; caso contrário seguimos sem auditoria.
+# O monitor acompanha reinícios do uaRO e remove somente regras que conseguiu instalar.
+AUDIT_SCRIPT="$HERE/scripts/audit-game-stop-signals.sh"
+AUDIT_MONITOR_PID=''
+audit_monitor() {
+    local pid='' newpid='' audit_ready=0
+    audit_monitor_cleanup() {
+        if [[ -n "$pid" && "$audit_ready" -eq 1 ]]; then
+            sudo -n "$AUDIT_SCRIPT" report "$pid" 2>&1 || true
+            sudo -n "$AUDIT_SCRIPT" stop "$pid" 2>&1 || true
+        fi
+    }
+    trap audit_monitor_cleanup EXIT
+    trap 'exit 0' TERM INT
+    while :; do
+        newpid="$(pgrep -u "$(id -u)" -x 'uaRO.exe' | tail -n 1 || true)"
+        if [[ "$newpid" != "$pid" ]]; then
+            if [[ -n "$pid" && "$audit_ready" -eq 1 ]]; then
+                sudo -n "$AUDIT_SCRIPT" report "$pid" 2>&1 || true
+                sudo -n "$AUDIT_SCRIPT" stop "$pid" 2>&1 || true
+            fi
+            audit_ready=0; pid="$newpid"
+            if [[ -n "$pid" ]]; then
+                if sudo -n "$AUDIT_SCRIPT" start "$pid"; then
+                    audit_ready=1
+                    echo "[audit] monitorando sinais enviados ao uaRO PID=$pid"
+                else
+                    echo '[audit] sem privilégios não interativos; auditoria desativada (execute sudo -v antes de ./run.sh)' >&2
+                    return 0
+                fi
+            fi
+        fi
+        sleep 1
+    done
+}
+audit_cleanup() {
+    if [[ -n "$AUDIT_MONITOR_PID" ]]; then
+        kill "$AUDIT_MONITOR_PID" 2>/dev/null || true
+        wait "$AUDIT_MONITOR_PID" 2>/dev/null || true
+    fi
+}
+# A execução com sudo -n não altera a exigência de senha do sistema e não trava o launcher.
+if [[ -x "$AUDIT_SCRIPT" ]] && sudo -n true 2>/dev/null; then
+    audit_monitor & AUDIT_MONITOR_PID=$!
+    trap audit_cleanup EXIT
+else
+    echo '[audit] inativa; para habilitar auditoria de sinais, execute sudo -v antes de ./run.sh'
+fi
+
+# Prevent a Wine process-wide SIGSTOP from becoming an indefinite freeze.
+# Separate process, independent of relay/Frida message flow; one SIGCONT per stop episode.
+WATCHDOG_PID=''
+"$PY" -u "$HERE/scripts/watch-uaro-stop.py" --threshold 3 --interval 0.25 &
+WATCHDOG_PID=$!
+run_cleanup() {
+    if [[ -n "$WATCHDOG_PID" ]]; then
+        kill "$WATCHDOG_PID" 2>/dev/null || true
+        wait "$WATCHDOG_PID" 2>/dev/null || true
+    fi
+    audit_cleanup
+}
+trap run_cleanup EXIT
+
 if [ "$RAW" -eq 1 ]; then
     echo "[run] modo raw: argumentos repassados diretamente; defaults em relay_capture.conf"
     tail -f /dev/null | "$PY" -u "$HERE/relay_capture_linux.py" "$@"

@@ -111,6 +111,27 @@ function ringBytes(peer, chunkLen) {                // whole chunk + context, or
     return Math.max(ringSpan[peer] || 0, 0x40 + chunkLen + 0x800);
 }
 
+// Fail closed: never let the outgoing scramble merge modify a registered RX ring.
+// Compare the entire write interval, not just its first byte (including _fix0).
+function overlapsRecvRing(at, length) {
+    if (!(at instanceof NativePointer) || !Number.isSafeInteger(length) || length < 0) return true;
+    if (length === 0) return false;
+    try {
+        var end = at.add(length);
+        if (end.compare(at) <= 0) return true;
+        for (var peer in ringBase) {
+            if (!Object.prototype.hasOwnProperty.call(ringBase, peer)) continue;
+            var base = ringBase[peer];
+            if (!(base instanceof NativePointer) || base.isNull()) return true;
+            var span = ringBytes(peer, lastLen[peer] || 0);
+            var ringEnd = base.add(span);
+            if (ringEnd.compare(base) <= 0) return true;
+            if (at.compare(ringEnd) < 0 && end.compare(base) > 0) return true;
+        }
+        return false;
+    } catch (e) { return true; }
+}
+
 hookAll(['__recvmsg64', 'recvmsg'], {
     onEnter: function (args) {
         this.fd = args[0].toInt32(); this.msg = args[1];
@@ -237,6 +258,23 @@ var scrCall = null;                              // sendcall: {pc} do ponto de c
 // Session-scoped allocator: never overwrite a slot owned by another hook.
 // Hardware API reports whether a candidate slot is actually available.
 var hwOwners = {};
+// Bounded breakpoint lifecycle telemetry; no payload, stack, or user data.
+var bpStats = {};
+function bpEvent(owner, event, extra) {
+    var o = {tag:'BP-TELEMETRY', owner:owner, hit:event, ts:Date.now(), generation:sessionGeneration};
+    if (extra) Object.keys(extra).forEach(function(k) { o[k] = extra[k]; });
+    send(o);
+}
+function bpHit(owner, durationMs, result) {
+    var now = Date.now(), s = bpStats[owner] || (bpStats[owner] = {count:0, last:0, maxMs:0});
+    s.count++;
+    s.maxMs = Math.max(s.maxMs, durationMs);
+    // A rare slow handler is reported immediately; normal hits at most every 5 seconds.
+    if (durationMs >= 20 || now - s.last >= 5000) {
+        bpEvent(owner, 'hit-summary', {count:s.count, max_ms:s.maxMs, duration_ms:durationMs, result:result});
+        s.count = 0; s.maxMs = 0; s.last = now;
+    }
+}
 function hwSet(owner, th, pc) {
     var old = hwOwners[owner];
     if (old) { hwClear(owner); }
@@ -245,15 +283,17 @@ function hwSet(owner, th, pc) {
     var errors = [];
     for (var i = 0; i < 4; i++) {
         if (used[i]) continue;
-        try { th.setHardwareBreakpoint(i, pc); hwOwners[owner] = {th: th, slot: i}; return i; }
+        try { th.setHardwareBreakpoint(i, pc); hwOwners[owner] = {th: th, slot: i}; bpEvent(owner, 'armed', {slot:i, tid:th.id, pc:pc.toString()}); return i; }
         catch (e) { errors.push(i + ':' + e.message); }
     }
+    bpEvent(owner, 'arm-error', {tid:th.id, pc:pc.toString(), reason:errors.join(',')});
     throw new Error('no free hardware breakpoint: ' + errors.join(','));
 }
 function hwClear(owner) {
     var a = hwOwners[owner]; if (!a) return;
     delete hwOwners[owner];
-    try { a.th.unsetHardwareBreakpoint(a.slot); } catch (_) {}
+    try { a.th.unsetHardwareBreakpoint(a.slot); bpEvent(owner, 'disarmed', {slot:a.slot, tid:a.th.id}); }
+    catch (e) { bpEvent(owner, 'disarm-error', {slot:a.slot, tid:a.th.id, reason:String(e)}); }
 }
 var sessionBlockedUntil = 0, sessionGeneration = 0;
 // Low-volume lifecycle diagnostics, no speculative memory dereferences.
@@ -492,6 +532,24 @@ function scrPrologueBefore(addr) {                                   // nearest 
 
 function scrTrap(d) {
     if (d.type !== 'breakpoint') return false;
+    var started = Date.now(), owner = 'unknown', result = false;
+    try {
+        var pc = d.context.pc;
+        if (md !== null && ((md.capArmed && pc.equals(md.disp)) || (md.fireArmed && pc.equals(md.site))))
+            owner = md.capArmed && pc.equals(md.disp) ? 'move-cap' : 'move-fire';
+        else if (scrCall !== null && pc.equals(scrCall.pc)) owner = 'sendcall';
+        else if (scr !== null && pc.equals(scr.pc)) owner = 'scramble';
+        result = scrTrapCore(d);
+        return result;
+    } catch (e) {
+        bpEvent(owner, 'handler-error', {reason:String(e)});
+        throw e;
+    } finally {
+        if (owner !== 'unknown') bpHit(owner, Date.now() - started, result ? 'handled' : 'unhandled');
+    }
+}
+function scrTrapCore(d) {
+    if (d.type !== 'breakpoint') return false;
     var ctx = d.context;
     if (md !== null && mdTrap(ctx)) return true;       // native-dispatch (DR2/DR3)
     // sendcall: captura de uso unico do `this` (ecx) na entrada da SendPacket, no DR1 -- independente
@@ -549,7 +607,9 @@ function scrTrap(d) {
     // nem assumir onde o XOR é aplicado: final = (valor_atual) ^ original0 ^ nosso0.
     if (scr._fix0) {
         var f0 = scr._fix0; scr._fix0 = null;
-        try { var c0 = f0.at.readU8(); f0.at.writeU8((c0 ^ f0.orig0 ^ f0.our0) & 0xff); } catch (e) {}
+        if (!overlapsRecvRing(f0.at, 1)) {
+            try { var c0 = f0.at.readU8(); f0.at.writeU8((c0 ^ f0.orig0 ^ f0.our0) & 0xff); } catch (e) {}
+        } else send({tag: 'SCRAMBLE', hit: 'blocked-rx-ring', phase: 'fix0'});
     }
     // Find the slot pointer + which body to write. Two modes:
     //   fixed  (scr.reg is a register / sN): pointer = that reg, id at pointer+idoff (configured).
@@ -585,6 +645,10 @@ function scrTrap(d) {
         if (scr.bodies[pid2] !== undefined) { body = scr.bodies[pid2]; oneshot = true; }   // consumer packet wins
         else if (scr.body !== null && (scr.id === undefined || pid2 === scr.id)) { body = scr.body; }  // legacy walk
         if (body === null) return true;                             // not a packet we're injecting
+    }
+    if (overlapsRecvRing(bodyp, body.length)) {
+        send({tag: 'SCRAMBLE', hit: 'blocked-rx-ring', id: pid2});
+        return true; // preserve one-shot body for a later genuine TX slot
     }
     var was = null;
     try { was = toHex(bodyp, body.length); } catch (e) {}

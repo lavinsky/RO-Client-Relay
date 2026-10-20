@@ -103,6 +103,28 @@ class PacketBoundaryTests(unittest.TestCase):
         self.assertFalse(w.conns['B']['raw'])
         self.assertEqual(w.push_items('A',b'fake'),[('B',b'fake')])
 
+    def test_09ff_boundary_diagnostics_fragmented_and_unknown(self):
+        lengths = {0x09ff: -1, 0x0087: 12}
+        wire = WireFilter(lengths, set())
+        events = []
+        wire.on_diag = lambda entry: events.append(entry)
+        a = b'\xff\x09\x6c\x00' + bytes(104)
+        b = b'\x87\x00' + bytes(10)
+        stream = a + b + b'\x63\xef' + b'XXXX'
+        for cut in range(len(stream) + 1):
+            wire = WireFilter(lengths, set())
+            events = []
+            wire.on_diag = lambda entry: events.append(entry)
+            wire.push_items('map', stream[:cut], enc={0x09ff})
+            wire.push_items('map', stream[cut:], enc={0x09ff})
+            self.assertEqual([x['event'] for x in events], ['frame', 'frame', 'unknown'], cut)
+            self.assertEqual(events[0]['id'], '09ff')
+            self.assertEqual(events[0]['end'], 108)
+            self.assertEqual(events[1]['offset'], 108)
+            self.assertEqual(events[1]['previous'], '09ff')
+            self.assertEqual(events[2]['offset'], 120)
+            self.assertEqual(events[2]['id'], 'ef63')
+
     def test_char_return_account_preamble_suppressed(self):
         L={0x73:5};w=WireFilter(L,set())
         w.observe_socket('map','127.0.0.1:5121')

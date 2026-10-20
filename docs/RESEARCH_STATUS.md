@@ -1,5 +1,47 @@
 # Estado atual e decisões — RO-Client-Relay
 
+## Verificação passiva dos logs de produção — 2026-10-20, 18:37–19:30 BRT
+
+**Procedência e método (OBSERVADO EM LOGS LIVE JÁ EXISTENTES):** análise **somente leitura** de `relay_log.jsonl` (JSONL local) e `../OpenKore-upstream/logs/console.txt`, correlacionando timestamps a partir de 20/10/2026 18:37:05. O cliente `uaRO.exe` estava ativo desde 16:00:46; o processo do relay foi iniciado às 18:37:05 e o OpenKore estava ativo desde 19/10 às 23:58:53. `relay/actors.py` (mtime 18:31:40), `wire_feed.py` (17:15), agente Frida (15:49), `run.sh` (16:42) e INI (19/10) tinham alterações anteriores à inicialização do relay; isso é **compatível com a versão atual em execução**, não uma prova byte a byte do código carregado. A amostra termina em **19:30:47**, e os arquivos continuam crescendo. Não houve reinício, nova instrumentação, input ou comunicação adicional com o servidor nesta auditoria. Nenhum log cru ou nome/ID de ator foi incorporado ao Git.
+
+| Indicador do relay | Total da janela | O que mostra / limite |
+|---|---:|---|
+| `ACTOR-RECOVERY`: `09FD` | 1.030 recuperados / 6 perdidos | Cópias verificadas em execução; os perdidos não foram sintetizados |
+| `ACTOR-RECOVERY`: `09FF` | 1.001 / 15 | Recuperação majoritária, com perdas ainda reais |
+| `ACTOR-RECOVERY`: `0983` | 948 / 75 | Maior grupo de misses; requer análise da proveniência e interpretação dos estados |
+| `ACTOR-RECOVERY`: `043F` | 241 / 18 | Fluxo presente, mas não comprova semântica dos buffs |
+| `ACTOR-RECOVERY`: `0229` | 91 / 1 | Reconstrução do corpo do status, não prova que `opt1/opt2/option` estão sempre corretos |
+| **Total de candidatos** | **3.311 recuperados / 115 não recuperados = 3.426** | ~**96,6%** dos candidatos anotados no log desta sessão; não garantia global |
+| Motivos dos 115 misses | 103 `correlation-mismatch`, 7 `overwritten-before-verification`, 4 `ring-not-found`, 1 `timeout-no-valid-copy` | Categorias de decisão do software, não causalidade confirmada |
+| Outros eventos de diagnóstico | 391 `SENDCALL stale-drop`, 217 `THIS-CONTEXT stale`, 70 `THIS-CONTEXT suspect` | Guardas/descartes observados; não classificar automaticamente como falha fatal nem como sucesso da ação |
+
+**OpenKore-upstream no mesmo intervalo** (classificação passiva por regex de linhas de console, **não** contagem de ações exclusivas): 724 linhas de skills, 346 de ataque, 195 de movimento, 85 de itens/storage e 45 com marcadores de aviso/erro; 0 linhas identificadas por estes padrões como desconexões ou IDs de pacote desconhecidos a partir das 18:37. O log permaneceu ativo às 19:30:47. **INFERIDO:** há continuidade operacional compatível entre relay e consumidor no período; ausência de um padrão textual não exclui falhas não logadas, e sem inspeção semântica detalhada não se afirma que todo buff/status/`sitting` esteja correto.
+
+**Conclusão delimitada:** `09FD/09FF/0983/043F/0229` têm **recuperações confirmadas em registro live** da sessão de 20/10, com FIFO/entrega de plaintext verificado segundo as tags observadas; as falhas registradas impedem concluir 100%. O comportamento de movimento/ataque/skills no OpenKore é observado como **atividade**, não como confirmação instrumental de cada pacote aceito pelo servidor. Os **37 scripts offline** e os validadores documentais passaram separadamente; não misturar as duas classes de evidência.
+
+## Revisão do checkout — 2026-10-20
+
+**Base revisada:** `origin/main@9ee7ef5` (atualizada por fetch); checkout `test/audit-edge-cases-20261018@aa69a6a` antes desta edição, com 47 arquivos rastreados diferentes de main e 22 arquivos novos não rastreados. Os últimos incluem testes, instrumentos da trilha de recepção e `docs/DYNAMIC_ACTOR_RING.md`. Esta contagem é o inventário **antes** das atualizações documentais; não significa 69 alterações aprovadas para PR. `main` local estava desatualizada em relação a `origin/main`. **Nenhuma instrumentação live foi executada nesta auditoria documental.**
+
+| Tema | Classificação / estado em 2026-10-20 | Evidência e limite |
+|---|---|---|
+| Movimento `035F`, ações `0437/0438/0AF4` | **FUNCIONAIS SEGUNDO RELATO DO RESPONSÁVEL (2026-10-17)** | Mecanismos já consolidados; código mudou posteriormente, **sem revalidação live aqui** |
+| Gamescope EIS + uso de item `0439` | **IMPLEMENTADO; configuração local alterada** | `relay_capture.conf` mantém `inject=true`, `inject-call=true`, `gamescope-eis`, `egress-queue=false`, `sendcall-demand=false`; `itemuse-input-key` está agora **F2**, não END; não atribuir a confirmação anterior à mudança F2 |
+| Ring RX e recuperação de atores | **IMPLEMENTADO; resultados de campo variáveis** | Descoberta dinâmica por sessão, isolamento de epoch/slot, `ACTOR-RECOVERY`; referências em [arquitetura](ARCHITECTURE.md#15-recepção-dinâmica-novos-ids-e-proveniência-revisão-2026-10-20) e [registro técnico](DYNAMIC_ACTOR_RING.md) |
+| Status/buffs `0229`/`043F`/`0983` | **REGRAS/TESTES OFFLINE, sem garantia semântica live** | Somente cópias verificadas; o estado `sitting` incorreto relatado anteriormente não é considerado resolvido |
+| RX/TX do scrambler e breakpoints | **OBSERVADO NO CÓDIGO** | Guarda de sobreposição nos rings registrados + telemetria `BP-TELEMETRY`; não prova separação quando o ring RX é desconhecido |
+| Sonda `research/recv_cipher/` | **ENGENHARIA EXPERIMENTAL ATIVA, separada da pesquisa da cifra** | Descobre o plaintext produzido pelo próprio cliente, sem identificar algoritmo; [STATE](../research/recv_cipher/STATE.md) contém amostras positivas, negativas, limitações e limpeza |
+| Watchdog de SIGCONT / auditoria de sinais | **IMPLEMENTADO, não validado live nesta rodada** | Só observa estados Linux `T/t` e usa um sinal por episódio após 3 s; risco de dessincronizar sessão permanece |
+| Cifra independente uaRO/Gepard | **ÚNICA INVESTIGAÇÃO CRIPTOGRÁFICA CIENTÍFICA ABERTA** | Duas variantes especializadas A/B seguem referência; seeds, tabela real, funções e estado do uaRO **NÃO IDENTIFICADOS** |
+
+**Risco adicional OBSERVADO NO CÓDIGO:** `research/recv_cipher/sample_telemetry.py` mantém até 512 frames completos (padrão 16 KiB cada) em RAM, embora seu docstring afirme não armazenar conteúdo. Não há prova de exportação automática neste módulo, mas os frames e qualquer captura derivada são **dados privados de sessão**. `audit_coverage.py` conta somente `09FD/09FF/0229`; cobertura de `043F/0983` não deve ser inferida de seus percentuais. [Inventário e limites](../research/recv_cipher/README.md#inventário-dos-instrumentos-ainda-não-publicados--revisão-estática-2026-10-20).
+
+**Validação offline do checkout anterior às edições:** `bash scripts/test-offline.sh` **PASS (37 scripts)**; `python3 scripts/validate-research.py` **PASS**; `python3 scripts/validate-codex.py` **PASS**; `git diff --check` **PASS**; `bash -n` dos launchers e `node --check` do agente e sondas JS **PASS**; `python3 -m compileall` de fontes próprias **PASS**. Além disso, `research/recv_cipher/test_ring_correlator.py` e `test_audit_write_trace.py` **PASS**. Os testes não estabelecem cobertura total da recepção em jogo.
+
+**OBSERVADO nas amostras já registradas pela trilha de recepção:** em 2026-10-19 a coleta `182943` encontrou 70 `09FF`, 4 `09FD` e 2 `0229`, **0 recuperados**, enquanto `184839` encontrou 221/224 `09FF` e 14/16 `09FD` recuperados. Uma coleta sob escrita rastreada recuperou 7/7, mas não provou proveniência única. **Não calcular percentuais globais** combinando sessões distintas ou concluir 100% a partir de amostras favoráveis. A causa dos misses de alta carga permanece **NÃO VERIFICADA**.
+
+A documentação precedente de 2026-10-17 permanece abaixo como registro cronológico. `docs/AGENTS.md` preserva a política de uma fonte canônica por assunto, distingue evidência de código/teste/live e impede promover hipóteses ao protocolo.
+
 
 <!-- CIPHER-SPECIALIST-REFERENCES-2026-10-17 -->
 

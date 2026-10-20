@@ -6,7 +6,7 @@ import threading
 import unittest
 from unittest.mock import patch
 import _boot
-from relay.actors import ActorDecrypt, valid_actor
+from relay.actors import ActorDecrypt, copy_validation, valid_actor, valid_actor_name
 from relay.wire_feed import new_chunk
 
 
@@ -36,10 +36,10 @@ class ActorBoundaries(unittest.TestCase):
         self.assertTrue(valid_actor(P))
         for n in (0,4,13,14,59):
             self.assertFalse(valid_actor(P[:n]))
-        for speed in (0,19,1001,65535):
+        for speed in (2001,65535):
             q=bytearray(P);q[13:15]=speed.to_bytes(2,'little')
             self.assertFalse(valid_actor(q),speed)
-        for speed in (20,200,1000):
+        for speed in (0,1,19,20,200,1000,2000):
             q=bytearray(P);q[13:15]=speed.to_bytes(2,'little')
             self.assertTrue(valid_actor(q),speed)
 
@@ -48,12 +48,44 @@ class ActorBoundaries(unittest.TestCase):
         for typ in (13,128,255):
             q=bytearray(P);q[4]=typ
             self.assertFalse(valid_actor(q))
-        for name in (b'a\n',b'a\t',b'a\x01'):
+        for name in (b'a\n',b'a\t',b'a\x01',b'\xa7',b'\xa5',b'Fake\xa7Name',b'Fake\xa5Name',bytes([0x93,0xb5,0xa7,0xa0])*5):
             q=bytearray(P)
             q[-24:]=name.ljust(24,bytes([0]))
             self.assertFalse(valid_actor(q))
         q=bytearray(P);q[-24:]=b'a\x00b'.ljust(24,bytes([0]))
         self.assertFalse(valid_actor(q))
+
+    def test_accented_names_and_strict_padding(self):
+        for name in ('João, o Ferreiro', 'Guardiã da Floresta',
+                     'Éden - Funcionária', 'Capitão André', 'Kafra Employee'):
+            with self.subTest(name=name):
+                plain = plain_actor(name.encode('cp1252'))
+                cipher = plain[:4] + b'\xe7' * (len(plain) - 4)
+                self.assertTrue(valid_actor(plain))
+                self.assertTrue(valid_actor_name(plain[-24:]))
+                self.assertTrue(copy_validation(cipher, plain)['name_format_ok'])
+                self.assertTrue(copy_validation(cipher, plain)['accepted'])
+        for name in (b'', b' A', b'A ', b'A\x00B', b'A\x01', b'A\x81',
+                     b'A\x8d', b'A\xa7', b'A\xa5', b'A\xa0'):
+            with self.subTest(name=name):
+                self.assertFalse(valid_actor_name(name.ljust(24, b'\x00')))
+        self.assertFalse(valid_actor_name(b'A' * 25))
+
+    def test_npc_name_ascii_punctuation_without_accepting_binary_data(self):
+        # rAthena uses '#' as a separator in NPC display/internal names.
+        for name in (b'Kafra Employee#prt1', b'Kafra#alde',
+                     b'Cash Shop [VIP] @2', b'Sign: 50% + 1',
+                     b'A_B=C|D\\E~F', 'João#praça'.encode('cp1252')):
+            with self.subTest(name=name):
+                plain = plain_actor(name)
+                wire = plain[:4] + b'\xe7' * (len(plain) - 4)
+                self.assertTrue(valid_actor_name(plain[-24:]))
+                self.assertTrue(valid_actor(plain))
+                self.assertTrue(copy_validation(wire, plain)['accepted'])
+        for name in (b'A\x01', b'A\x7f', b'A\x81', b'A\xa7',
+                     b'A\xa0', b'A\x00B'):
+            with self.subTest(name=name):
+                self.assertFalse(valid_actor_name(name.ljust(24, b'\x00')))
 
     def test_actor_09ff_copy_requires_same_header_and_modified_body(self):
         d=fake_dec(); plain=plain_actor()
@@ -72,6 +104,7 @@ class ActorBoundaries(unittest.TestCase):
         self.assertTrue(d.copy_ok(pkt,p))
         self.assertFalse(d.copy_ok(pkt,pkt))
         self.assertFalse(d.copy_ok(pkt,p[:2]+bytes([0])*4+p[6:]))
+        self.assertTrue(d.copy_ok(pkt,p[:2]+bytes([8,7,6,5])+p[6:]))  # ciphertext GID differs
         self.assertFalse(d.copy_ok(pkt,p[:-1]))
         self.assertFalse(d.copy_ok(pkt[:14],p[:14]))
 

@@ -159,6 +159,27 @@ class WireFeed:
                 self.pending.popleft()
             data = b''.join(it[1] if it[0] == 'B' else (e['res'].get(i) or b'')
                             for i, it in enumerate(e['items']))
+            # Log plaintext ONLY for encrypted actor packets actually recovered.
+            # Cleartext ('B') packets are not decryption results. Unverified encrypted
+            # packets are dropped and explicitly reported as unavailable.
+            if not is_login_sock(e['sock']):
+                for i, item in enumerate(e['items']):
+                    if item[0] != 'E':
+                        continue
+                    plain = (e['res'] or {}).get(i)
+                    packet_id = f'{item[1]:04x}'
+                    if plain:
+                        self.log.write({
+                            'tag': 'RECV-PLAIN', 'sock': e['sock'], 'conn': e['conn'],
+                            'id': packet_id, 'len': len(plain), 'P': plain.hex(),
+                            'stage': 'verified-post-decrypt',
+                        })
+                    else:
+                        self.log.write({
+                            'tag': 'RECV-PLAIN-UNAVAILABLE', 'sock': e['sock'],
+                            'conn': e['conn'], 'id': packet_id,
+                            'reason': 'only-encrypted-recv-available',
+                        })
             if data:
                 self.relay.feed(data)
 

@@ -99,9 +99,21 @@ def parse_args(argv=None):
                          '(uinput/ydotool, passa no Gepard) que faz o CLIENTE montar o carrier, que o '
                          'scrambler reescreve. Substitui o sidecar action_trigger.py. Requer ydotoold '
                          'rodando e a janela do cliente focável; efeito colateral = input real no seat0.')
+    ap.add_argument('--synth-backend', choices=('ydotool', 'gamescope-eis'), default='ydotool',
+                    help='--synth-input: ydotool/seat0 (legado) ou Gamescope EIS isolado; '
+                         'o backend EIS não foca janelas KDE nem usa ydotool.')
+    ap.add_argument('--synth-eis-socket', default='',
+                    help='--synth-backend gamescope-eis: socket privado LIBEI_SOCKET da sessão Gamescope.')
+    ap.add_argument('--synth-eis-socket-file', default='',
+                    help='--synth-backend gamescope-eis: arquivo privado 0600 contendo o '
+                         'LIBEI_SOCKET criado pelo wrapper de inicialização.')
     ap.add_argument('--synth-wid', default='',
                     help='--synth-input: id (hex wmctrl) da janela do cliente a focar; vazio = autodetecta '
                          'pelo título (world of your dream / uaRO / gepard shield / steam_app_).')
+    ap.add_argument('--itemuse-input', action=argparse.BooleanOptionalAction, default=False,
+                    help='Before each consumer 0439, synchronously press a game key and release it.')
+    ap.add_argument('--itemuse-input-key', default='END',
+                    help='Game key pressed before SendPacket 0439 (default END).')
     ap.add_argument('--synth-key-0437', default='INSERT',
                     help='--synth-input: tecla para armar o carrier do 0437 (ataque). Default INSERT.')
     ap.add_argument('--synth-key-0438', default='9',

@@ -147,6 +147,18 @@ class SynthActuator:
             print('[synth] janela do cliente wid=%s' % self._wid, flush=True)
         return self._wid
 
+    def send_before_packet(self, key):
+        """Synchronous barrier: focus and finish key release before sendcall is queued."""
+        with self._lock:
+            wid = self._resolve_wid()
+            if wid is None:
+                raise RuntimeError('game window unavailable')
+            self._focus(wid, self._dry)
+            rc = self._send(key, self._dry, self._hold_ms)
+            if rc != 0:
+                raise RuntimeError('synthetic key failed (exit %s)' % rc)
+            print('[itemuse] input %s completed before SendPacket' % key, flush=True)
+
     def on_armed(self, pid):
         """Ponto de entrada do relay: se `pid` tem tecla mapeada e passou o debounce, enfileira o
         disparo. Ids sem tecla (ex.: 035f andar) são ignorados. Não bloqueia o chamador."""
@@ -192,10 +204,31 @@ def build_actuator(opts):
     }
     debounce = int(getattr(opts, 'synth_debounce_ms', 500))
     dry = bool(getattr(opts, 'synth_dry', False))
-    act = SynthActuator(keymap, wid=getattr(opts, 'synth_wid', '') or None,
-                        debounce_ms=debounce, dry=dry)
+    backend = getattr(opts, 'synth_backend', 'ydotool')
+    kwargs = {'wid': getattr(opts, 'synth_wid', '') or None}
+    if backend == 'gamescope-eis':
+        from .gamescope_eis import GamescopeEIS
+        conn = GamescopeEIS(socket=getattr(opts, 'synth_eis_socket', ''),
+                            socket_file=getattr(opts, 'synth_eis_socket_file', ''))
+        # No wmctrl / windowactivate / KDE focus or seat0 input on this path.
+        kwargs['wid'] = 'gamescope-eis'
+        kwargs['focuser'] = lambda wid, dry: None
+
+        def send_gamescope(key, dry_run, hold_ms):
+            code = KEYCODES.get(key.upper())
+            if code is None:
+                raise ValueError('tecla desconhecida: %s' % key)
+            if dry_run:
+                print('[synth/eis] DRY key=%s (%d)' % (key, code), flush=True)
+                return 0
+            return conn.send_key(code, hold_ms)
+
+        kwargs['sender'] = send_gamescope
+    elif backend != 'ydotool':
+        raise ValueError('backend sintético desconhecido: %s' % backend)
+    act = SynthActuator(keymap, debounce_ms=debounce, dry=dry, **kwargs)
     act.start()
     shown = {('0x%04x' % k): v for k, v in keymap.items()}
-    print('[*] --synth-input: atuador de tecla integrado ao relay (uinput/ydotool, passa no Gepard); '
-          'keymap=%s debounce=%dms%s' % (shown, debounce, ' DRY' if dry else ''))
+    print('[*] --synth-input: backend=%s keymap=%s debounce=%dms%s' %
+          (backend, shown, debounce, ' DRY' if dry else ''))
     return act

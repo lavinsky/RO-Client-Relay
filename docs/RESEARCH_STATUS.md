@@ -31,6 +31,34 @@ A **confirmação funcional** acima foi fornecida pelo responsável; esta consol
 5. **Limite operacional:** nada autoriza experimentos live, ferramentas de memória ou envio ao servidor. Preserve ordem de pacotes, identidade das conexões, sanitização e enquadramento XKore `R`/`S`.
 6. **Documentação:** manter materiais ativos resumidos e detalhamento científico da cifra em [CIPHER_INVESTIGATION.md](CIPHER_INVESTIGATION.md). Preservar fontes aposentadas literalmente nos arquivos temáticos de [HISTORY/](README.md#arquivo-histórico-e-proveniência).
 
+## Atualização de integração operacional — PR Gamescope EIS (2026-10-17)
+
+- **CONFIRMADO PELO RESPONSÁVEL:** as mudanças e os valores do
+  `relay_capture.conf` atual funcionam em sua execução do cliente;
+  `inject=true`, `inject-call=true`, `egress-queue=false`,
+  `sendcall-demand=false`, `synth-backend=gamescope-eis` e
+  `itemuse-input=true` são decisões operacionais mantidas.
+- **OBSERVADO NO CÓDIGO:** a interface EIS conecta apenas ao socket
+  Gamescope explicitamente configurado, e não faz fallback a
+  `ydotool`/KDE; `0x0439` exige tecla síncrona antes de
+  `SendPacket`; as tags `THIS-CONTEXT` e
+  `RECV-PLAIN-UNAVAILABLE` permitem diagnóstico sem inventar
+  decifragem. [Arquitetura](ARCHITECTURE.md#14-integração-operacional-gamescope-eis-2026-10-17).
+- **OBSERVADO EM TESTE TÉCNICO ISOLADO:** evento EIS chegou como
+  `KeyPress/KeyRelease` a uma aplicação XWayland de teste dentro de
+  Gamescope. A revisão documental não reproduziu entrada live no uaRO.
+- **NÃO VERIFICADO NESTA RODADA:** causalidade de congelamentos
+  anteriores, validade de todos os ponteiros nativos sob transições
+  futuras e implementação independente da cifra. Os diagnósticos não
+  transformam essas hipóteses em fatos.
+- **Portabilidade:** sete scripts de pesquisa histórica de movimento
+  corrigiram um caminho absoluto para referência relativa à tabela de
+  pacotes; não reabre uma pesquisa encerrada.
+
+Detalhes de instalação, flags e teste estão em [OPERATIONS](OPERATIONS.md#gamescope-eis-e-configuração-operacional-validada).
+Esta integração não altera a decisão de manter a **cifra como única
+pesquisa científica ativa**.
+
 ## Cifra — questões científicas abertas
 
 **OBSERVADO:** a transformação final do corpo `0x035F` inclui XOR in-place byte a byte na instrumentação estudada. A pesquisa de CL/bytes identificou transportes intermediários e candidatos de fonte, incluindo `EBP+0x57` e `EBP+0x09` em rodadas CIFRA STACK-04…SLICE-12, **sem isolar operação geradora**.

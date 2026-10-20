@@ -1,6 +1,6 @@
 # Arquitetura técnica do RO-Client-Relay
 
-> **Revisão local:** 2026-10-15, `main@524b0f05fa61872e140f98ace9e503d12356641e`. Implementação conferida estaticamente; nenhum experimento vivo repetido. Dados técnicos anteriores preservados em [HISTORY/ARCHITECTURE_LEGACY.md](HISTORY/ARCHITECTURE_LEGACY.md), com ressalvas sobre hipóteses históricas. Estado científico em [RESEARCH_STATUS.md](RESEARCH_STATUS.md).
+> **Base documental:** revisão estática de 2026-10-15 (`main@524b0f05fa61872e140f98ace9e503d12356641e`); **atualizada em 2026-10-17** para o PR #20 (integração Gamescope EIS, operação e diagnósticos). A revisão documental não realizou experimento vivo. Dados técnicos anteriores preservados em [HISTORY/ARCHITECTURE_LEGACY.md](HISTORY/ARCHITECTURE_LEGACY.md), com ressalvas sobre hipóteses históricas. Estado científico em [RESEARCH_STATUS.md](RESEARCH_STATUS.md).
 
 ## 1. Fronteiras de responsabilidade
 
@@ -33,6 +33,8 @@ A figura é **esquemática**: nunca indica um canal direto de envio da rede pelo
 | `relay/wire_feed.py` | `WireFeed`: ordenação de trechos `RECV`, espera limitada por conteúdo verificado; `ClientSendFeed`: caminho de envio observado |
 | `relay/packets.py` | Tamanhos e fragmentação de pacote, `WireFilter`, `pack_move`, `unpack_pos2`, `MoveTracker` |
 | `relay/actors.py` | `ActorDecrypt`: ring e aceitação somente de cópias decifradas verificadas (`09fd`/`09ff`) |
+| `relay/synth_input.py` e `relay/gamescope_eis.py` | Atuador de carriers de ações; backend selecionável `ydotool`/seat0 ou `gamescope-eis`/libei (socket explicitamente indicado, sem fallback ao KDE) |
+| `scripts/gamescope-eis-session.sh` | Wrapper executado dentro do Gamescope: publica `LIBEI_SOCKET` num arquivo de localização privado e limpa-o ao fim da sessão |
 | `relay/relay.py` | Frames XKore, conexão/reconexão, alinhamento opcional |
 | `relay/writeback.py` | Merge de corpo para `035f`, `SendPacket` para ações da fila, autodescoberta e sondas pertinentes |
 | `relay/sendwatch.py` | Acompanhamento das escritas na fila, inferência conservadora de texto claro |
@@ -159,3 +161,60 @@ O fluxo de movimento atual usa `--move-dispatch` para levar o destino do OpenKor
 **Bug corrigido — primeiro byte:** `agent/relay_hook_linux.js:481-534` demonstra que a escrita `bodyp.writeByteArray(body)` precedia um store que ainda escrevia `bl` derivado do corpo **original** do cliente em `body[0]`. O `_fix0`, executado no hit seguinte, corrige o resultado por XOR `c0 ^ orig0 ^ our0`. Falha funcional anteriormente atribuída à seleção do alvo ou à coordenação de movimento foi **superada** pela correção desse byte. O responsável confirmou ataque e skills automáticos funcionando.
 
 **Fronteira intacta:** cliente responsável por criptografia, sessão e envio; o relay não gera o keystream. A investigação da cifra permanece aberta e é a única linha ativa. Detalhes: [ACTION_0437_0438_INVESTIGATION](HISTORY/ACTIONS_COMPLETE.md#source-docs-action-0437-0438-investigation-md), [CIPHER_INVESTIGATION](CIPHER_INVESTIGATION.md).
+
+## 14. Integração operacional Gamescope EIS 2026-10-17
+
+**Fonte:** diff do PR de integração sobre `main@9ee7ef5`, código e
+configuração da pasta original; confirmação funcional do responsável em
+2026-10-17. O relatório do responsável **não é uma nova captura instrumental**
+realizada pela revisão documental. Operação, comando Steam e flags:
+[OPERATIONS](OPERATIONS.md#gamescope-eis-e-configuração-operacional-validada).
+
+**Entrada e carriers.** `relay/synth_input.py:196` escolhe o backend. No
+`gamescope-eis`, `relay/gamescope_eis.py` usa o cliente libei para negociar
+`KEYBOARD` (capacidade bitmask 4) com o socket UNIX especificado: um evento
+`key-down`, `frame`, envio efetivo, espera padrão de 120 ms, `key-up` e
+`frame`. O atuador **não ativa janela do KDE**, não usa `ydotool`, e falha
+sem redirecionar eventos ao seat principal caso o socket esteja indisponível.
+`scripts/gamescope-eis-session.sh` publica a identificação do socket em
+`$XDG_RUNTIME_DIR/ro-relay-gamescope-eis.path` (0600). A janela Gamescope
+Wayland com `-g --force-grab-cursor` permanece utilizável para login físico;
+o EIS opera no compositor privado. O teste técnico de integração isolada
+observou `KeyPress/KeyRelease` em um aplicativo XWayland **de teste**,
+não em uma nova execução do uaRO nesta revisão.
+
+**Ação e sincronização.** Para `0x0439` com `--itemuse-input` ligado,
+`relay/writeback.py:380` exige `synth.send_before_packet()` antes de
+enfileirar `SendPacket`. A chamada executa tecla/soltura sob lock no
+atuador (`relay/synth_input.py:150`) e bloqueia o `0x0439` se falhar;
+não há envio parcial intencional da ação nesse caso. A produção de carriers
+de `0x0437`/`0x0438`/`0x0AF4` segue assíncrona, com debounce e worker.
+
+**Ciclo de vida nativo.** `agent/relay_hook_linux.js:260-284` classifica
+`THIS-CONTEXT` como `stale`, `suspect` ou `invalid`, com redução de
+eventos repetidos por geração da sessão. O relato inclui contexto de
+transição, emissão antes da recaptura, thread divergente e alteração do
+receptor nativo. **A telemetria não prova que a causa de congelamentos
+anteriores tenha sido identificada** e não garante validade de ponteiros em
+situações não observadas. A política de recaptura e bloqueio preexistente
+permanece separada desses diagnósticos.
+
+**Recepção verificável e logs.** `relay/wire_feed.py:162-187` só registra
+`RECV-PLAIN` para itens cifrados `E` recuperados e verificados; dados
+`B` já claros não são classificados como resultados de decifragem.
+Falha de recuperação produz `RECV-PLAIN-UNAVAILABLE`, não um corpo
+fabricado. `relay/console.py` serializa escrita e exibição sob um lock,
+preservando a passagem por `relay/safety.py` para sanitização. Isso
+é uma propriedade do caminho de log, **não** demonstra descoberta da cifra.
+
+**Portabilidade das ferramentas encerradas.** Sete scripts de
+`research/movement_035f/` agora resolvem a tabela de pacotes como
+`Path(__file__).resolve().parents[2] / "data/uaro_recvpackets.txt"` em
+vez de caminho absoluto de outra cópia do projeto; não muda a técnica
+científica, seus resultados históricos ou o fluxo de produção.
+
+**Limites:** a opção de fila `egress-queue = false` e
+`sendcall-demand = false` são **configurações operacionais confirmadas pelo
+responsável**, não novas restrições de protocolo. A trilha científica ativa
+continua exclusivamente a cifra; evidência e distinções em
+[RESEARCH_STATUS](RESEARCH_STATUS.md).

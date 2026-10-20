@@ -377,6 +377,16 @@ class WriteBack:
         # O paceamento dos casts (0438/0af4) é feito no DRENO do agente, não aqui: o consumidor manda
         # re-tentativas espaçadas que passariam deste filtro mas, enfileiradas, drenam juntas e cada
         # cast cancela o anterior. O agente deixa passar um cast por janela (ver cast_ms em sendcall).
+        if pid == 0x0439 and getattr(self.opts, 'itemuse_input', False):
+            synth = getattr(self, 'synth', None)
+            if synth is None:
+                print('[itemuse] 0x0439 blocked: synth-input disabled')
+                return
+            try:
+                synth.send_before_packet(getattr(self.opts, 'itemuse_input_key', 'END'))
+            except Exception as e:
+                print(f'[itemuse] 0x0439 blocked: input failed: {type(e).__name__}: {e}')
+                return
         self._emit_target_select(pid, payload)         # --target-select (OFF por padrão): 0368 antes
         print(f"[inject] inbound id=0x{pid:04x} len={len(payload)} -> SendPacket: {payload[:16].hex()}")
         self.post(sendcall_emit_msg(payload.hex()))

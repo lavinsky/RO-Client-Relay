@@ -256,10 +256,26 @@ function hwClear(owner) {
     try { a.th.unsetHardwareBreakpoint(a.slot); } catch (_) {}
 }
 var sessionBlockedUntil = 0, sessionGeneration = 0;
+// Low-volume lifecycle diagnostics, no speculative memory dereferences.
+var thisDiagSeen = {};
+function thisDiag(kind, owner, reason, address) {
+    var key = sessionGeneration + ':' + owner + ':' + kind + ':' + reason;
+    if (thisDiagSeen[key]) return;
+    thisDiagSeen[key] = true;
+    send({tag:'THIS-CONTEXT',hit:kind,owner:owner,reason:reason,
+          address:address ? address.toString() : null,
+          generation:sessionGeneration,ts:Date.now()});
+}
+
 function sessionReady() { return Date.now() >= sessionBlockedUntil; }
 function resetNativeSession(reason, delayMs) {
     if (delayMs === undefined) delayMs = 1500;
     sessionGeneration++;
+    thisDiagSeen = {};
+    if (scSend !== null && scSend['this'] !== null)
+        thisDiag('stale','SendPacket','session transition: '+reason,scSend['this']);
+    if (md !== null && md.thisp !== null)
+        thisDiag('stale','MoveDispatch','session transition: '+reason,md.thisp);
     scDemandScheduled = false;
     sessionBlockedUntil = Date.now() + delayMs;
     if (scSend !== null) {
@@ -703,6 +719,7 @@ recv('sendcall', onSendCall);
 function onSendEmit(m) {
     if (scSend === null) send({tag: 'SENDCALL', hit: 'error', e: 'emit with no sendcall armed'});
     else if (!sessionReady() || scSend.awaitRecapture) {
+        thisDiag('stale','SendPacket','emit before context recapture',scSend['this']);
         send({tag: 'SENDCALL', hit: 'stale-drop', e: 'waiting for a fresh SendPacket object', ts: Date.now()});
     } else if (m.data) {
         var queued = Array.from(hexToBytes(m.data));
@@ -720,7 +737,10 @@ recv('sendcall-emit', onSendEmit);
 function drainSendCall() {                       // only runs on the game thread (SendPacket must)
     if (!sessionReady() || scDraining || scSend === null || scSend.fn === null || scSend['this'] === null) return;
     if (scSend.queue.length === 0) return;
-    if (scSend.tid && Process.getCurrentThreadId() !== scSend.tid) return;   // so na thread que roda a SendPacket
+    if (scSend.tid && Process.getCurrentThreadId() !== scSend.tid) {
+        thisDiag('suspect','SendPacket','wrong execution thread',scSend['this']);
+        return;
+    }   // so na thread que roda a SendPacket
     scDraining = true;
     try {
         while (scSend.queue.length) {
@@ -817,7 +837,10 @@ function mdTrusted() {
     var obj = mdContext();
     if (md === null || md.thisp === null || md.receiver === null ||
         obj === null || !obj.equals(md.receiver)) {
-        if (md !== null && md.thisp !== null) mdInvalidate('receiver unavailable/changed');
+        if (md !== null && md.thisp !== null) {
+            thisDiag('invalid','MoveDispatch','receiver unavailable or identity changed',md.thisp);
+            mdInvalidate('receiver unavailable/changed');
+        }
         return false;
     }
     return true;

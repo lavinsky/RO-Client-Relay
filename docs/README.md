@@ -10,6 +10,10 @@ Para toda tarefa: [AGENTS.md do projeto](../AGENTS.md) → [Estado e decisões](
 
 A comparação recente foi feita contra `origin/main@9ee7ef5`, não contra a `main` local desatualizada. O estado atualizado de recepção, guardas TX/RX, novas sondas, watchdog e configurações está em [RESEARCH_STATUS](RESEARCH_STATUS.md#revisão-do-checkout--2026-10-20), com contratos em [ARCHITECTURE](ARCHITECTURE.md#15-recepção-dinâmica-novos-ids-e-proveniência-revisão-2026-10-20), operação em [OPERATIONS](OPERATIONS.md) e histórico técnico da ring em [DYNAMIC_ACTOR_RING](DYNAMIC_ACTOR_RING.md). A pesquisa de extração de plaintext em `research/recv_cipher/` é **instrumentação experimental separada** da identificação do algoritmo Gepard: esta continua a única investigação criptográfica científica ativa. Testes offline não equivalem à validação live.
 
+## Atualização incremental — 2026-10-21
+
+`origin/main@f311d67` já contém o PR consolidado #21. A working tree atual adiciona apenas o **observer read-only opt-in para roBrowser/UI externa**, sua integração no `WireFeed`, helper operacional e testes. O observer não altera a prioridade científica: a cifra continua a única investigação criptográfica ativa. Contrato e privacidade em [RO_BROWSER_OBSERVER.md](RO_BROWSER_OBSERVER.md); arquitetura em [ARCHITECTURE.md#17-observer-read-only-para-ui-externa--2026-10-21](ARCHITECTURE.md#17-observer-read-only-para-ui-externa--2026-10-21). Nenhuma validação live nova foi executada nesta consolidação.
+
 ## Documentos ativos
 
 | Documento | Função atual | Consultar quando |
@@ -18,6 +22,7 @@ A comparação recente foi feita contra `origin/main@9ee7ef5`, não contra a `ma
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Fluxos de cliente/Frida/driver/OpenKore; memória, threads, writeback e limites do xKore 0 | Arquitetura, programação e revisão |
 | [OPERATIONS.md](OPERATIONS.md) | Configuração, execução, flags, dependências e testes offline | Instalação, operação e diagnóstico |
 | [DYNAMIC_ACTOR_RING.md](DYNAMIC_ACTOR_RING.md) | Registro técnico cronológico da descoberta e recuperação do ring de recepção, limites, validação de nomes e novos IDs | Bugs de atores, buffs e proveniência RX |
+| [RO_BROWSER_OBSERVER.md](RO_BROWSER_OBSERVER.md) | Contrato, privacidade, ativação e limites do espelho read-only XKore1 por socket UNIX | Integração de observadores/UI sem writeback |
 | [CIPHER_INVESTIGATION.md](CIPHER_INVESTIGATION.md) | Pesquisa científica de cifra **ativa**; inclui integralmente o antigo manual `CIPHER_TOOLS.md` e fingerprint `PROTECTION_FINGERPRINT_DIE.md` | Agente CIFRA, verifier e pesquisa |
 | [GEPARD_CONTROL_PACKETS.md](GEPARD_CONTROL_PACKETS.md) | Inventário de protocolo, pacote periódico `0x8280`, distinção entre histórico e build atual | Protocolo, cifra e futuro plugin |
 | [AGENTS.md](AGENTS.md) | Regras breves de documentação e preservação de evidências | Documentador |

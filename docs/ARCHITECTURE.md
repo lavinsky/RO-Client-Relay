@@ -34,6 +34,7 @@ A figura é **esquemática**: nunca indica um canal direto de envio da rede pelo
 | `relay/packets.py` | Tamanhos e fragmentação de pacote, `WireFilter`, `pack_move`, `unpack_pos2`, `MoveTracker` |
 | `relay/actors.py` | `ActorDecrypt`: descoberta dinâmica do ring na sessão atual, aceitação conservadora de `09FD`/`09FF`/`0229`/`043F`/`0983` e telemetria |
 | `relay/synth_input.py` e `relay/gamescope_eis.py` | Atuador de carriers de ações; backend selecionável `ydotool`/seat0 ou `gamescope-eis`/libei (socket explicitamente indicado, sem fallback ao KDE) |
+| `relay/observer.py` | Espelho opcional **somente leitura** dos frames `R` já produzidos pelo pipeline; socket UNIX privado, replay por fase e sem caminho `S`/writeback |
 | `scripts/gamescope-eis-session.sh` | Wrapper executado dentro do Gamescope: publica `LIBEI_SOCKET` num arquivo de localização privado e limpa-o ao fim da sessão |
 | `relay/relay.py` | Frames XKore, conexão/reconexão, alinhamento opcional |
 | `relay/writeback.py` | Merge de corpo para `035f`, `SendPacket` para ações da fila, autodescoberta e sondas pertinentes |
@@ -243,3 +244,15 @@ O agente `agent/relay_hook_linux.js` inclui `overlapsRecvRing()`: bloqueia write
 A trilha `research/recv_cipher/` investiga a captura **do plaintext já decifrado pelo cliente**, sem recuperar a função criptográfica. É uma sonda independente, com Frida, snapshots, correlacionador, possível watchpoint/hook de escrita explicitamente habilitado e auditoria. Amostras de 2026-10-18/19 incluem resultados quase completos e outras de 0 recuperação sob carga; não existe prova de captura perfeita. Ver [estado da trilha](../research/recv_cipher/STATE.md) e [panorama canônico](RESEARCH_STATUS.md).
 
 **Limite da revisão:** testes offline e leitura estática verificam contratos e sintaxe; não demonstram aceitação pelo servidor, segurança temporal de todos os hooks, ausência de regressão no uaRO ou geração independente do keystream Gepard.
+
+## 17. Observer read-only para UI externa — 2026-10-21
+
+**OBSERVADO NO CÓDIGO:** quando `RO_RELAY_OBSERVER_SOCKET` está definido, `relay/cli.py` cria `PacketObserver` e o associa ao objeto `Relay`. `WireFeed` chama `begin_session(conn)` somente ao observar uma nova conexão real de login e publica, **depois da mesma decisão de plaintext do feed principal**, apenas frames XKore1 `R` server→client. O caminho `ClientSendFeed` não referencia o observer: não existe espelho de `S`, writeback, comando ou injeção por esse canal.
+
+O transport é um socket UNIX local: o diretório pai deve existir, ser diretório, pertencer ao UID atual e não possuir bits de acesso de grupo/outros; o socket recebe modo 0600. Cada cliente seleciona uma fase por um byte (`L/C/M`). Snapshot de histórico e inscrição são atômicos sob lock; a história é separada por fase e limitada a 32 MiB totais. Se o limite for ultrapassado, o replay inteiro é invalidado em vez de entregar prefixo truncado. Há no máximo dois viewers registrados e fila de 64 frames por viewer; backpressure fecha o viewer, preservando integridade do stream para os demais.
+
+**Fronteira de segurança:** o replay de login pode conter material de autenticação/estado recebido do servidor e **não passa pela redação destinada aos logs**. A segurança local depende do filesystem; não há autenticação dentro do protocolo UNIX. Qualquer ponte HTTP/WebSocket, Tailnet, token de visualização ou endpoint da UI pertence a outro componente e não é garantido por este repositório. Não persistir nem versionar o stream do observer.
+
+**Operação:** o observer é desabilitado por padrão e não altera runs existentes sem a variável de ambiente. O helper `scripts/restart-relay-in-terminal.sh` só serve para reiniciar um relay já identificável, recusa grupo de processo inesperado e resolve TTY de forma dinâmica; não contém PIDs de sessão. Procedimento e limites em [RO_BROWSER_OBSERVER](RO_BROWSER_OBSERVER.md) e [OPERATIONS](OPERATIONS.md#observer-read-only-para-robrowserui-externa).
+
+**VALIDADO OFFLINE:** testes isolados cobrem permissões/propriedade, fases, replay, mudança de epoch, limite e fase inválida; `tests/test_edge_wirefeed.py` cobre a integração login/char/map e confirma que client→server não é publicado. **NÃO VERIFICADO LIVE:** sessão uaRO completa até uma UI externa, reconnects reais e suficiência do limite de 32 MiB.

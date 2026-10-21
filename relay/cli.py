@@ -254,6 +254,11 @@ def build_feed(a, drop):
     lengths = read_lengths(a.recvpackets, required=True)
     wire = WireFilter(lengths, drop)
     relay = Relay(host, int(port), a.relay_format)       # unaligned: the filter tokenizes
+    # Explicitly opt in from process environment; existing live runs stay unchanged.
+    observer_path = os.environ.get('RO_RELAY_OBSERVER_SOCKET')
+    if observer_path:
+        from .observer import PacketObserver
+        relay.observer = PacketObserver(observer_path)
     print('[*] feeding cleartext wire bytes, per-connection tokenized')
     if a.feed_dump:
         relay.dump = open(a.feed_dump, 'wb')
@@ -307,3 +312,6 @@ def main(argv=None):
         pass
     finally:
         agent.unload()
+        observer = getattr(relay, 'observer', None)
+        if observer is not None:
+            observer.close()

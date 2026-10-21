@@ -1,5 +1,10 @@
 # Estado atual e decisões — RO-Client-Relay
 
+## Atualização incremental do observer — 2026-10-21
+
+**Base:** `origin/main@f311d67` (merge do PR #21). A working tree contém somente a nova trilha **operacional** de observer read-only (`relay/observer.py`, integração em `relay/cli.py`/`wire_feed.py`, helper de restart, testes e documentação). **OBSERVADO NO CÓDIGO/TESTE OFFLINE:** o observer é opt-in por `RO_RELAY_OBSERVER_SOCKET`, espelha apenas frames `R` server→client, exige socket 0600 em diretório 0700 pertencente ao UID, mantém replay de até 32 MiB por epoch/fase e fecha viewer em backpressure. **NÃO VERIFICADO LIVE NESTA REVISÃO:** login→char→map completo até uma UI roBrowser, autenticação da camada externa e reconnect real. Isso não modifica a situação da cifra, movimento, ações ou recuperação de atores consolidada abaixo. [Contrato completo](RO_BROWSER_OBSERVER.md).
+
+
 ## Verificação passiva dos logs de produção — 2026-10-20, 18:37–19:30 BRT
 
 **Procedência e método (OBSERVADO EM LOGS LIVE JÁ EXISTENTES):** análise **somente leitura** de `relay_log.jsonl` (JSONL local) e `../OpenKore-upstream/logs/console.txt`, correlacionando timestamps a partir de 20/10/2026 18:37:05. O cliente `uaRO.exe` estava ativo desde 16:00:46; o processo do relay foi iniciado às 18:37:05 e o OpenKore estava ativo desde 19/10 às 23:58:53. `relay/actors.py` (mtime 18:31:40), `wire_feed.py` (17:15), agente Frida (15:49), `run.sh` (16:42) e INI (19/10) tinham alterações anteriores à inicialização do relay; isso é **compatível com a versão atual em execução**, não uma prova byte a byte do código carregado. A amostra termina em **19:30:47**, e os arquivos continuam crescendo. Não houve reinício, nova instrumentação, input ou comunicação adicional com o servidor nesta auditoria. Nenhum log cru ou nome/ID de ator foi incorporado ao Git.

@@ -58,6 +58,9 @@ class WireFeed:
             self.log.write(m)
             return
         conn = conn_of(m)
+        observer = getattr(self.relay, 'observer', None)
+        if observer is not None and is_login_sock(m['sock']) and not looks_like_http(C):
+            observer.begin_session(conn)
         self.wire.observe_socket(conn, m['sock']) if self.wire else None
         if self.probe:
             self.probe.note_chunk(conn, m['len'], int(m['ptr'], 16), C)
@@ -207,6 +210,15 @@ class WireFeed:
                     })
             if data:
                 self.relay.feed(data)
+                # Full upstream Online requires the complete login/char/map receive
+                # sequence. Opt-in observer contains sensitive session material;
+                # allow only local UNIX peers, never expose without view auth.
+                # Only R frames are mirrored; S writebacks remain in OpenKore.
+                observer = getattr(self.relay, 'observer', None)
+                if observer is not None:
+                    port = e['sock'].rsplit(':', 1)[-1]
+                    phase = 'login' if port == '6900' else ('char' if port == '6121' else 'map')
+                    observer.publish(observer.frame(data), phase)
 
 
 class ClientSendFeed:

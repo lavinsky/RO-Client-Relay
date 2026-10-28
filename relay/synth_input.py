@@ -2,7 +2,7 @@
 
 Quando o relay ARMA uma ação do consumidor no merge (0437/0438/0af4 -> corpo guardado em scr.bodies
 no ponto `_on_inbound_scramble`), este atuador injeta a tecla que faz o CLIENTE montar o carrier
-natural daquele id; o store do scrambler (gepard+0x18eff2) então reescreve o corpo pelo do consumidor
+natural daquele id; o store do scrambler selecionado pelo client profile então reescreve o corpo
 e a ação executa. Antes isso vivia num 2º processo (research/action_0437_0438/action_trigger.py) que
 TAIL-ava o stdout do relay à procura da linha "[inject] inbound id=0x…"; agora é acionado DIRETO no
 ponto de arme (writeback._on_inbound_scramble -> SynthActuator.on_armed), sem log/pipe intermediário.

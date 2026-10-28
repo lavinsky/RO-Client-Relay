@@ -10,6 +10,7 @@ sem cliente, com futura integração no projeto OpenKore.
 - [Arquitetura](docs/ARCHITECTURE.md)
 - [Operação, instalação e diagnóstico](docs/OPERATIONS.md)
 - [Recuperação dinâmica de atores e evidências](docs/DYNAMIC_ACTOR_RING.md)
+- [Observer read-only para roBrowser/UI externa](docs/RO_BROWSER_OBSERVER.md)
 - [Resumo da auditoria e alterações locais de 2026-10-20](docs/RESEARCH_STATUS.md#revisão-do-checkout--2026-10-20)
 - [Regras dos agentes](AGENTS.md)
 

@@ -1,4 +1,5 @@
 """The Frida side: find the gadget inside the game, load the agent script, talk to it."""
+import fcntl
 import os
 import re
 import subprocess
@@ -42,6 +43,24 @@ def pid_of_port(port):
     return next((p for pt, p, _ in gadget_ports() if pt == port), None)
 
 
+def _acquire_port_lock(port):
+    """Prevent two relay processes from attaching to the same Frida Gadget port."""
+    runtime = os.environ.get('XDG_RUNTIME_DIR') or f'/tmp/ro-client-relay-{os.getuid()}'
+    root = os.path.join(runtime, 'ro-client-relay')
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    path = os.path.join(root, f'frida-{int(port)}.lock')
+    f = open(path, 'a+', encoding='utf-8')
+    try:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        f.seek(0)
+        owner = f.read().strip() or '?'
+        f.close()
+        raise SystemExit(f'[!] Frida gadget :{port} is already owned by relay pid {owner}; refusing a second attach')
+    f.seek(0); f.truncate(); f.write(str(os.getpid())); f.flush()
+    return f
+
+
 class Agent:
     """Connection to relay_hook_linux.js inside the game. `on_message(payload)` receives each
     agent message (a dict; a binary attachment is in payload['data']) on Frida's thread, so
@@ -51,13 +70,19 @@ class Agent:
         import frida                                   # only needed at run time, not by the tests
         self._frida = frida
         self._on_message = on_message
-        print(f'[*] connecting to gadget on 127.0.0.1:{port}')
-        dev = frida.get_device_manager().add_remote_device(f'127.0.0.1:{port}')
-        self.session = dev.attach('Gadget')
-        self.session.on('detached', self._detached)
-        with open(AGENT_JS) as f:
-            self.script = self.session.create_script(f.read())
-        self.script.on('message', self._message)
+        self._port_lock = _acquire_port_lock(port)
+        try:
+            print(f'[*] connecting to gadget on 127.0.0.1:{port}')
+            dev = frida.get_device_manager().add_remote_device(f'127.0.0.1:{port}')
+            self.session = dev.attach('Gadget')
+            self.session.on('detached', self._detached)
+            with open(AGENT_JS) as f:
+                self.script = self.session.create_script(f.read())
+            self.script.on('message', self._message)
+        except BaseException:
+            self._port_lock.close()
+            self._port_lock = None
+            raise
 
     def _message(self, msg, data):
         if msg['type'] == 'send' and isinstance(msg['payload'], dict):
@@ -79,8 +104,15 @@ class Agent:
         self.script.post(msg)
 
     def unload(self):
-        """Unload the agent; its dispose() clears the debug registers of the send watch."""
+        """Unload script, detach the Frida session, then release the single-owner port lock."""
         try:
             self.script.unload()
         except self._frida.InvalidOperationError:
             pass
+        try:
+            self.session.detach()
+        except self._frida.InvalidOperationError:
+            pass
+        if self._port_lock is not None:
+            self._port_lock.close()
+            self._port_lock = None

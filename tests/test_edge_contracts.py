@@ -11,8 +11,9 @@ from types import SimpleNamespace
 
 import _boot
 from relay.cli import parse_args, parse_ids
-from relay.protocol import (ring_msg,sendwatch_msg,scramble_msg,scramble_set_msg,
-                            sendcall_msg,sendcall_emit_msg,move_dispatch_msg,conn_of)
+from relay.protocol import (gepard_dispatch_msg,hw_exec_probe_msg,ring_msg,sendwatch_msg,scramble_msg,
+                            scramble_set_msg,sendcall_msg,sendcall_emit_msg,native_dispatch_msg,
+                            move_dispatch_msg,conn_of)
 from relay.sendwatch import SendWatch, send_queue_range, plaintext_guess, packet_at
 from relay.safety import sanitize, client_packet_to_feed
 from relay.console import CaptureLog
@@ -103,7 +104,18 @@ class ProtocolContracts(unittest.TestCase):
         arm=move_dispatch_msg(arm=True,dispatcher='0xd473b0',site='0x4dcba0')
         self.assertEqual((arm['dispatcher'],arm['site']),(0xd473b0,0x4dcba0))
         self.assertEqual(move_dispatch_msg(1023,0)['args'],{'x':1023,'y':0})
+        self.assertEqual(hw_exec_probe_msg(0x9477bc, stack_words=5, timeout_ms=1200),
+                         {'type':'hw-exec-probe','module':'uaRO.exe','rva':0x9477bc,
+                          'stackWords':5,'timeoutMs':1200})
+        self.assertEqual(native_dispatch_msg('future-recipe', args={'a': 1}),
+                         {'type':'native-dispatch','recipe':'future-recipe','args':{'a':1}})
         self.assertEqual(move_dispatch_msg(arm=True,disarm=True),{'type':'native-dispatch','disarm':True})
+        self.assertEqual(gepard_dispatch_msg(10,20),
+                         {'type':'gepard-dispatch','args':{'x':10,'y':20}})
+        self.assertEqual(gepard_dispatch_msg(arm=True,native={'entryOffset':1}),
+                         {'type':'gepard-dispatch','arm':True,'entryOffset':1})
+        self.assertEqual(gepard_dispatch_msg(recapture=True),
+                         {'type':'gepard-dispatch','recapture':True})
 
     def test_sendcall_enabled_and_disabled(self):
         self.assertEqual(sendcall_msg(),{'type':'sendcall'})
@@ -212,11 +224,10 @@ class SendwatchContracts(unittest.TestCase):
             self.assertEqual(s.resolve({'C':P.hex()},P,None),P)
         self.assertEqual(sum(s.stats.values()),0)
 
-    def test_queue_range_selection_and_fallback(self):
-        self.assertIsNone(send_queue_range('auto',None,True))
-        self.assertEqual(send_queue_range('100-200',(5,10),True)[:2],(256,512))
-        self.assertEqual(send_queue_range('auto',(128,256),True)[:2],(128,256))
-        self.assertIsNotNone(send_queue_range('auto',None,False))
+    def test_queue_range_selection_fail_closed(self):
+        self.assertIsNone(send_queue_range('auto', None))
+        self.assertEqual(send_queue_range('100-200', (5,10))[:2], (256,512))
+        self.assertEqual(send_queue_range('auto', (128,256))[:2], (128,256))
 
 
 if __name__=='__main__':

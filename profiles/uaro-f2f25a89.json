@@ -1,0 +1,70 @@
+{
+  "name": "uaRO f2f25a89",
+  "fingerprint": {
+    "sha256": "f2f25a89917563237bb6faf60058cc536b7f42469af32fba556842f9f0cb9569",
+    "size": 29726720,
+    "machine": "0x14c",
+    "pe_timestamp": 1715817600,
+    "optional_magic": "0x10b",
+    "image_base": "0x400000",
+    "size_of_image": "0x2021000"
+  },
+  "native": {
+    "send_packet": {
+      "module": "uaRO.exe",
+      "rva": "0x816640"
+    },
+    "game_mode": {
+      "module": "uaRO.exe",
+      "vtable_rva": "0xc904b8",
+      "send_msg_rva": "0x886740",
+      "send_msg_vslot": 6,
+      "stack_args": 5,
+      "direct_injection": "refuted-gepard-outbound-bypass",
+      "runtime_virtual_slot": {
+        "slot": 6,
+        "module": "gepard.dll",
+        "offset": "0x10a90",
+        "evidence": "live-hardware-breakpoint"
+      },
+      "runtime_virtual_direct_call": "refuted-context-gated-no-send",
+      "actions": {
+        "skill_target": {"send_msg_id": 69, "packet_id": "0x0438", "evidence": "live-hw-breakpoint+static; natural high-level caller case 113"},
+        "skill_ground": {"send_msg_id": 70, "packet_id": "0x0af4", "evidence": "static-pending-live"},
+        "attack": {"send_msg_id": 137, "packet_id": "0x0437", "evidence": "live+static"},
+        "move": {"send_msg_id": 138, "packet_id": "0x035f", "evidence": "builder-confirmed; direct-call injection refuted: outbound body reached socket as plaintext; RX/session stayed healthy"},
+        "use_item": {"send_msg_id": 27, "packet_id": "0x0439", "evidence": "static-pending-live"}
+      }
+    },
+    "gepard_sendmsg_wrapper": {
+      "module": "gepard.dll",
+      "entry_offset": "0xf07fef",
+      "callsite_offset": "0xa23d78",
+      "caller_return_offset": "0x9602db",
+      "uaro_module": "uaRO.exe",
+      "safe_point_rva": "0xdcba0",
+      "send_msg_rva": "0x886740",
+      "game_mode_vtable_rva": "0xc904b8",
+      "move_send_msg_id": 138,
+      "abi": "cdecl",
+      "stack_args": 6,
+      "gepard_sha256": "34188e6046eb831f31c0843744c084b56704a765d9e758043a1a1dad6046b08b",
+      "evidence": "live-hw-breakpoint: callsite call-eax -> CGameMode::SendMsg; wrapper frame [this,id,a2,a3,a4,a5]; caller add esp,0x18"
+    },
+    "legacy_action_dispatch": {
+      "module": "uaRO.exe",
+      "class": "CPlayer",
+      "dispatcher_rva": "0x9473b0",
+      "dispatcher_vslot": 2,
+      "game_thread_safe_point_rva": "0xdcba0",
+      "manager_rva": "0xe13338",
+      "ret_anchor_rva": "0x947e61",
+      "receiver_module": "gepard.dll",
+      "receiver_offset": "0x10a90"
+    },
+    "scrambler": {
+      "module": "gepard.dll",
+      "store_offset": "0x18eff2"
+    }
+  }
+}

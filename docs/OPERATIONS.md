@@ -381,3 +381,19 @@ Se `sudo -n true` já passa, o launcher pode iniciar automaticamente `scripts/au
 O caminho experimental `research/recv_cipher/` possui um correlacionador de ring por FD, snapshots pré-sobrescrita, adaptador de `ActorDecrypt`, auditoria de cobertura, telemetria opcional e sondas explícitas de escrita. **Não executar a partir de manutenção documental.** A execução live exige escopo autorizado, verificação de identidade do processo e exclusividade de instrumentação; os watchpoints e `RECV_WRITE_PC` não estão habilitados por padrão. Não transferir base de ring, PC ou snapshot entre reinícios.
 
 Amostras de 2026-10-19 variaram de **0/76** recuperados na coleta com 70 `09FF` até **221/224 `09FF` e 14/16 `09FD`** em outra janela. Outros rastros confirmaram escritas compatíveis no slot, mas não proveniência única nem ganho causal generalizável. Para considerar uma melhoria validada: comparar **mesma carga, build e critérios**, ordenar por identidade de conexão, contar vistos/recuperados/misses/duplicações e verificar que conteúdos ambíguos não chegam ao OpenKore. Fonte de execução: [STATE da sonda](../research/recv_cipher/STATE.md); métodos: [README da sonda](../research/recv_cipher/README.md); síntese de arquitetura: [Recuperação dinâmica](DYNAMIC_ACTOR_RING.md).
+
+## Observer read-only para roBrowser/UI externa
+
+O observer é **opt-in** e permanece fora de `relay_capture.conf`. Para ativá-lo, crie um diretório runtime 0700 pertencente ao usuário e defina `RO_RELAY_OBSERVER_SOCKET` antes de `./run.sh`:
+
+```bash
+runtime="${XDG_RUNTIME_DIR}/visualbt-relay"
+mkdir -p -m 700 "$runtime"
+RO_RELAY_OBSERVER_SOCKET="$runtime/feed.sock" ./run.sh
+```
+
+O socket resultante é 0600 e carrega frames **server→client** já processados pelo relay. Ele pode conter material sensível da fase de login; não é equivalente ao JSONL sanitizado. Nunca abrir esse socket diretamente por TCP nem despejar os frames em log compartilhado. Qualquer UI remota deve autenticar seus próprios viewers. O protocolo local e os critérios de replay estão em [RO_BROWSER_OBSERVER.md](RO_BROWSER_OBSERVER.md).
+
+Para reiniciar um relay existente sem fechar OpenKore/uaRO, o helper opcional `scripts/restart-relay-in-terminal.sh` valida o launcher atual e o grupo de processos antes de enviar `SIGINT`. Resolve um TTY seguro por `RO_RELAY_LOG_TTY`, TTY atual, TTY do launcher ou hint privado em `$XDG_RUNTIME_DIR/visualbt-relay/relay-tty`; não há PID/TTY hardcoded. `--dry-run` valida sem reiniciar. O helper não deve ser usado se o relay ativo pertencer a outro checkout ou se não houver um `/dev/pts/*` gravável pertencente ao usuário.
+
+**Validação recomendada:** `python3 tests/test_observer.py`, `python3 tests/test_edge_wirefeed.py`, `bash -n scripts/restart-relay-in-terminal.sh` e, antes de integrar, a suíte offline completa. Uma sessão real login→char→map com UI externa continua **NÃO VERIFICADA** nesta revisão.

@@ -15,6 +15,20 @@ class FakeRelay:
     def __init__(self):self.messages=[];self.send=[]
     def feed(self,p):self.messages.append(p)
     def feed_send(self,p):self.send.append(p)
+    def frame(self,p,typ='R'):
+        return typ.encode() + len(p).to_bytes(2, 'little') + p
+
+
+class FakeObserver:
+    def __init__(self):
+        self.sessions=[]
+        self.frames=[]
+    def begin_session(self, connection):
+        self.sessions.append(connection)
+    def frame(self, payload):
+        return b'R' + len(payload).to_bytes(2, 'little') + payload
+    def publish(self, frame, phase='map'):
+        self.frames.append((phase, frame))
 
 
 def feeder(dec=None):
@@ -106,6 +120,26 @@ class FeederEdgeTests(unittest.TestCase):
         f.pending.append(a)
         f.on_ringsnap({'sock':'server:5121','conn':'A','base':'0x1000'})
         self.assertEqual(a['snaps'],[])
+
+    def test_observer_mirrors_only_server_receive_by_phase(self):
+        f,r,_=feeder()
+        observer=FakeObserver()
+        r.observer=observer
+        packet=b'\x73\x00abc'
+        cases=[('127.0.0.1:6900','login-a','login'),
+               ('127.0.0.1:6121','char-a','char'),
+               ('127.0.0.1:5121','map-a','map')]
+        for sock,conn,phase in cases:
+            f.on_recv({'sock':sock,'conn':conn,'C':packet.hex(),
+                       'len':len(packet),'ptr':'0x1000','ts':1000})
+            self.assertFalse(f._feed_ready())
+            self.assertEqual(observer.frames[-1],(phase,observer.frame(packet)))
+        self.assertEqual(observer.sessions,['login-a'])
+        # Client->server writebacks keep using the existing XKore feed only.
+        before=list(observer.frames)
+        c=ClientSendFeed(r,True)
+        c.on_send({'sock':'127.0.0.1:5121','C':'37040102030407'})
+        self.assertEqual(observer.frames,before)
 
     def test_send_feed_discards_http_while_preserving_game(self):
         r=FakeRelay()

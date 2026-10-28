@@ -223,6 +223,12 @@ assert mv.posted == [] and mv.scrambled == [], mv.posted
 off = FakeMove(move_dispatch=False)                                  # sem a flag: caminho antigo (merge)
 off._on_inbound_split(b'\x5f\x03' + pack_move(150, 187), 'S')
 assert off.posted == [] and len(off.scrambled) == 1
+# player-vtable is opt-in; default legacy message is unchanged.
+player = FakeMove()
+player.opts.move_dispatch_backend = 'player-vtable'
+player.post_move_dispatch(150, 187)
+assert player.posted == [{'type': 'native-dispatch', 'recipe': 'walk-player-vtable',
+                          'args': {'x': 150, 'y': 187}}], player.posted
 print('move-dispatch routing ok')
 
 

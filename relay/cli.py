@@ -6,6 +6,7 @@ import sys
 
 from . import ROOT
 from .agent import Agent, pick_port, pid_of_port
+from .client_profile import ClientProfile, ProfileError
 from .config import DEFAULT_CONFIG, load_config_defaults
 from .console import CaptureLog, install_console_filter
 from .packets import WireFilter, load_lengths
@@ -13,6 +14,36 @@ from .relay import Relay
 from .runtime import Capture
 
 DEFAULT_LENGTHS = os.path.join(ROOT, 'data', 'uaro_recvpackets.txt')
+DEFAULT_PROFILE = os.path.join(ROOT, 'profiles', 'uaro-f2f25a89.json')
+
+
+def _apply_client_profile(args):
+    """Fill build-specific defaults from the selected profile, after INI/CLI parsing."""
+    args.client_profile_data = None
+    if not args.client_profile:
+        return args
+    try:
+        profile = ClientProfile.load(args.client_profile)
+        if args.client_exe:
+            profile.verify_executable(args.client_exe)
+
+        send_packet = profile.native_group('send_packet')
+        if not args.sendpacket_rva and 'rva' in send_packet:
+            args.sendpacket_rva = f'{profile.native_int("send_packet", "rva"):x}'
+        if not args.sendpacket_module:
+            args.sendpacket_module = send_packet.get('module', 'uaRO.exe')
+
+        scrambler = profile.native_group('scrambler')
+        if not args.scramble_bp and 'store_offset' in scrambler:
+            args.scramble_bp = f'{profile.native_int("scrambler", "store_offset"):x}'
+    except ProfileError as exc:
+        if getattr(args, 'discovery_wizard', 'off') != 'off':
+            args.client_profile_error = str(exc)
+            return args
+        raise SystemExit(f'client profile error: {exc}') from exc
+
+    args.client_profile_data = profile
+    return args
 
 
 def parse_args(argv=None):
@@ -20,6 +51,23 @@ def parse_args(argv=None):
     ap.add_argument('--config', default=DEFAULT_CONFIG,
                     help='INI file of default settings ([capture] section); CLI options override it. '
                          'Missing file = built-in defaults.')
+    ap.add_argument('--client-profile', default=DEFAULT_PROFILE,
+                    help='Build-specific native-address profile. Empty disables profile defaults.')
+    ap.add_argument('--client-exe', default='',
+                    help='Optional client executable path; when set, verify it matches --client-profile.')
+    ap.add_argument('--discovery-wizard', choices=('off', 'auto', 'force'), default='off',
+                    help='Integrated dispatcher-discovery wizard. auto = run only if static/profile discovery '
+                         'cannot identify the client; force = collect behavioral traces regardless; off = normal relay.')
+    ap.add_argument('--discovery-runs', type=int, default=3,
+                    help='Wizard: repeated trace windows per baseline/action step (default 3).')
+    ap.add_argument('--discovery-trace-ms', type=int, default=1200,
+                    help='Wizard: duration of each bounded internal-call trace (default 1200 ms).')
+    ap.add_argument('--discovery-arm-delay-ms', type=int, default=1500,
+                    help='Wizard: delay after ENTER before each trace starts, allowing focus to return to the game.')
+    ap.add_argument('--discovery-out', default='',
+                    help='Wizard trace-set JSON path; default research/client_discovery/<build>-traces.json.')
+    ap.add_argument('--discovery-profiles', default=os.path.join(ROOT, 'profiles'),
+                    help='Wizard/preflight: directory containing exact-build client profiles.')
     ap.add_argument('--name', default='uaRO.exe')
     ap.add_argument('--port', type=int)
     ap.add_argument('--out', default=os.path.join(ROOT, 'relay_log.jsonl'))
@@ -80,11 +128,12 @@ def parse_args(argv=None):
     ap.add_argument('--sendcall-demand', action=argparse.BooleanOptionalAction, default=False,
                     help='EXPERIMENTAL: schedule an immediate SendPacket drain on the captured game thread. '
                          'Disabled by default; --no-sendcall-demand restores existing socket-event drain.')
-    ap.add_argument('--sendpacket-rva', default='816640',
-                    help='--inject-call: hex RVA of SendPacket(this,len,buf) from the client EXE base '
-                         '(default 0x816640, discovered for this uaRO build). Resolved against --sendpacket-module.')
-    ap.add_argument('--sendpacket-module', default='uaRO.exe',
-                    help='--inject-call: the module whose base --sendpacket-rva is relative to.')
+    ap.add_argument('--sendpacket-rva', default='',
+                    help='--inject-call: hex RVA of SendPacket(this,len,buf) from the client EXE base. '
+                         'Default comes from --client-profile.')
+    ap.add_argument('--sendpacket-module', default='',
+                    help='--inject-call: module whose base --sendpacket-rva is relative to. '
+                         'Default comes from --client-profile.')
     ap.add_argument('--target-select', action=argparse.BooleanOptionalAction, default=False,
                     help='emit a 0368 (CZ_REQNAME_BYGID) select-by-GID before a targeted action (0437 '
                          'attack / 0438 skill), on BOTH the client-SendPacket path and the --action-merge '
@@ -129,11 +178,25 @@ def parse_args(argv=None):
     ap.add_argument('--synth-dry', action=argparse.BooleanOptionalAction, default=False,
                     help='--synth-input: não injeta a tecla; só registra o que faria (teste).')
     ap.add_argument('--move-dispatch', action=argparse.BooleanOptionalAction, default=False,
-                    help='PoC (needs --inject): on a consumer 035f, fire the client\'s native movement '
-                         'dispatcher (frame 0x11) from a main-loop PE site so the CLIENT builds, encrypts '
-                         'and sends its own 035f. Uses DR2/DR3; keep --no-send-watch.')
-    ap.add_argument('--move-dispatch-ptr', default='0xd473b0', help='--move-dispatch: dispatcher address (hex)')
-    ap.add_argument('--move-dispatch-site', default='0x4dcba0', help='--move-dispatch: PE main-loop fire site (hex)')
+                    help='PoC (needs --inject): route consumer 035f through a native client path so the '
+                         'client/Gepard chain builds and encrypts it.')
+    ap.add_argument('--move-dispatch-backend', choices=('legacy', 'gepard-wrapper', 'player-vtable'), default='legacy',
+                    help='--move-dispatch backend. legacy = validated original CPlayer dispatcher; '
+                         'player-vtable = EXPERIMENTAL runtime CPlayer vtable hook installed by Gepard; '
+                         'gepard-wrapper = older experimental wrapper above CGameMode::SendMsg.')
+    ap.add_argument('--gepard-wrapper-fire', action=argparse.BooleanOptionalAction, default=False,
+                    help='EXPERIMENTAL: allow gepard-wrapper to invoke its protected entry. OFF = capture-only.')
+    ap.add_argument('--gepard-wrapper-max-fires', type=int, default=1,
+                    help='Maximum protected-wrapper calls in this relay run (default 1).')
+    ap.add_argument('--player-vtable-max-fires', type=int, default=1,
+                    help='EXPERIMENTAL player-vtable safety cap; maximum calls per relay run (default 1).')
+    ap.add_argument('--move-dispatch-test', default='', metavar='X,Y',
+                    help='Research one-shot: after passive movement-context capture, issue exactly one move '
+                         'to X,Y through the selected --move-dispatch-backend. Empty = disabled.')
+    ap.add_argument('--move-dispatch-ptr', default='',
+                    help='--move-dispatch: absolute dispatcher address override (hex); profile default otherwise.')
+    ap.add_argument('--move-dispatch-site', default='',
+                    help='--move-dispatch: absolute game-thread safe-point override (hex); profile default otherwise.')
     ap.add_argument('--inject-persist', action=argparse.BooleanOptionalAction, default=False,
                     help='--inject + --scramble-bp: keep each consumer packet and replace EVERY matching '
                          'client action of that id (persistent hijack), instead of one-shot per packet. '
@@ -183,9 +246,23 @@ def parse_args(argv=None):
                          '(anon 0x401000) para dentro do gepard. Rode parado e depois andando e compare '
                          'para achar a chamada do envio do 035f. ARRISCADO; use janelas curtas.')
     ap.add_argument('--trace-internal', type=int, default=0, metavar='MS',
-                    help='Stalker (pesquisa): como --trace-walk, mas registra as chamadas uaRO->uaRO '
-                         '(internas) para achar o manipulador de alto nivel do movimento. Volume maior; '
-                         'use janelas bem curtas (300-500ms). ARRISCADO.')
+                    help='Stalker (pesquisa): como --trace-walk, mas registra as chamadas uaRO->uaRO. '
+                         'ARRISCADO; evite em clientes protegidos, prefira --hw-probe-rva.')
+    ap.add_argument('--hw-probe-rva', default='',
+                    help='Pesquisa: breakpoint de execução HARDWARE, one-shot/read-only, em module+RVA hex.')
+    ap.add_argument('--hw-probe-module', default='uaRO.exe',
+                    help='--hw-probe-rva: módulo base (default uaRO.exe).')
+    ap.add_argument('--hw-probe-stack-words', type=int, default=8,
+                    help='--hw-probe-rva: palavras de 32 bits da pilha a capturar (default 8; máximo 16).')
+    ap.add_argument('--hw-probe-timeout-ms', type=int, default=10000,
+                    help='--hw-probe-rva: desarma automaticamente após N ms (default 10000).')
+    ap.add_argument('--hw-probe-filter-index', type=int, default=None,
+                    help='--hw-probe-rva: só captura quando stack[index] == --hw-probe-filter-value.')
+    ap.add_argument('--hw-probe-filter-value', default='',
+                    help='--hw-probe-rva: valor inteiro/hex do filtro de pilha (ex. 0x45).')
+    ap.add_argument('--hw-probe-rearm-session', action=argparse.BooleanOptionalAction, default=False,
+                    help='--hw-probe-rva: preserve and re-arm this read-only probe after map/session settle. '
+                         'OFF by default; use only for a known-safe observation point.')
     ap.add_argument('--probe-anyid', action='store_true',
                     help='--send-probe: capture the first hit whose pointer is inside --scramble-range, '
                          'regardless of packet id (use when the id offset is unknown, e.g. mapping 035f on the '
@@ -214,7 +291,7 @@ def parse_args(argv=None):
                     help='append every framed byte sent to the consumer to this file (offline replay)')
     pre, _ = ap.parse_known_args(argv)                 # find --config first, then fold it in as defaults
     load_config_defaults(ap, pre.config)
-    return ap.parse_args(argv)                          # CLI options still override the config
+    return _apply_client_profile(ap.parse_args(argv))   # CLI > INI > build profile defaults
 
 
 def parse_ids(spec):
@@ -254,6 +331,11 @@ def build_feed(a, drop):
     lengths = read_lengths(a.recvpackets, required=True)
     wire = WireFilter(lengths, drop)
     relay = Relay(host, int(port), a.relay_format)       # unaligned: the filter tokenizes
+    # Explicitly opt in from process environment; existing live runs stay unchanged.
+    observer_path = os.environ.get('RO_RELAY_OBSERVER_SOCKET')
+    if observer_path:
+        from .observer import PacketObserver
+        relay.observer = PacketObserver(observer_path)
     print('[*] feeding cleartext wire bytes, per-connection tokenized')
     if a.feed_dump:
         relay.dump = open(a.feed_dump, 'wb')
@@ -266,6 +348,9 @@ def build_feed(a, drop):
 def main(argv=None):
     a = parse_args(argv)
     install_console_filter(a.verbose)
+    if a.discovery_wizard != 'off':
+        from .discovery_wizard import run_wizard_mode
+        return run_wizard_mode(a)
     relay, wire = build_feed(a, parse_ids(a.drop_ids))
 
     port = a.port or pick_port(a.name)
@@ -288,6 +373,7 @@ def main(argv=None):
     capture.arm_scramble()                             # exec breakpoint at gepard+off, if --scramble-bp
     capture.arm_move_dispatch()                        # native movement dispatcher, if --move-dispatch
     capture.arm_sendcall()                             # capture SendPacket `this`, if --inject-call
+    capture.arm_hw_probe()                             # optional one-shot read-only HW exec probe
     capture.arm_trace()                                # Stalker trace, if --trace-test / --trace-walk
     if capture.send_watch_waiting:
         print('[*] send watch: waiting for the recv ring to locate the send queue')
@@ -297,9 +383,13 @@ def main(argv=None):
         raise KeyboardInterrupt                         # so the finally still runs agent.unload() ->
     signal.signal(signal.SIGTERM, _on_term)             # dispose() clears the debug registers
 
-    def _on_usr1(signum, frame):                       # re-arma o trace sob demanda (abrir a janela
-        capture.arm_trace()                             # na hora de clicar; repetir sem reiniciar)
+    def _on_usr1(signum, frame):                       # legacy Stalker research trigger
+        capture.arm_trace()
     signal.signal(signal.SIGUSR1, _on_usr1)
+
+    def _on_usr2(signum, frame):                       # safe research trigger: one-shot hardware BP
+        capture.arm_hw_probe()
+    signal.signal(signal.SIGUSR2, _on_usr2)
 
     try:
         sys.stdin.read()                               # hold stdin open (tail -f /dev/null | ...)
@@ -307,3 +397,6 @@ def main(argv=None):
         pass
     finally:
         agent.unload()
+        observer = getattr(relay, 'observer', None)
+        if observer is not None:
+            observer.close()

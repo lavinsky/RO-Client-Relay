@@ -4,7 +4,7 @@
 # Bare `./run.sh` já faz tudo funcionar (configuração padrão = a que validamos ao vivo):
 #   - relay com --move-dispatch (ANDAR) + --action-merge (ATACAR/LANÇAR) + fila FIFO de egresso
 #     (--egress-queue, 400ms) + faixa obsoleta desligada (--scramble-range ''); resto vem da conf
-#     (inject, inject-call, scramble-bp=18eff2, consumidor 127.0.0.1:2350). Roda com `python -u`.
+#     (inject, inject-call, offsets nativos vindos do client profile, consumidor 127.0.0.1:2350).
 #   - action_trigger.py: ao ver a linha de arme no stdout do relay, dispara a tecla sintética
 #     (ydotool/uinput, passa no Gepard): 0437→INSERT, 0438→9 (fileira de cima), 0af4→F2.
 #
@@ -26,6 +26,24 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# VisualBehaviorTrees / roBrowser: mirror read-only of the exact plaintext
+# stream already delivered to OpenKore. The UNIX socket is user-private and
+# carries only observer R frames; browser output never reaches the game.
+if [[ "${RO_RELAY_OBSERVER_SOCKET:-}" != "off" ]]; then
+    OBSERVER_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/visualbt-relay"
+    install -d -m 700 "$OBSERVER_DIR"
+    export RO_RELAY_OBSERVER_SOCKET="${RO_RELAY_OBSERVER_SOCKET:-$OBSERVER_DIR/feed.sock}"
+    # A previous unclean exit can leave the pathname behind. Never unlink a
+    # socket owned by a live relay: a second launcher must fail harmlessly.
+    if [[ -S "$RO_RELAY_OBSERVER_SOCKET" ]]; then
+        if ss -xl 2>/dev/null | grep -Fq "$RO_RELAY_OBSERVER_SOCKET"; then
+            echo "[run] observer socket already active: $RO_RELAY_OBSERVER_SOCKET" >&2
+        else
+            rm -f "$RO_RELAY_OBSERVER_SOCKET"
+        fi
+    fi
+fi
 
 # Único launcher operacional. Todos os padrões ficam em relay_capture.conf.
 # Compatibilidade: --raw aceita diretamente todas as flags de relay_capture_linux.py.

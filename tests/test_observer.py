@@ -56,6 +56,26 @@ class ObserverTests(unittest.TestCase):
                 broker.close()
             self.assertFalse(os.path.exists(pathname))
 
+    def test_lowercase_phase_subscribes_live_without_history_replay(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.chmod(root, 0o700)
+            pathname = os.path.join(root, 'feed.sock')
+            broker = PacketObserver(pathname)
+            try:
+                broker.begin_session('epoch-live')
+                broker.publish(b'R\x02\x00\x01\x02', 'map')
+                peer = socket.socket(socket.AF_UNIX)
+                peer.settimeout(0.15)
+                peer.connect(pathname)
+                peer.sendall(b'm')
+                with self.assertRaises(socket.timeout):
+                    peer.recv(1)
+                broker.publish(b'R\x02\x00\x03\x04', 'map')
+                self.assertEqual(receive_exact(peer, 5), b'R\x02\x00\x03\x04')
+                peer.close()
+            finally:
+                broker.close()
+
     def test_new_login_resets_history_and_stale_client(self):
         with tempfile.TemporaryDirectory() as root:
             os.chmod(root, 0o700)

@@ -2,7 +2,8 @@
 
 The relay keeps its existing XKore1 consumer. The observer listens only on a
 0600 UNIX socket, never forwards client-generated commands and never logs raw
-login packets. Each viewer selects one connection phase (L/C/M) with one byte.
+login packets. Uppercase selectors (L/C/M) replay bounded phase history; lowercase
+selectors (l/c/m) subscribe at the live edge without replay.
 """
 from collections import deque
 import os
@@ -13,6 +14,7 @@ import threading
 
 
 PHASES = {b'L': 'login', b'C': 'char', b'M': 'map'}
+LIVE_PHASES = {b'l': 'login', b'c': 'char', b'm': 'map'}
 MAX_HISTORY = 32 * 1024 * 1024
 
 
@@ -91,17 +93,19 @@ class PacketObserver:
     def _serve(self, client):
         try:
             client.settimeout(5)
-            phase = PHASES.get(client.recv(1))
+            selector = client.recv(1)
+            phase = PHASES.get(selector) or LIVE_PHASES.get(selector)
             if not phase:
                 return
+            replay_history = selector in PHASES
             with self.lock:
                 if self.closed or len(self.clients) >= 2:
                     return
                 work = queue.Queue(maxsize=64)
                 self.clients[client] = (phase, work)
-                # Snapshot and subscriber insertion are atomic: new packets go
-                # into work and cannot overtake historical bytes.
-                initial = list(self.history[phase]) if self.replay_valid else []
+                # Subscriber insertion and history snapshot are atomic. Lowercase
+                # selectors intentionally start at the live edge for late join.
+                initial = list(self.history[phase]) if replay_history and self.replay_valid else []
             client.settimeout(2)
             for frame in initial:
                 client.sendall(frame)

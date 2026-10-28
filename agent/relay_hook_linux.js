@@ -258,6 +258,7 @@ var scrCall = null;                              // sendcall: {pc} do ponto de c
 // Session-scoped allocator: never overwrite a slot owned by another hook.
 // Hardware API reports whether a candidate slot is actually available.
 var hwOwners = {};
+var hwProbe = null;                                // one-shot read-only research exec breakpoint
 // Bounded breakpoint lifecycle telemetry; no payload, stack, or user data.
 var bpStats = {};
 function bpEvent(owner, event, extra) {
@@ -316,6 +317,8 @@ function resetNativeSession(reason, delayMs) {
         thisDiag('stale','SendPacket','session transition: '+reason,scSend['this']);
     if (md !== null && md.thisp !== null)
         thisDiag('stale','MoveDispatch','session transition: '+reason,md.thisp);
+    if (gd !== null && gd.thisp !== null)
+        thisDiag('stale','GepardDispatch','session transition: '+reason,gd.thisp);
     scDemandScheduled = false;
     sessionBlockedUntil = Date.now() + delayMs;
     if (scSend !== null) {
@@ -323,10 +326,18 @@ function resetNativeSession(reason, delayMs) {
         scSend.tid = null; scSend.awaitRecapture = true;
     }
     scrCall = null; hwClear('sendcall');
+    if (hwProbe !== null) {
+        if (hwProbe.rearmSession) hwClear('research-probe');
+        else { hwProbe = null; hwClear('research-probe'); }
+    }
     if (md !== null) {
         md.thisp = null; md.receiver = null; md.queue.length = 0;
         md.capArmed = false; md.fireArmed = false;
         hwClear('move-cap'); hwClear('move-fire');
+    }
+    if (gd !== null) {
+        gd.thisp = null; gd.queue.length = 0; gd.capArmed = false; gd.fireArmed = false;
+        hwClear('gepard-cap'); hwClear('gepard-fire');
     }
     var epoch = sessionGeneration;
     send({tag:'NATIVE-SESSION', hit:'invalidated', reason:reason, ts:Date.now(), wait_ms:delayMs, generation:epoch});
@@ -339,6 +350,18 @@ function resetNativeSession(reason, delayMs) {
         if (md !== null && md.th !== null) {
             try { hwSet('move-cap', md.th, md.disp); md.capArmed = true; }
             catch(e) { send({tag:'MOVE-DISPATCH',hit:'error',e:'delayed arm: '+e.message}); }
+        }
+        if (gd !== null && gd.th !== null) {
+            try { hwSet('gepard-cap', gd.th, gd.callsite); gd.capArmed = true; }
+            catch(e) { send({tag:'GEPARD-DISPATCH',hit:'error',e:'delayed arm: '+e.message}); }
+        }
+        if (hwProbe !== null && hwProbe.rearmSession) {
+            try {
+                var pth = Process.enumerateThreads().filter(function(t){return t.id === Process.id;})[0] || null;
+                if (pth !== null) { hwProbe.th = pth; hwSet('research-probe', pth, hwProbe.pc);
+                    send({tag:'HW-PROBE',hit:'rearmed-session',token:hwProbe.token || null,
+                          pc:hwProbe.pc.toString(),tid:pth.id,ts:Date.now()}); }
+            } catch(e) { send({tag:'HW-PROBE',hit:'error',e:'session rearm: '+e.message,ts:Date.now()}); }
         }
         send({tag:'NATIVE-SESSION',hit:'recapture-armed',generation:epoch,ts:Date.now()});
     }, delayMs);
@@ -530,6 +553,101 @@ function scrPrologueBefore(addr) {                                   // nearest 
     return null;
 }
 
+function stackCodeFrames(esp, maxWords, maxFrames) {
+    // HW breakpoint handlers run in exception context: keep this deliberately cheap.
+    // Resolve only executable mappings here; deeper prologue analysis belongs off the hot path.
+    var frames = [];
+    maxWords = Math.min(maxWords, 96);
+    maxFrames = Math.min(maxFrames, 16);
+    for (var i = 0; i < maxWords && frames.length < maxFrames; i++) {
+        var w;
+        try { w = esp.add(i * 4).readPointer(); } catch (e) { break; }
+        if (w.isNull()) continue;
+        var c = codeAt(w);
+        if (c === null) continue;
+        frames.push({sp:'0x' + (i * 4).toString(16), ret:w.toString(), mod:c.name,
+                     off:'0x' + w.sub(c.base).toString(16)});
+    }
+    return frames;
+}
+
+function hwProbeClear(hit) {
+    var p = hwProbe;
+    if (p === null) return;
+    hwProbe = null;
+    hwClear('research-probe');
+    if (hit) send({tag:'HW-PROBE',hit:hit,token:p.token || null,pc:p.pc.toString(),ts:Date.now()});
+}
+function hwProbeTrap(ctx) {
+    var p = hwProbe;
+    if (p === null || !ctx.pc.equals(p.pc)) return false;
+    try {
+        if (p.filterIndex !== null) {
+            var gate = ctx.esp.add(p.filterIndex * 4).readU32();
+            if (gate !== p.filterValue) return true;   // handled, remain armed; minimal hot-path work
+        }
+        var stack = [];
+        for (var i = 0; i < p.stackWords; i++) stack.push(ctx.esp.add(i * 4).readU32());
+        var regs = {};
+        GP.forEach(function (r) { try { regs[r] = ctx[r].toString(); } catch (e) {} });
+        var ebpWords = [];
+        try { for (var j = 0; j < 8; j++) ebpWords.push(ctx.ebp.add(j * 4).readU32()); } catch (e) {}
+        // Bounded raw EBP chain: no symbol/prologue work in exception context. This lets offline analysis
+        // recover exact parent return addresses instead of guessing from unrelated executable-looking words.
+        var ebpChain = [], fp = ctx.ebp;
+        try {
+            for (var depth = 0; depth < 8; depth++) {
+                var saved = fp.readPointer(), ret = fp.add(4).readPointer(), argv = [];
+                for (var ai = 0; ai < 6; ai++) argv.push(fp.add(8 + ai * 4).readU32());
+                ebpChain.push({fp:fp.toString(), saved:saved.toString(), ret:ret.toString(), args:argv});
+                if (saved.isNull() || saved.compare(fp) <= 0 || saved.sub(fp).toUInt32() > 0x100000) break;
+                fp = saved;
+            }
+        } catch (e) {}
+        var frames = stackCodeFrames(ctx.esp, 512, 64);
+        var msg = {tag:'HW-PROBE',hit:'captured',token:p.token || null,pc:ctx.pc.toString(),
+                   tid:Process.getCurrentThreadId(),ecx:ctx.ecx.toString(),esp:ctx.esp.toString(),
+                   ebp:ctx.ebp.toString(),stack:stack,ebp_words:ebpWords,ebp_chain:ebpChain,
+                   regs:regs,frames:frames,ts:Date.now()};
+        hwProbe = null; hwClear('research-probe');
+        send(msg);
+    } catch (e) {
+        hwProbe = null; hwClear('research-probe');
+        send({tag:'HW-PROBE',hit:'error',token:p.token || null,pc:p.pc.toString(),e:String(e),ts:Date.now()});
+    }
+    return true;
+}
+function onHwExecProbe(m) {
+    try {
+        hwProbeClear(null);
+        var base = peBase(m.module || 'uaRO.exe');
+        if (base === null) throw new Error('module base unresolved');
+        var pc = base.add(Number(m.rva));
+        if (!Process.findRangeByAddress(pc)) throw new Error('probe pc unmapped');
+        var th = Process.enumerateThreads().filter(function (t) { return t.id === Process.id; })[0] || null;
+        if (th === null) throw new Error('main thread not found');
+        var words = Math.max(1, Math.min(16, Number(m.stackWords || 8)));
+        var timeoutMs = Math.max(100, Math.min(60000, Number(m.timeoutMs || 5000)));
+        var token = m.token || null;
+        var filterIndex = m.filterIndex === undefined ? null : Math.max(0, Math.min(15, Number(m.filterIndex)));
+        var filterValue = m.filterValue === undefined ? null : (Number(m.filterValue) >>> 0);
+        hwProbe = {pc:pc,th:th,stackWords:words,token:token,filterIndex:filterIndex,
+                   filterValue:filterValue,rearmSession:!!m.rearmSession};
+        if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
+        hwSet('research-probe', th, pc);
+        send({tag:'HW-PROBE',hit:'armed',token:token,pc:pc.toString(),tid:th.id,
+              stack_words:words,timeout_ms:timeoutMs,ts:Date.now()});
+        setTimeout(function () {
+            if (hwProbe !== null && hwProbe.pc.equals(pc) && hwProbe.token === token) hwProbeClear('timeout');
+        }, timeoutMs);
+    } catch (e) {
+        hwProbe = null; hwClear('research-probe');
+        send({tag:'HW-PROBE',hit:'error',token:m.token || null,e:String(e),ts:Date.now()});
+    }
+    recv('hw-exec-probe', onHwExecProbe);
+}
+recv('hw-exec-probe', onHwExecProbe);
+
 function scrTrap(d) {
     if (d.type !== 'breakpoint') return false;
     var started = Date.now(), owner = 'unknown', result = false;
@@ -537,7 +655,10 @@ function scrTrap(d) {
         var pc = d.context.pc;
         if (md !== null && ((md.capArmed && pc.equals(md.disp)) || (md.fireArmed && pc.equals(md.site))))
             owner = md.capArmed && pc.equals(md.disp) ? 'move-cap' : 'move-fire';
+        else if (gd !== null && ((gd.capArmed && pc.equals(gd.callsite)) || (gd.fireArmed && pc.equals(gd.site))))
+            owner = gd.capArmed && pc.equals(gd.callsite) ? 'gepard-cap' : 'gepard-fire';
         else if (scrCall !== null && pc.equals(scrCall.pc)) owner = 'sendcall';
+        else if (hwProbe !== null && pc.equals(hwProbe.pc)) owner = 'research-probe';
         else if (scr !== null && pc.equals(scr.pc)) owner = 'scramble';
         result = scrTrapCore(d);
         return result;
@@ -551,6 +672,8 @@ function scrTrap(d) {
 function scrTrapCore(d) {
     if (d.type !== 'breakpoint') return false;
     var ctx = d.context;
+    if (hwProbe !== null && hwProbeTrap(ctx)) return true; // one-shot read-only research BP
+    if (gd !== null && gdTrap(ctx)) return true;       // protected wrapper dispatch (DR2/DR3)
     if (md !== null && mdTrap(ctx)) return true;       // native-dispatch (DR2/DR3)
     // sendcall: captura de uso unico do `this` (ecx) na entrada da SendPacket, no DR1 -- independente
     // do merge de 035f (DR0), que segue armado. Depois a SendPacket e chamada por NativeFunction.
@@ -852,20 +975,138 @@ function drainSendCall() {                       // only runs on the game thread
     } finally { scDraining = false; }
 }
 
-// ---- native-dispatch (opt-in: {type:'native-dispatch'}) ---------------------------------------
-// PoC: em vez de fabricar o corpo do 035f, dispara o DISPATCHER NATIVO de movimento do cliente
-// (0xd473b0, thiscall, frame 0x11) a partir de um sitio de main-loop do uaRO.exe (HW exec BP em
-// CODIGO, DR2/DR3; sem Interceptor inline). O cliente monta, cifra e envia o proprio 035f.
-// Receita validada: research/movement_035f/dispatcher_trial_pesite.py (rodadas 06b/08).
-var MD_MGR = ptr('0x1213338'), MD_RET34 = ptr('0xd47e61');
-var MD_RECIPES = {
-    'walk-035f': {
-        dispatcher: 0xd473b0, fireSite: 0x4dcba0,
-        buildFrame: function (a) {                      // 13 dwords: f[1]=code 0x11, f[3]=dx, f[5]=dy
-            var dx = Math.max(0, Math.min(1023, a.x | 0)), dy = Math.max(0, Math.min(1023, a.y | 0));
-            return [0, 0x11, 0, dx >>> 0, 0, dy >>> 0, 0, 0, 0, 0, 0, 0, 0];
-        }
+// ---- Gepard SendMsg wrapper dispatch (experimental, opt-in) -----------------------------------
+// Live HW probes established a protected cdecl wrapper with six stack arguments:
+//   wrapper(CGameMode*this, sendMsgId, a2, a3, a4, a5)
+// which later executes `call eax` with eax=CGameMode::SendMsg. Direct SendMsg calls bypassed the
+// outbound transform, so this path deliberately enters ABOVE SendMsg. Exact offsets are profile data.
+var gd = null;
+function gdUnarm(which) { hwClear(which === 'cap' ? 'gepard-cap' : 'gepard-fire'); }
+function gdThisValid(p) {
+    try {
+        if (gd === null || p === null || p.isNull() || !Process.findRangeByAddress(p)) return false;
+        return p.readPointer().equals(gd.vtable);
+    } catch (e) { return false; }
+}
+function gdInvalidate(why) {
+    if (gd === null) return;
+    gd.thisp = null; gd.queue.length = 0;
+    gdUnarm('fire'); gd.fireArmed = false;
+    if (!gd.capArmed && gd.th !== null) {
+        try { if (sessionReady()) { hwSet('gepard-cap', gd.th, gd.callsite); gd.capArmed = true; } }
+        catch (e) { send({tag:'GEPARD-DISPATCH',hit:'error',e:'recapture arm: '+e.message}); }
     }
+    send({tag:'GEPARD-DISPATCH',hit:'invalidated',e:why});
+}
+function gdTrusted() {
+    if (gd === null || gd.thisp === null) return false;
+    if (!gdThisValid(gd.thisp)) {
+        thisDiag('invalid','GepardDispatch','CGameMode vtable changed',gd.thisp);
+        gdInvalidate('CGameMode context changed');
+        return false;
+    }
+    return true;
+}
+function gdTrap(ctx) {
+    if (gd === null) return false;
+    if (gd.capArmed && ctx.pc.equals(gd.callsite)) {
+        if (sessionReady() && gd.thisp === null && !gd.busy) {
+            var sid = 0xffffffff;
+            try { sid = ctx.esp.readU32(); } catch (e) {}
+            if (ctx.eax.equals(gd.sendmsg) && sid <= 0x14f && gdThisValid(ctx.ecx)) {
+                gd.thisp = ctx.ecx; gd.capArmed = false; gdUnarm('cap');
+                send({tag:'GEPARD-DISPATCH',hit:'captured','this':ctx.ecx.toString(),send_msg_id:sid});
+            }
+        }
+        return true;
+    }
+    if (gd.fireArmed && ctx.pc.equals(gd.site)) {
+        if (Process.getCurrentThreadId() !== gd.tid || gd.busy) return true;
+        if (!gdTrusted() || gd.queue.length === 0) return true;
+        var a = gd.queue.shift();
+        gd.fireArmed = false; gdUnarm('fire'); gd.capArmed = false; gdUnarm('cap');
+        var x = Math.max(0, Math.min(1023, a.x | 0));
+        var y = Math.max(0, Math.min(1023, a.y | 0));
+        var out = {tag:'GEPARD-DISPATCH',hit:'fired',x:x,y:y,'this':gd.thisp.toString(),send_msg_id:gd.moveId};
+        try {
+            gd.busy = true; gd.firesLeft--;
+            send({tag:'GEPARD-DISPATCH',hit:'call',x:x,y:y,fires_left:gd.firesLeft});
+            out.retval = gd.fn(gd.thisp, gd.moveId, x, y, 0, 0) >>> 0;
+            out.exception = null;
+            if (gd.firesLeft <= 0) { gd.fireEnabled = false; gd.queue.length = 0; }
+        } catch (e) { out.exception = String(e.message || e); }
+        gd.busy = false; send(out);
+        if (gd.queue.length && gdTrusted()) {
+            try { if (sessionReady()) { hwSet('gepard-fire',gd.th,gd.site); gd.fireArmed = true; } } catch (e) {}
+        }
+        return true;
+    }
+    return false;
+}
+function onGepardDispatch(m) {
+    try {
+        if (m.arm) send({tag:'GEPARD-DISPATCH',hit:'arm-received',module:m.module || null,
+                         entry_offset:m.entryOffset,callsite_offset:m.callsiteOffset,
+                         safe_point_rva:m.safePointRva,send_msg_rva:m.sendMsgRva});
+        if (m.disarm) {
+            if (gd !== null) { gdUnarm('cap'); gdUnarm('fire'); }
+            gd = null;
+        } else if (m.recapture) {
+            resetNativeSession('gepard-wrapper recapture', m.delayMs);
+        } else if (m.arm) {
+            var gb = peBase(m.module || 'gepard.dll'), ub = peBase(m.uaroModule || 'uaRO.exe');
+            var have = m.entryOffset !== undefined && m.callsiteOffset !== undefined &&
+                       m.safePointRva !== undefined && m.sendMsgRva !== undefined &&
+                       m.gameModeVtableRva !== undefined && m.moveSendMsgId !== undefined;
+            if (gb === null || ub === null || !have) throw new Error('wrapper/profile unresolved');
+            var entry = gb.add(m.entryOffset), callsite = gb.add(m.callsiteOffset);
+            var site = ub.add(m.safePointRva), sendmsg = ub.add(m.sendMsgRva), vtable = ub.add(m.gameModeVtableRva);
+            var ci = Instruction.parse(callsite).toString();
+            var e1 = Instruction.parse(entry), e2 = Instruction.parse(e1.next), e3 = Instruction.parse(e2.next);
+            if (ci !== 'call eax') throw new Error('wrapper callsite anchor mismatch: ' + ci);
+            if (e1.toString() !== 'push ebp' || e2.toString() !== 'bswap ebp' || e3.toString() !== 'mov ebp, esp')
+                throw new Error('wrapper entry anchor mismatch');
+            if (!Process.findRangeByAddress(site) || !Process.findRangeByAddress(sendmsg) || !Process.findRangeByAddress(vtable))
+                throw new Error('uaRO anchor unmapped');
+            var th = Process.enumerateThreads().filter(function(t){return t.id === Process.id;})[0] || null;
+            if (th === null) throw new Error('main thread not found');
+            gd = {entry:entry,callsite:callsite,site:site,sendmsg:sendmsg,vtable:vtable,moveId:Number(m.moveSendMsgId),
+                  th:th,tid:Process.id,thisp:null,queue:[],capArmed:false,fireArmed:false,busy:false,
+                  fireEnabled:!!m.fireEnabled, firesLeft:Math.max(0, Number(m.maxFires === undefined ? 1 : m.maxFires)),
+                  fn:new NativeFunction(entry,'uint',['pointer','uint32','uint32','uint32','uint32','uint32'],
+                                        {abi:'default',exceptions:'propagate'})};
+            if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
+            hwSet('gepard-cap',gd.th,gd.callsite); gd.capArmed = true;
+            send({tag:'GEPARD-DISPATCH',hit:'armed',entry:entry.toString(),callsite:callsite.toString(),site:site.toString()});
+        } else if (m.args && gd !== null) {
+            if (!gd.fireEnabled) send({tag:'GEPARD-DISPATCH',hit:'dropped',e:'capture-only mode'});
+            else if (gd.firesLeft <= 0) send({tag:'GEPARD-DISPATCH',hit:'dropped',e:'fire limit exhausted'});
+            else if (!sessionReady()) send({tag:'GEPARD-DISPATCH',hit:'dropped',e:'map settle delay'});
+            else if (!gdTrusted()) send({tag:'GEPARD-DISPATCH',hit:'dropped',e:'CGameMode context unavailable'});
+            else if (gd.queue.length >= 8) send({tag:'GEPARD-DISPATCH',hit:'dropped',e:'queue full'});
+            else {
+                gd.queue.push({x:Number(m.args.x),y:Number(m.args.y)});
+                if (!gd.fireArmed) { hwSet('gepard-fire',gd.th,gd.site); gd.fireArmed = true; }
+                send({tag:'GEPARD-DISPATCH',hit:'queued',x:Number(m.args.x),y:Number(m.args.y)});
+            }
+        } else if (m.args) send({tag:'GEPARD-DISPATCH',hit:'error',e:'dispatch with no arm'});
+    } catch (e) { send({tag:'GEPARD-DISPATCH',hit:'error',e:String(e.message || e)}); }
+    recv('gepard-dispatch', onGepardDispatch);
+}
+recv('gepard-dispatch', onGepardDispatch);
+
+// ---- native-dispatch (opt-in: {type:'native-dispatch'}) ---------------------------------------
+// PoC: em vez de fabricar o corpo do 035f, dispara o dispatcher nativo do cliente (thiscall,
+// frame 0x11) a partir de um safe point da thread do jogo. Enderecos/RVAs pertencem ao perfil
+// do build; o agente nao carrega offsets de uaRO fixos. Receita validada historicamente em
+// research/movement_035f/dispatcher_trial_pesite.py (rodadas 06b/08).
+function mdWalkFrame(a) {                             // 13 dwords: f[1]=code 0x11, f[3]=dx, f[5]=dy
+    var dx = Math.max(0, Math.min(1023, a.x | 0)), dy = Math.max(0, Math.min(1023, a.y | 0));
+    return [0, 0x11, 0, dx >>> 0, 0, dy >>> 0, 0, 0, 0, 0, 0, 0, 0];
+}
+var MD_RECIPES = {
+    'walk-035f': {kind: 'legacy-frame', buildFrame: mdWalkFrame},
+    'walk-player-vtable': {kind: 'player-vtable', buildFrame: mdWalkFrame}
 };
 var md = null;      // {recipe, disp, site, fn, thisp, receiver, queue:[args], th, capArmed, fireArmed, busy}
 
@@ -873,13 +1114,29 @@ function mdUnarm(slot) { hwClear(slot === 2 ? 'move-cap' : 'move-fire'); }
 
 function mdContext() {                          // identidade do objeto receptor nesta sessao
     try {
-        if (MD_MGR.add(0x58).readU32() !== 1) return null;
-        var obj = MD_MGR.add(4).readPointer();
+        if (md === null || md.manager === null) return null;
+        if (md.manager.add(0x58).readU32() !== 1) return null;
+        var obj = md.manager.add(4).readPointer();
         if (obj.isNull()) return null;
-        var rcv = obj.readPointer().add(0x18).readPointer();
-        var gep = getGepard();
-        if (gep === null || !rcv.equals(gep.add(0x10a90))) return null;
+        if (md.receiverVslot === null || md.receiverVslot === undefined) return null;
+        var rcv = obj.readPointer().add(md.receiverVslot * Process.pointerSize).readPointer();
+        var receiverBase = peBase(md.receiverModule);
+        if (receiverBase === null || !rcv.equals(receiverBase.add(md.receiverOffset))) return null;
         return obj;
+    } catch (e) { return null; }
+}
+
+function mdPlayerHook() {
+    try {
+        if (md === null || md.thisp === null || md.dispatcherVslot === null || md.dispatcherVslot === undefined)
+            return null;
+        var hook = md.thisp.readPointer().add(md.dispatcherVslot * Process.pointerSize).readPointer();
+        if (hook.isNull() || hook.equals(md.disp)) return null;
+        var range = peRange(md.receiverModule);
+        if (range === null || hook.compare(range.base) < 0 || hook.compare(range.end) >= 0) return null;
+        var mapped = Process.findRangeByAddress(hook);
+        if (!mapped || mapped.protection.indexOf('x') < 0) return null;
+        return hook;
     } catch (e) { return null; }
 }
 
@@ -907,6 +1164,11 @@ function mdTrusted() {
         }
         return false;
     }
+    if (md.recipe.kind === 'player-vtable' && mdPlayerHook() === null) {
+        thisDiag('invalid','MoveDispatch','CPlayer runtime vtable hook unavailable',md.thisp);
+        mdInvalidate('CPlayer vtable hook unavailable/changed');
+        return false;
+    }
     return true;
 }
 
@@ -929,18 +1191,35 @@ function mdTrap(ctx) {                          // devolve true se tratou o brea
         if (!mdTrusted() || md.queue.length === 0) return true;
         var a = md.queue.shift();
         md.fireArmed = false; mdUnarm(3); md.capArmed = false; mdUnarm(2);   // sem BP aninhado
-        var r = {tag: 'MOVE-DISPATCH', hit: 'fired', x: a.x, y: a.y, 'this': md.thisp.toString()};
+        var r = {tag:'MOVE-DISPATCH',hit:'fired',x:a.x,y:a.y,'this':md.thisp.toString()};
         if (!mdTrusted()) { r.hit = 'abort'; r.e = 'receiver not ready/changed'; send(r); }
         else {
             try {
                 md.busy = true;
-                var f = md.recipe.buildFrame(a);
+                var recipe = MD_RECIPES[a._recipe || 'walk-035f'];
+                if (!recipe) throw new Error('unknown queued native recipe');
+                var f = recipe.buildFrame(a), rv;
                 r.frame = f;
-                send({tag: 'MOVE-DISPATCH', hit: 'call', x: a.x, y: a.y});
-                var rv = md.fn.apply(null, [md.thisp].concat(f));
+                if (recipe.kind === 'player-vtable') {
+                    var hook = mdPlayerHook();
+                    if (hook === null) throw new Error('CPlayer runtime vtable hook unresolved');
+                    if (md.playerFiresLeft <= 0) throw new Error('player-vtable fire limit exhausted');
+                    md.playerFiresLeft--;
+                    r.backend = 'player-vtable'; r.hook = hook.toString(); r.fires_left = md.playerFiresLeft;
+                    send({tag:'MOVE-DISPATCH',hit:'call',backend:'player-vtable',hook:hook.toString(),
+                          x:a.x,y:a.y,fires_left:md.playerFiresLeft});
+                    var playerFn = new NativeFunction(hook, 'uint', md.callTypes,
+                                                      {abi:'thiscall',exceptions:'propagate'});
+                    rv = playerFn.apply(null, [md.thisp].concat(f));
+                } else {
+                    r.backend = 'legacy';
+                    send({tag:'MOVE-DISPATCH',hit:'call',backend:'legacy',x:a.x,y:a.y});
+                    rv = md.fn.apply(null, [md.thisp].concat(f));
+                }
                 r.retval = rv >>> 0; r.exception = null;
             } catch (e) { r.exception = String(e.message || e); }
             md.busy = false;
+            if (md.recipe.kind === 'player-vtable' && md.playerFiresLeft <= 0) md.queue.length = 0;
             send(r);
         }
         if (md.queue.length && mdTrusted()) { try { if (sessionReady()) { hwSet('move-fire',md.th,md.site); md.fireArmed = true; } } catch (e) {} }
@@ -963,19 +1242,40 @@ function onNativeDispatch(m) {
         } else if (m.arm) {
             var rec = MD_RECIPES[m.recipe];
             var base = peBase(m.module || 'uaRO.exe');
-            if (!rec || base === null) { send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'recipe/base unresolved'}); }
-            else {
-                var disp = ptr(m.dispatcher !== undefined ? m.dispatcher : rec.dispatcher);
-                var site = ptr(m.site !== undefined ? m.site : rec.fireSite);
+            var haveProfile = m.dispatcherRva !== undefined && m.safePointRva !== undefined &&
+                              m.managerRva !== undefined && m.retAnchorRva !== undefined &&
+                              m.receiverOffset !== undefined && m.receiverVslot !== undefined;
+            if (!rec || base === null || !haveProfile) {
+                send({tag: 'MOVE-DISPATCH', hit: 'error', e: 'recipe/base/profile unresolved'});
+            } else {
+                var disp = m.dispatcher !== undefined ? ptr(m.dispatcher) : base.add(m.dispatcherRva);
+                var site = m.site !== undefined ? ptr(m.site) : base.add(m.safePointRva);
+                var manager = haveProfile ? base.add(m.managerRva) : null;
+                var retAnchor = haveProfile ? base.add(m.retAnchorRva) : null;
+                var receiverModule = m.receiverModule || 'gepard.dll';
+                var receiverOffset = haveProfile ? m.receiverOffset : 0;
+                var receiverVslot = haveProfile ? Number(m.receiverVslot) : null;
+                var dispatcherVslot = m.dispatcherVslot === undefined ? null : Number(m.dispatcherVslot);
+                var receiverBase = peBase(receiverModule);
+                var receiverHook = receiverBase === null ? null : receiverBase.add(receiverOffset);
                 var why = null;
                 if (!Process.findRangeByAddress(disp)) why = 'dispatcher unmapped';
-                else if (!/ret\s+0x34/.test(Instruction.parse(MD_RET34).toString())) why = 'ret 0x34 anchor mismatch';
-                else if (!Process.findRangeByAddress(site)) why = 'fire-site unmapped';
+                else if (retAnchor === null || !/ret\s+0x34/.test(Instruction.parse(retAnchor).toString())) why = 'ret 0x34 anchor mismatch';
+                else if (!Process.findRangeByAddress(site)) why = 'safe-point unmapped';
+                else if (!Process.findRangeByAddress(manager)) why = 'manager unmapped';
+                else if (receiverHook === null || !Process.findRangeByAddress(receiverHook)) why = 'receiver hook unmapped';
+                else if (rec.kind === 'player-vtable' && dispatcherVslot === null) why = 'profile missing CPlayer dispatcher vslot';
                 if (why) send({tag: 'MOVE-DISPATCH', hit: 'error', e: why});
                 else {
                     var th = Process.enumerateThreads().filter(function (t) { return t.id === Process.id; })[0];
                     var types = ['pointer']; for (var i = 0; i < 13; i++) types.push('uint32');
-                    md = {recipe: rec, disp: disp, site: site, thisp: null, receiver: null, queue: [], th: th || null, tid: Process.id,
+                    md = {recipe: rec, disp: disp, site: site, manager: manager, retAnchor: retAnchor,
+                          receiverModule: receiverModule, receiverOffset: receiverOffset,
+                          receiverVslot: receiverVslot, receiverHook: receiverHook,
+                          dispatcherVslot: dispatcherVslot, callTypes: types,
+                          playerFiresLeft: rec.kind === 'player-vtable' ?
+                              Math.max(0, Number(m.playerMaxFires === undefined ? 1 : m.playerMaxFires)) : null,
+                          thisp: null, receiver: null, queue: [], th: th || null, tid: Process.id,
                           capArmed: false, fireArmed: false, busy: false,
                           fn: new NativeFunction(disp, 'uint', types, {abi: 'thiscall', exceptions: 'propagate'})};
                     if (!scrHandler) { scrHandler = true; Process.setExceptionHandler(scrTrap); }
@@ -988,8 +1288,12 @@ function onNativeDispatch(m) {
             if (!sessionReady()) { send({tag:'MOVE-DISPATCH',hit:'dropped',e:'map settle delay'}); }
             else
             if (!mdTrusted()) send({tag: 'MOVE-DISPATCH', hit: 'dropped', e: 'dispatcher context untrusted (walk once in-client)', x: m.args.x, y: m.args.y});
+            else if (!MD_RECIPES[m.recipe || 'walk-035f']) send({tag:'MOVE-DISPATCH',hit:'error',e:'unknown recipe'});
+            else if (md.recipe.kind === 'player-vtable' && md.playerFiresLeft <= 0)
+                send({tag:'MOVE-DISPATCH',hit:'dropped',e:'player-vtable fire limit exhausted',x:m.args.x,y:m.args.y});
             else if (md.queue.length >= 8) send({tag: 'MOVE-DISPATCH', hit: 'dropped', e: 'queue full'});
             else {
+                m.args._recipe = m.recipe || 'walk-035f';
                 md.queue.push(m.args);
                 if (!md.fireArmed) { if (sessionReady()) { hwSet('move-fire',md.th,md.site); md.fireArmed = true; } }   // dynamically allocated fire slot
                 send({tag: 'MOVE-DISPATCH', hit: 'queued', x: m.args.x, y: m.args.y});
@@ -1001,7 +1305,17 @@ function onNativeDispatch(m) {
 recv('native-dispatch', onNativeDispatch);
 
 // never leave debug registers armed without our handler: the client would die on the next write
-rpc.exports = { dispose: function () { sw = null; swDisarm(); scr = null; scrDisarm(); scrCall = null; scrCallDisarm(); scSend = null; if (md !== null) { mdUnarm(2); mdUnarm(3); } md = null; } };
+rpc.exports = { dispose: function () { sw = null; swDisarm(); scr = null; scrDisarm(); scrCall = null; scrCallDisarm(); hwProbe = null; hwClear('research-probe'); scSend = null; if (gd !== null) { gdUnarm('cap'); gdUnarm('fire'); } gd = null; if (md !== null) { mdUnarm(2); mdUnarm(3); } md = null; } };
+
+// ---- module metadata / bounded trace -----------------------------------------------------------
+function onModuleInfo(m) {
+    var name = m.module || 'uaRO.exe', r = peRange(name);
+    if (r === null) send({tag: 'MODULE-INFO', token: m.token || null, module: name, erro: 'module not mapped'});
+    else send({tag: 'MODULE-INFO', token: m.token || null, module: name,
+               base: r.base.toString(), end: r.end.toString(), size: r.end.sub(r.base).toUInt32()});
+    recv('module-info', onModuleInfo);
+}
+recv('module-info', onModuleInfo);
 
 // ---- rastreio com Stalker (opcional: o driver envia {type:'trace'}) ----------------------------
 // ARRISCADO em codigo protegido pelo gepard: o Stalker reescreve o codigo executado. Primeiro um
@@ -1010,9 +1324,9 @@ rpc.exports = { dispose: function () { sw = null; swDisarm(); scr = null; scrDis
 // curta e desliga sozinho.
 var traceSeen = null;
 function onTrace(m) {
-    var ms = m.ms || 200;
+    var ms = m.ms || 200, token = m.token || null;
     var th = Process.enumerateThreads().filter(function (t) { return t.id === Process.id; })[0];
-    if (!th) { send({tag: 'TRACE', erro: 'thread principal nao encontrada'}); recv('trace', onTrace); return; }
+    if (!th) { send({tag: 'TRACE', token: token, erro: 'thread principal nao encontrada'}); recv('trace', onTrace); return; }
     var ualo = m.ualo ? ptr(m.ualo) : null, uahi = m.uahi ? ptr(m.uahi) : null;
     var gep = getGepard(), ghi = gep ? gep.add(0x2000000) : null;
     var interno = !!m.interno;                                       // true: registrar uaRO->uaRO
@@ -1043,10 +1357,10 @@ function onTrace(m) {
                 }
             }
         });
-    } catch (e) { send({tag: 'TRACE', erro: 'follow: ' + e.message}); recv('trace', onTrace); return; }
+    } catch (e) { send({tag: 'TRACE', token: token, erro: 'follow: ' + e.message}); recv('trace', onTrace); return; }
     setTimeout(function () {
         try { Stalker.unfollow(th.id); Stalker.flush(); } catch (e) {}
-        var msg = {tag: 'TRACE', ms: ms, bytes: nblocos};
+        var msg = {tag: 'TRACE', token: token, ms: ms, bytes: nblocos};
         if (traceSeen !== null) { msg.chamadas = Object.keys(traceSeen); msg.n = msg.chamadas.length; }
         else { msg.nota = 'teste de sobrevivencia ok'; }
         send(msg);
@@ -1112,17 +1426,23 @@ hookAll(['__sendmsg64', 'sendmsg'], {
 console.log('[*] no PE code patched');
 
 // ---- startup log: where gepard.dll sits -----------------------------------------------------
-function peBase(dllName) {
-    var want = '/' + dllName.toLowerCase(), best = null;
+function peRange(dllName) {
+    var want = '/' + dllName.toLowerCase(), lo = null, hi = null;
     Process.enumerateRanges({protection: '---', coalesce: false}).forEach(function (r) {
         if (!r.file || !r.file.path) return;
         var p = r.file.path.toLowerCase();
         if (p.slice(-want.length) !== want) return;
-        if (best === null || r.base.compare(best) < 0) best = r.base;
+        var end = r.base.add(r.size);
+        if (lo === null || r.base.compare(lo) < 0) lo = r.base;
+        if (hi === null || end.compare(hi) > 0) hi = end;
     });
-    if (best === null) return null;
-    try { if (best.readU16() !== 0x5a4d) return null; } catch (e) { return null; }   // 'MZ'
-    return best;
+    if (lo === null) return null;
+    try { if (lo.readU16() !== 0x5a4d) return null; } catch (e) { return null; }   // 'MZ'
+    return {base: lo, end: hi};
+}
+function peBase(dllName) {
+    var r = peRange(dllName);
+    return r === null ? null : r.base;
 }
 
 getGepard();

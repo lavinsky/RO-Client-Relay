@@ -106,36 +106,92 @@ def sendcall_msg(rva=None, module='uaRO.exe', cast_ms=800, demand=False):
     return m
 
 
-def move_dispatch_msg(x=None, y=None, arm=False, disarm=False, recapture=False, dispatcher=None, site=None):
-    """Native-dispatch (PoC 035f): arm the passive capture of the movement dispatcher's `this`
-    (arm=True, optional dispatcher/site as hex strings), disarm, recapture (reset a stale `this`
-    after a reconnect/relogin and re-arm the passive capture), or request a walk to (x, y). The
-    client itself then builds, encrypts and sends its own 035f; the relay never forges a body."""
+def native_dispatch_msg(recipe=None, args=None, arm=False, disarm=False, recapture=False,
+                        dispatcher=None, site=None, native=None):
+    """Generic client-native dispatch control message.
+
+    `recipe` selects the client-side argument builder. Build-specific RVAs are supplied only when
+    arming; absolute dispatcher/site remain research overrides. Disarm/recapture are global because
+    the agent owns a single native-dispatch context at a time.
+    """
     m = {'type': 'native-dispatch'}
     if disarm:
         m['disarm'] = True
     elif recapture:
         m['recapture'] = True
     elif arm:
-        m.update(arm=True, recipe='walk-035f')
+        if not recipe:
+            raise ValueError('native dispatch arm requires a recipe')
+        m.update(arm=True, recipe=recipe)
+        if native:
+            m.update(native)
         if dispatcher:
             m['dispatcher'] = int(dispatcher, 16)
         if site:
             m['site'] = int(site, 16)
     else:
-        m.update(recipe='walk-035f', args={'x': int(x), 'y': int(y)})
+        if not recipe or args is None:
+            raise ValueError('native dispatch request requires recipe and args')
+        m.update(recipe=recipe, args=args)
     return m
 
 
-def trace_msg(ms=200, ualo=None, uahi=None, interno=False):
-    """Rastreio com Stalker. Sem ualo/uahi: so teste de sobrevivencia (segue a thread principal por
-    `ms` e desliga). Com a faixa do codigo uaRO: registra as chamadas uaRO->gepard na janela, ou,
-    com interno=True, as chamadas uaRO->uaRO (para achar o manipulador de alto nivel do movimento)."""
+def move_dispatch_msg(x=None, y=None, arm=False, disarm=False, recapture=False,
+                      dispatcher=None, site=None, native=None):
+    """Compatibility wrapper for the validated legacy `walk-035f` recipe."""
+    args = None if arm or disarm or recapture else {'x': int(x), 'y': int(y)}
+    return native_dispatch_msg('walk-035f', args=args, arm=arm, disarm=disarm,
+                               recapture=recapture, dispatcher=dispatcher, site=site, native=native)
+
+
+def gepard_dispatch_msg(x=None, y=None, arm=False, disarm=False, recapture=False, native=None):
+    """Experimental protected-wrapper movement path; exact build data is profile supplied."""
+    m = {'type': 'gepard-dispatch'}
+    if disarm:
+        m['disarm'] = True
+    elif recapture:
+        m['recapture'] = True
+    elif arm:
+        m['arm'] = True
+        if native:
+            m.update(native)
+    else:
+        if x is None or y is None:
+            raise ValueError('gepard dispatch request requires x and y')
+        m['args'] = {'x': int(x), 'y': int(y)}
+    return m
+
+
+def trace_msg(ms=200, ualo=None, uahi=None, interno=False, token=None):
+    """Bounded Stalker call trace; `token` correlates asynchronous wizard requests."""
     m = {'type': 'trace', 'ms': ms}
     if ualo is not None:
         m['ualo'], m['uahi'] = hex(ualo), hex(uahi)
     if interno:
         m['interno'] = True
+    if token is not None:
+        m['token'] = str(token)
+    return m
+
+
+def module_info_msg(module='uaRO.exe', token=None):
+    m = {'type': 'module-info', 'module': module}
+    if token is not None:
+        m['token'] = str(token)
+    return m
+
+
+def hw_exec_probe_msg(rva, module='uaRO.exe', stack_words=8, timeout_ms=5000, token=None,
+                      filter_index=None, filter_value=None, rearm_session=False):
+    """Read-only hardware execution breakpoint for protected-client research."""
+    m = {'type': 'hw-exec-probe', 'module': module, 'rva': int(rva),
+         'stackWords': int(stack_words), 'timeoutMs': int(timeout_ms)}
+    if filter_index is not None and filter_value is not None:
+        m['filterIndex'], m['filterValue'] = int(filter_index), int(filter_value)
+    if token is not None:
+        m['token'] = str(token)
+    if rearm_session:
+        m['rearmSession'] = True
     return m
 
 

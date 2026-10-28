@@ -14,8 +14,8 @@ import threading
 import time
 
 from .packets import unpack_move
-from .protocol import (move_dispatch_msg, scramble_msg, scramble_set_msg, sendcall_emit_msg, sendcall_msg,
-                       sendwatch_msg, trace_msg)
+from .protocol import (gepard_dispatch_msg, hw_exec_probe_msg, native_dispatch_msg, scramble_msg,
+                       scramble_set_msg, sendcall_emit_msg, sendcall_msg, sendwatch_msg, trace_msg)
 from .synth_input import build_actuator
 
 # A watch de dados dispara uma instrução DEPOIS da escrita; o store `mov [reg],bl` tem 2 bytes.
@@ -216,13 +216,82 @@ class WriteBack:
             print(f'[*] --inject-call: do one in-client 0437/0438 action to capture the send object (this)'
                   f'{f"; casts pacejados a {cast_ms}ms no dreno" if cast_ms else ""}')
 
+    def _move_dispatch_native(self):
+        profile = getattr(self.opts, 'client_profile_data', None)
+        if profile is None:
+            return None
+        group = profile.native_group('legacy_action_dispatch')
+        required = ('dispatcher_rva', 'game_thread_safe_point_rva', 'manager_rva',
+                    'ret_anchor_rva', 'receiver_offset')
+        native = {
+            'module': group.get('module', 'uaRO.exe'),
+            'receiverModule': group.get('receiver_module', 'gepard.dll'),
+        }
+        game_mode = profile.native_group('game_mode')
+        if 'send_msg_vslot' in game_mode:
+            native['receiverVslot'] = int(game_mode['send_msg_vslot'])
+        if 'dispatcher_vslot' in group:
+            native['dispatcherVslot'] = int(group['dispatcher_vslot'])
+        wire_names = {
+            'dispatcher_rva': 'dispatcherRva',
+            'game_thread_safe_point_rva': 'safePointRva',
+            'manager_rva': 'managerRva',
+            'ret_anchor_rva': 'retAnchorRva',
+            'receiver_offset': 'receiverOffset',
+        }
+        for field in required:
+            native[wire_names[field]] = profile.native_int('legacy_action_dispatch', field)
+        return native
+
+    def _gepard_dispatch_native(self):
+        profile = getattr(self.opts, 'client_profile_data', None)
+        if profile is None:
+            return None
+        group = profile.native_group('gepard_sendmsg_wrapper')
+        required = ('entry_offset', 'callsite_offset', 'safe_point_rva', 'send_msg_rva',
+                    'game_mode_vtable_rva', 'move_send_msg_id')
+        names = {
+            'entry_offset': 'entryOffset',
+            'callsite_offset': 'callsiteOffset',
+            'safe_point_rva': 'safePointRva',
+            'send_msg_rva': 'sendMsgRva',
+            'game_mode_vtable_rva': 'gameModeVtableRva',
+            'move_send_msg_id': 'moveSendMsgId',
+        }
+        native = {'module': group.get('module', 'gepard.dll'),
+                  'uaroModule': group.get('uaro_module', 'uaRO.exe')}
+        for field in required:
+            if field == 'move_send_msg_id':
+                native[names[field]] = int(group[field])
+            else:
+                native[names[field]] = profile.native_int('gepard_sendmsg_wrapper', field)
+        return native
+
+    def arm_native_dispatch(self, recipe='walk-035f'):
+        """Arm the selected movement backend; legacy remains the default/fallback."""
+        if not (getattr(self.opts, 'move_dispatch', False) and self.relay is not None):
+            return
+        backend = getattr(self.opts, 'move_dispatch_backend', 'legacy')
+        if backend == 'gepard-wrapper':
+            native = self._gepard_dispatch_native() or {}
+            native['fireEnabled'] = bool(getattr(self.opts, 'gepard_wrapper_fire', False))
+            native['maxFires'] = max(0, int(getattr(self.opts, 'gepard_wrapper_max_fires', 1)))
+            self.post(gepard_dispatch_msg(arm=True, native=native))
+            mode = 'LIVE one-shot enabled' if native['fireEnabled'] else 'CAPTURE-ONLY'
+            print(f'[*] --move-dispatch: EXPERIMENTAL gepard-wrapper [{mode}]; waiting for passive CGameMode `this` capture')
+            return
+        native = self._move_dispatch_native() or {}
+        if backend == 'player-vtable':
+            recipe = 'walk-player-vtable'
+            native['playerMaxFires'] = max(0, int(getattr(self.opts, 'player_vtable_max_fires', 1)))
+        self.post(native_dispatch_msg(recipe, arm=True,
+                                      dispatcher=getattr(self.opts, 'move_dispatch_ptr', None),
+                                      site=getattr(self.opts, 'move_dispatch_site', None),
+                                      native=native))
+        print(f'[*] --move-dispatch: arm native recipe {recipe}; waiting for passive `this` capture')
+
     def arm_move_dispatch(self):
-        """Arma a captura passiva do `this` do dispatcher nativo (DR2); o sitio de disparo (DR3) so
-        e armado quando chega um 035f."""
-        if getattr(self.opts, 'move_dispatch', False) and self.relay is not None:
-            self.post(move_dispatch_msg(arm=True, dispatcher=getattr(self.opts, 'move_dispatch_ptr', None),
-                                        site=getattr(self.opts, 'move_dispatch_site', None)))
-            print('[*] --move-dispatch: walk once in-client so the dispatcher `this` is captured (passive)')
+        self.arm_native_dispatch('walk-035f')
 
     def recapture_sendcall(self, reason='session transition'):
         """Fail closed on map/session changes: invalidate the old native SendPacket this."""
@@ -234,18 +303,52 @@ class WriteBack:
         """Recognized ZC map transition (0091/0092) in the tokenized inbound stream."""
         if pid not in (0x0091, 0x0092):
             return
-        self.recapture_sendcall(f'map packet 0x{pid:04x}')
-        # A single trigger in the agent invalidates BOTH SendPacket and move-dispatch.
+        self.recapture_move_dispatch(f'map packet 0x{pid:04x}')
 
-    def recapture_move_dispatch(self):
-        """Pós reconexão/relogin: o `this` capturado do dispatcher aponta para objeto de mapa já
-        liberado; firá-lo congela o cliente. Zera e re-arma a captura passiva (DR2) para recapturar
-        no próximo passo in-client. Ligado em relay.on_connect (só dispara em RE-conexão)."""
-        self.recapture_sendcall('relay connection change')
-        # resetNativeSession invalidates BOTH native contexts, then waits 5000 ms.
+    def recapture_move_dispatch(self, reason='relay connection change'):
+        """Invalidate all native call contexts through the selected movement backend."""
+        if getattr(self.opts, 'move_dispatch', False) and self.relay is not None:
+            delay = max(0, int(getattr(self.opts, 'map_settle_ms', 1500)))
+            if getattr(self.opts, 'move_dispatch_backend', 'legacy') == 'gepard-wrapper':
+                self.post(gepard_dispatch_msg(recapture=True))
+            else:
+                self.post(native_dispatch_msg(recapture=True))
+            print(f'[*] --move-dispatch: {reason}; native contexts invalidated, awaiting recapture')
+        else:
+            self.recapture_sendcall(reason)
+
+    def post_native_dispatch(self, recipe, args):
+        self.post(native_dispatch_msg(recipe, args=args))
 
     def post_move_dispatch(self, x, y):
-        self.post(move_dispatch_msg(x, y))
+        backend = getattr(self.opts, 'move_dispatch_backend', 'legacy')
+        if backend == 'gepard-wrapper':
+            self.post(gepard_dispatch_msg(x=int(x), y=int(y)))
+        else:
+            recipe = 'walk-player-vtable' if backend == 'player-vtable' else 'walk-035f'
+            self.post(native_dispatch_msg(recipe, args={'x': int(x), 'y': int(y)}))
+
+    def arm_hw_probe(self):
+        """One-shot read-only exec probe using the agent's shared hardware-breakpoint allocator."""
+        raw = getattr(self.opts, 'hw_probe_rva', '')
+        if not raw or self.relay is None:
+            return
+        words = max(1, min(16, int(getattr(self.opts, 'hw_probe_stack_words', 8))))
+        timeout_ms = max(100, min(60000, int(getattr(self.opts, 'hw_probe_timeout_ms', 10000))))
+        rva = int(raw, 16)
+        module = getattr(self.opts, 'hw_probe_module', 'uaRO.exe')
+        filter_index = getattr(self.opts, 'hw_probe_filter_index', None)
+        filter_raw = getattr(self.opts, 'hw_probe_filter_value', '')
+        filter_value = int(filter_raw, 0) if filter_raw else None
+        rearm = bool(getattr(self.opts, 'hw_probe_rearm_session', False))
+        self.post(hw_exec_probe_msg(rva, module=module, stack_words=words, timeout_ms=timeout_ms,
+                                    filter_index=filter_index, filter_value=filter_value,
+                                    rearm_session=rearm))
+        gate = (f', filter stack[{filter_index}]=0x{filter_value:x}'
+                if filter_index is not None and filter_value is not None else '')
+        session = ', rearm-after-session' if rearm else ''
+        print(f'[*] --hw-probe-rva: read-only hardware exec BP at {module}+0x{rva:x}; '
+              f'{words} stack words, timeout {timeout_ms}ms{gate}{session}')
 
     def arm_trace(self):
         """Rastreio com Stalker: teste de sobrevivência (--trace-test), uaRO->gepard (--trace-walk)

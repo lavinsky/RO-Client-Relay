@@ -26,6 +26,18 @@ class Capture(WriteBack):
         uma mensagem ao agente."""
         self.opts, self.relay, self.log, self.post = opts, relay, log, post
         self.work = queue.Queue()
+        self._move_dispatch_test = None
+        raw_test = getattr(opts, 'move_dispatch_test', '')
+        if raw_test:
+            try:
+                x, y = (int(v.strip(), 0) for v in raw_test.split(',', 1))
+            except (ValueError, AttributeError) as exc:
+                raise ValueError('--move-dispatch-test requires X,Y integers') from exc
+            if not (0 <= x <= 1023 and 0 <= y <= 1023):
+                raise ValueError('--move-dispatch-test coordinates must be in 0..1023')
+            if not getattr(opts, 'move_dispatch', False):
+                raise ValueError('--move-dispatch-test requires --move-dispatch')
+            self._move_dispatch_test = (x, y)
         self.dec = self.sendwatch = self.moves = None
         self._sw_posted = None                         # (lo, hi) para onde a send-watch foi apontada
         self._sw_lock = threading.Lock()
@@ -108,6 +120,11 @@ class Capture(WriteBack):
                     m['enc_off'] = hex(int(m['enc'], 16) - self.gepard_base)
                     if self.autodiscover and not self._scramble_armed:
                         self._autodiscover_scramble(m)
+            if tag == 'MOVE-DISPATCH' and m.get('hit') == 'captured' and self._move_dispatch_test is not None:
+                x, y = self._move_dispatch_test
+                self._move_dispatch_test = None
+                print(f'[*] --move-dispatch-test: captured native context; firing one-shot to ({x},{y})')
+                self.post_move_dispatch(x, y)
             self.log.write(m)
 
     # ---- controle do agente -----------------------------------------------------------------
@@ -120,7 +137,7 @@ class Capture(WriteBack):
         autodescoberta (o bloco da recv-ring que o ActorDecrypt verifica)."""
         dec = self.dec
         ring = (dec.region or (None, None)) if dec else None   # uma leitura: nunca base nova com hi antigo
-        return send_queue_range(self.opts.send_queue, ring, dec is not None)
+        return send_queue_range(self.opts.send_queue, ring)
 
     def update_send_watch(self):
         """Aponta a send-watch do agente para o bloco da fila (de novo, se a ring se moveu)."""

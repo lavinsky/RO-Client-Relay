@@ -4,6 +4,26 @@ import os
 MAX_REGION = 0x4000000                             # scans skip rw regions larger than 64 MiB
 
 
+def read_windows(read, lo, hi, window=0x100000, overlap=0):
+    """Yield bounded `(address, bytes)` reads across [lo, hi), with optional overlap.
+
+    The helper is deliberately policy-free: callers choose overlap large enough for their
+    record/context size. This avoids allocating an entire large mapping during discovery scans.
+    """
+    if window <= 0 or overlap < 0 or overlap >= window:
+        raise ValueError('require window > 0 and 0 <= overlap < window')
+    step = window - overlap
+    pos = lo
+    while pos < hi:
+        size = min(window, hi - pos)
+        block = read(pos, size)
+        if block:
+            yield pos, block
+        if pos + size >= hi:
+            break
+        pos += step
+
+
 def regions(pid, writable=True, max_size=None, paths=None):
     """Yield (lo, hi, path) for each mapping of `pid`. `paths`: allowed path names
     ('' = anonymous), None = any."""

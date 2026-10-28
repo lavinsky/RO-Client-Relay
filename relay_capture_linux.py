@@ -35,8 +35,8 @@ from relay.packets import (MoveTracker, WireFilter, load_lengths,           # no
 from relay.relay import PacketAligner, Relay                                # noqa: F401
 from relay.research import ActorDiag, ActorProbe                            # noqa: F401
 from relay.safety import LOGIN_SOCK, redact_login, sanitize                 # noqa: F401
-from relay.sendwatch import (SEND_QUEUE_FALLBACK, SendWatch, packet_at,     # noqa: F401
-                              plaintext_guess, send_queue_range)
+from relay.sendwatch import (SendWatch, packet_at, plaintext_guess,       # noqa: F401
+                              send_queue_range)
 
 if __name__ == '__main__':
     main()

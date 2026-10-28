@@ -2,141 +2,18 @@
 import collections
 import threading
 import time
-import unicodedata
+from .actor_validation import (actor_name_rejection, allowed_actor_name_character, copy_validation,
+                               fresh_empty_name_actor, valid_actor, valid_actor_name)
+from .memory import MAX_REGION, ProcessMemory, read_windows, regions
 
-from .memory import MAX_REGION, ProcessMemory, regions
-
-
-
-# Explicit legacy Windows encoding: do not try multiple codecs until one passes.
-# Change only after confirming the character encoding used by this server.
-ACTOR_NAME_ENCODING = 'cp1252'
-# The client can receive NPC names containing printable ASCII symbols such as
-# 'Kafra Employee#prt1'. Extended CP1252 remains limited to letters/digits and
-# a few typography marks; controls, undefined codepoints and binary garbage fail.
-ACTOR_NAME_PUNCTUATION = frozenset(' ‘’“”–—…')
-
-
-def allowed_actor_name_character(c):
-    return (unicodedata.category(c)[0] in ('L', 'N') or
-            (c.isascii() and c.isprintable()) or
-            c in ACTOR_NAME_PUNCTUATION)
-
-
-def valid_actor_name(raw):
-    """Validate a fixed-width (24-byte) NUL-padded name, never a cipher proof."""
-    if len(raw) != 24:
-        return False
-    name_bytes, sep, padding = raw.partition(b'\x00')
-    if not name_bytes or (sep and any(padding)):
-        return False
-    try:
-        name = name_bytes.decode(ACTOR_NAME_ENCODING, errors='strict')
-    except UnicodeDecodeError:
-        return False
-    if name != name.strip():
-        return False
-    return all(allowed_actor_name_character(c) for c in name)
-
-
-def actor_name_rejection(raw):
-    """Diagnostic category only: never expose the actor's raw name or bytes."""
-    if len(raw) != 24:
-        return 'invalid-length'
-    if not any(raw):
-        return 'empty'
-    name_bytes, sep, padding = raw.partition(b'\x00')
-    if sep and any(padding):
-        return 'invalid-padding'
-    try:
-        name = name_bytes.decode(ACTOR_NAME_ENCODING, errors='strict')
-    except UnicodeDecodeError:
-        return 'invalid-encoding'
-    if name != name.strip():
-        return 'edge-whitespace'
-    if not all(allowed_actor_name_character(c) for c in name):
-        return 'forbidden-character'
-    return 'ok'
-
-
-def fresh_empty_name_actor(pkt, plain):
-    """Structural exception for a *freshly observed* 09FF slot, not a generic copy_ok.
-
-    The caller must separately establish same-ring safe preimage, a changed
-    post-recv copy in the expected slot, and that the read predates the next recv.
-    This function is deliberately never used by ring discovery or scoring.
-    """
-    return (len(pkt) >= 90 and len(plain) == len(pkt) and
-            pkt[:2] == b'\xff\x09' and plain[:4] == pkt[:4] and
-            plain != pkt and plain[4] <= 12 and
-            0 <= (plain[13] | (plain[14] << 8)) <= 2000 and
-            plain[5:9] != b'\x00' * 4 and
-            plain[-24:] == b'\x00' * 24)
-
-
-def valid_actor(P):
-    """Does P parse as a plausible 09fd/09ff actor packet? (object_type <= 12, sane walk_speed,
-    printable NUL-padded name.) Garbage (still encrypted) bodies fail this."""
-    if len(P) < 60 or P[4] > 12:
-        return False
-    speed = P[13] | (P[14] << 8)
-    name = P[-24:] if len(P) >= 90 else b''
-    return 0 <= speed <= 2000 and valid_actor_name(name)
-
-
-def copy_validation(pkt, P):
-    """Boolean-only breakdown of the existing copy_ok rules; no packet content logged.
-
-    For 0229, speed/type/name do not apply. `accepted` must exactly mirror
-    ActorDecrypt.copy_ok, including its special six-byte fixed-packet check.
-    """
-    n = len(pkt)
-    same_length = len(P) == n
-    changed = P != pkt
-    pid = int.from_bytes(pkt[:2], 'little') if n >= 2 else None
-    hdrlen = 2 if pid in (0x0229, 0x043f, 0x0983) else 4
-    header = n >= 2 and same_length and P[:hdrlen] == pkt[:hdrlen]
-    result = {'length_match': same_length, 'header_match': header,
-              'body_changed': changed, 'object_type_ok': None,
-              'walk_speed_ok': None, 'name_format_ok': None,
-              'fixed_gid_ok': None}
-    if pid == 0x0983:
-        result['fixed_gid_ok'] = (same_length and n == 29 and header and
-                                  int.from_bytes(P[4:8], 'little') != 0)
-        result['accepted'] = bool(header and changed and result['fixed_gid_ok'])
-        return result
-    if pid == 0x043f:
-        result['fixed_gid_ok'] = (same_length and n == 25 and header and
-                                  int.from_bytes(P[4:8], 'little') != 0)
-        result['accepted'] = bool(header and changed and result['fixed_gid_ok'])
-        return result
-    if pid == 0x0229:
-        result['fixed_gid_ok'] = (same_length and n == 15 and header and
-                                  int.from_bytes(P[2:6], 'little') != 0)
-        result['accepted'] = bool(header and changed and result['fixed_gid_ok'])
-        return result
-    # Preserve the exact original valid_actor checks, including its short-packet
-    # early return. No bytes, names, IDs or addresses leave this function.
-    result['object_type_ok'] = len(P) >= 60 and P[4] <= 12
-    if len(P) >= 15:
-        speed = P[13] | (P[14] << 8)
-        result['walk_speed_ok'] = 0 <= speed <= 2000
-        # Diagnostic-only integer: populated for first/last observations, never per poll.
-        result['walk_speed_value'] = speed
-    if len(P) >= 60:
-        name = P[-24:] if len(P) >= 90 else b''
-        result['name_format_ok'] = valid_actor_name(name)
-    result['accepted'] = bool(n >= 2 and same_length and changed and header
-                              and result['object_type_ok'] and result['walk_speed_ok']
-                              and result['name_format_ok'])
-    return result
 
 
 class ActorDecrypt:
     """Fills in the encrypted bodies of 09fd/09ff from the client's own decrypted copy.
 
     Only those bodies are encrypted on the wire. The client decrypts each received chunk into its
-    recv ring (an rw heap block; found at 0x24dd0000) - the copy is NOT in the recvmsg buffer.
+    recv ring (an rw heap block discovered and verified in the current session) - the copy is NOT
+    in the recvmsg buffer.
     Ring layout (measured with --actor-diag): a chunk that starts on a packet boundary lands at
     ring+0x40; a chunk that continues a partial packet is appended right after the previous chunk
     (d = previous d + previous length). The copy appears ~5-20 ms after recvmsg returns and stays
@@ -163,6 +40,7 @@ class ActorDecrypt:
     HDR = 0x40                                         # ring offset of a chunk that starts clean
     STREAM_KEEP = 0x20000                              # recent wire bytes kept per connection
     LIVE_READ = 0x20000                                # ring bytes read for a live search
+    SCAN_WINDOW = 0x100000                             # bounded reads for full/quick mapping scans
     DISCOVER_WAIT = 0.03                               # no ring yet: let the copy land before a full scan
     SCAN_BACKOFF = 1.0                                 # after a failed full scan, wait before the next
     REDISCOVER_AFTER = 20                              # consecutive unverified -> forget the ring
@@ -328,7 +206,7 @@ class ActorDecrypt:
                 return False
             off, pkt = anchor
             header = pkt[:self.FIXED_ENC.get(int.from_bytes(pkt[:2], 'little'), 4)]
-            window = 0x100000  # bounded 1MiB reads; no giant allocation per mapping
+            window = self.SCAN_WINDOW
             for lo, hi, _ in regions(self.pid, max_size=MAX_REGION):
                 if self.base is not None:
                     return False
@@ -379,13 +257,17 @@ class ActorDecrypt:
             self.on_ring(lo)
 
     def discover(self, conn, pkt, off, cstart):
-        """Full rw scan for the ring: the region holding a strongly context-matched copy.
-        Caller holds self.lock."""
+        """Full rw scan for the ring using bounded reads; caller holds self.lock."""
         best = None
+        overlap = min(self.SCAN_WINDOW - 1, len(pkt) + 2 * self.CTX)
         for lo, hi, _ in regions(self.pid, max_size=MAX_REGION):
-            c = self._best(self.read(lo, hi - lo), lo, conn, pkt, off, cstart)
-            if c and c[0][1] + c[0][2] >= 24 and (best is None or c[0][0] > best[0][0]):
-                best = (c[0], lo, hi)
+            for pos, block in read_windows(self.read, lo, hi, self.SCAN_WINDOW, overlap):
+                # _best normally measures expected delta from its buffer base. Adjust the expected
+                # value so chunked reads preserve the old whole-mapping scoring semantics exactly.
+                exp_d = self.HDR - (pos - lo)
+                c = self._best(block, pos, conn, pkt, off, cstart, exp_d=exp_d)
+                if c and c[0][1] + c[0][2] >= 24 and (best is None or c[0][0] > best[0][0]):
+                    best = (c[0], lo, hi)
         if best:
             # d is relative to `lo` only because the mapping was used as an
             # initial coordinate; infer actual ring from verified packet slot.

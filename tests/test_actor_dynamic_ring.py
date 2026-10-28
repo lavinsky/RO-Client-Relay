@@ -128,6 +128,37 @@ class DynamicRingTests(unittest.TestCase):
         self.assertEqual(dec.base, ringbase)
         self.assertEqual(dec.region, (ringbase,mapping_hi))
 
+    def test_full_discover_uses_bounded_reads_and_finds_cross_window_packet(self):
+        with patch('relay.actors.ProcessMemory'):
+            dec = ActorDecrypt(999999)
+        wire = actor(b'Cipher')[:4] + bytes([0xe3]) * 104
+        plaintext = actor(b'Boundary')
+        mapping_lo = 0x1000
+        mapping_hi = mapping_lo + dec.SCAN_WINDOW * 2 + 0x2000
+        slot = mapping_lo + dec.SCAN_WINDOW - 50
+        ringbase = slot - dec.HDR
+        mem = bytearray(mapping_hi - mapping_lo)
+        rel = slot - mapping_lo
+        mem[rel:rel + len(plaintext)] = plaintext
+        reads = []
+
+        def read(addr, size):
+            reads.append(size)
+            start = addr - mapping_lo
+            return bytes(mem[start:start + size])
+
+        dec.read = read
+        dec.stream['A'] = [0, wire]
+        dec.spans['A'].append((4, 108))
+        dec._ctx = lambda buf, i, conn, off, L: (24, 0)
+        with patch('relay.actors.regions', return_value=[(mapping_lo, mapping_hi, 'rw')]), \
+                patch.object(dec, '_ring_mapping_allowed', return_value=True):
+            self.assertTrue(dec.discover('A', wire, 0, 0))
+        self.assertEqual(dec.base, ringbase)
+        self.assertTrue(reads)
+        self.assertLessEqual(max(reads), dec.SCAN_WINDOW)
+        self.assertGreater(len(reads), 1)
+
     def test_first_and_last_slot_read_preserved_without_plaintext(self):
         from relay.wire_feed import new_chunk
         with patch('relay.actors.ProcessMemory'):

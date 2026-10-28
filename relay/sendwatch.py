@@ -1,8 +1,6 @@
 """Send recovery: plaintext of the encrypted client->server packets (0437 action, 0438 skill)."""
 import collections
 
-SEND_QUEUE_FALLBACK = (0x24dd0000, 0x24f80000)     # where the block sat in every session so far
-
 
 def packet_at(win, buf, base):
     """The packet bytes inside a window that starts at the aligned `base` (queue slots are unaligned)."""
@@ -93,18 +91,16 @@ class SendWatch:
         return Q
 
 
-def send_queue_range(spec, ring=None, have_dec=True):
-    """(lo, hi, source) of the memory block holding the client send queue, or None = not known yet.
+def send_queue_range(spec, ring=None):
+    """(lo, hi, source) of the client send queue, or None when it is not known.
 
-    The queue sits in the same rw heap block as the recv ring that ActorDecrypt finds (and verifies
-    per packet, and rediscovers if it moves), so 'auto' takes that block. An explicit 'lo-hi' (hex)
-    overrides. Without ActorDecrypt (--no-decrypt-actors) 'auto' falls back to the block's address
-    from earlier sessions."""
+    `auto` trusts only the recv-ring block that ActorDecrypt verified in the current session.
+    Historical process addresses are never reused. An explicit `lo-hi` remains available for
+    deliberate research runs.
+    """
     if spec and spec != 'auto':
         lo, hi = (int(x, 16) for x in spec.split('-'))
         return lo, hi, '--send-queue'
     if ring is not None and ring[0] is not None:
         return ring[0], ring[1], 'recv ring block'
-    if not have_dec:
-        return SEND_QUEUE_FALLBACK + ('fallback (no --decrypt-actors)',)
     return None

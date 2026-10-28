@@ -39,12 +39,12 @@ print('stats:', dict(sw.stats))
 assert sw.stats['ok-0437'] == 3 and sw.stats['ok-0438'] == 1 and sw.stats['drop-035f'] == 1
 assert sw.stats['nowin-0437'] == 1 and sw.stats['multi-0437'] == 1 and sw.stats['implausible-0437'] == 1
 
-# --send-queue: 'auto' follows the recv ring ActorDecrypt found; explicit overrides; fallback without it
+# --send-queue: 'auto' follows only the recv ring ActorDecrypt verified in this session.
 q = g.send_queue_range
 assert q('auto', (0x24dd0000, 0x24f80000)) == (0x24dd0000, 0x24f80000, 'recv ring block')
 assert q('auto', (0x31000000, 0x311b0000)) == (0x31000000, 0x311b0000, 'recv ring block')   # moved block
 assert q('auto', (None, None)) is None                       # ring not found yet: wait, don't guess
-assert q('auto', None, have_dec=False)[:2] == g.SEND_QUEUE_FALLBACK
+assert q('auto', None) is None                               # no historical-address fallback
 assert q('12340000-12350000', (0x24dd0000, 0x24f80000)) == (0x12340000, 0x12350000, '--send-queue')
 print('send_queue_range ok')
 print('ALL PASS')
